@@ -139,6 +139,19 @@ t('TRAE_WORK_IDENTITY 默认关闭：请求体无 Work 语义', () => {
   assert.strictEqual(b.common_params, undefined);
   assert.strictEqual(b.function, 'chat_v3');
 });
+t('tools：Anthropic input_schema 映射为 parameters', () => {
+  const tools = [{ name: 'read_file', description: '读文件', input_schema: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] } }];
+  const b = buildBody([], 'glm-5.2', true, { tools });
+  const params = JSON.parse(b.tools[0].function.parameters);
+  assert.deepStrictEqual(params.properties.path, { type: 'string' });
+  assert.strictEqual(b.tools[0].function.name, 'read_file');
+});
+t('tools：OpenAI parameters 形态仍正确透出', () => {
+  const tools = [{ type: 'function', function: { name: 'run', parameters: { type: 'object', properties: { cmd: { type: 'string' } } } } }];
+  const b = buildBody([], 'glm-5.2', true, { tools });
+  const params = JSON.parse(b.tools[0].function.parameters);
+  assert.deepStrictEqual(params.properties.cmd, { type: 'string' });
+});
 t('headersFor 在 Work 身份下追加 X-App-Function/X-Ide-Function', () => {
   const authMod = require('../auth');
   process.env.TRAE_WORK_IDENTITY = 'on';
@@ -1705,6 +1718,31 @@ t('全库无双向依赖（静态扫描）', () => {
     }
   }
   assert.deepStrictEqual([...new Set(cycles)], [], `存在双向依赖: ${[...new Set(cycles)].join(', ')}`);
+});
+
+console.log('config.resolveModelOptions 热重载');
+t('reload 前后返回形态一致（scene / reasoning 不丢）', () => {
+  const cfg = require('../config');
+  const cases = [
+    ['auto', undefined],
+    ['glm-5', undefined],
+    ['glm-5', 'override-name'],
+    ['__unregistered-model__', undefined],
+  ];
+  const before = cases.map(([m, o]) => cfg.resolveModelOptions(m, o));
+  cfg.reload();
+  const after = cases.map(([m, o]) => cfg.resolveModelOptions(m, o));
+  for (const [i, v] of before.entries()) {
+    assert.deepStrictEqual(after[i], v, `case ${cases[i][0]} 重载后形态应一致`);
+    assert.ok('scene' in after[i] && 'reasoning' in after[i], `case ${cases[i][0]} 应含 scene/reasoning`);
+  }
+});
+
+t('reload 后已登记模型的 reasoning 与 scene 取值正确', () => {
+  const cfg = require('../config');
+  const meta = cfg.resolveModelOptions('doubao-1-6');
+  assert.strictEqual(meta.scene, 'chat');
+  assert.strictEqual(meta.reasoning, true);
 });
 
 console.log('middleware/auth checkAdminToken');

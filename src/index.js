@@ -33,6 +33,32 @@ const apiKeyStore = require('./credentials/api-keys');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+// 管理面板的登录密钥存于 localStorage（web/src/stores/useAuth.ts），同源任意脚本可读，
+// 故以 CSP 收紧脚本与连接来源，并禁止被嵌入、禁止类型嗅探。
+// style 放开 'unsafe-inline' 是 Tailwind 构建产物含内联样式所需；script 不放开任何 unsafe-*。
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data:",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+// 转发面与运维快照不是 HTML 文档，带上 CSP 只会干扰客户端处理响应体
+const isDocumentRoute = (p) => !p.startsWith('/v1/') && p !== '/status' && p !== '/health';
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  if (isDocumentRoute(req.path)) res.setHeader('Content-Security-Policy', CSP);
+  next();
+});
+
 const startT = Date.now();
 
 app.get('/health', (req, res) => {

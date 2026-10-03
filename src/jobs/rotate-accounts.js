@@ -10,6 +10,7 @@ const path = require('path');
 const { execFile } = require('child_process');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateFile } = require('../lib/paths');
+const { sleep } = require('../lib/util');
 const variant = require('../platform/variant');
 const { AUTH_DIR, AUTH_FILE, resolveAuthDir, readUid, discoverAccounts } = require('./rotate-auth-dir');
 
@@ -40,33 +41,43 @@ function resolveWbExe() {
   return 'WorkBuddy'; // 兜底：交给 PATH
 }
 
-/** 判断客户端当前是否在运行（用户会话视角：服务 Session0 不可见，故以计划任务查询用户会话）。 */
-function isClientRunning() {
+/**
+ * 判断客户端当前是否在运行（用户会话视角：服务 Session0 不可见，故以计划任务查询用户会话）。
+ * @returns {boolean|null} true/false；探测命令本身失败时返回 null（无法判定）
+ */
+function probeClientRunning() {
   // 交互会话（session>0）直接查
-  try {
-    const sess = execSyncQuiet('powershell -NoProfile -Command (Get-Process -Id $PID).SessionId');
-    if (sess !== '0') {
-      const n = execSyncQuiet('powershell -NoProfile -Command "(Get-Process WorkBuddy -ErrorAction SilentlyContinue | Measure-Object).Count"');
-      return Number(n) > 0;
-    }
-  } catch { /* 回退 */ }
-  // 服务会话：通过 schtasks 查询用户会话（旧逻辑默认 Session0 会漏判）
-  try {
-    const out = execSyncQuiet('powershell -NoProfile -Command "schtasks /query /fo csv 2>&1 | Select-String \'RelayGate\' | Measure-Object | Select-Object -ExpandProperty Count"');
-    // 存在残留任务不代表运行；更稳：直接查 Win32_Process（服务能看到所有进程，但 Stop 受限）
-    const count = execSyncQuiet('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \'Name=\'WorkBuddy.exe\'\' | Measure-Object).Count"');
-    return Number(count) > 0;
-  } catch {
-    return false;
+  const sess = execSyncQuiet('powershell -NoProfile -Command (Get-Process -Id $PID).SessionId');
+  if (!sess.ok) {
+    console.warn(`[rotate] 会话探测失败，无法判定客户端状态: ${sess.err}`);
+    return null;
   }
+  const cmd = sess.out === '0'
+    // 服务会话（Session 0）看不到用户会话进程，改用 Win32_Process 全量查询。
+    // -Filter 的值必须包在双引号里再转义：写成 -Filter 'Name='x'' 会被 PowerShell
+    // 拆成位置参数并抛 PositionalParameterNotFound。
+    ? 'powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"Name=\'WorkBuddy.exe\'\\" | Measure-Object).Count"'
+    : 'powershell -NoProfile -Command "(Get-Process WorkBuddy -ErrorAction SilentlyContinue | Measure-Object).Count"';
+  const r = execSyncQuiet(cmd);
+  if (!r.ok) {
+    console.warn(`[rotate] 进程探测失败，无法判定客户端状态: ${r.err}`);
+    return null;
+  }
+  const n = Number(r.out);
+  return Number.isFinite(n) ? n > 0 : null;
 }
 
-/** 静默执行并返回 stdout（去换行）。 */
+/** 客户端是否在运行；仅「确认在运行」时返回 true（探测失败不视为在运行）。 */
+function isClientRunning() {
+  return probeClientRunning() === true;
+}
+
+/** 静默执行：返回 {ok, out, err}，调用方据此区分「命令失败」与「空输出」。 */
 function execSyncQuiet(cmd) {
   try {
-    return require('child_process').execSync(cmd, { encoding: 'utf8', timeout: 12000 }).trim();
-  } catch {
-    return '';
+    return { ok: true, out: require('child_process').execSync(cmd, { encoding: 'utf8', timeout: 12000 }).trim(), err: null };
+  } catch (e) {
+    return { ok: false, out: '', err: String((e && (e.stderr || e.message)) || 'unknown').split('\n')[0].trim() };
   }
 }
 /**
@@ -85,7 +96,9 @@ async function stopClient() {
     });
   } catch { /* 忽略 */ }
   await sleep(1500);
-  if (!isClientRunning()) return true;
+  const running = probeClientRunning();
+  if (running === false) return true;
+  if (running === null) console.warn('[rotate] stop client: 无法判定客户端状态，继续尝试停止流程');
 
   // 2) RunAs 提权（仅交互用户会话可用；服务会话下无弹窗则直接跳过）
   try {
@@ -107,7 +120,8 @@ async function stopClient() {
     });
     await sleep(2000);
   } catch { /* 忽略 */ }
-  return !isClientRunning();
+  // 仅在「确认已停止」时返回 true；探测失败不得当成已停止
+  return probeClientRunning() === false;
 }
 
 /**
@@ -131,7 +145,7 @@ async function trySchtasksStop() {
       execFile('schtasks', ['/run', '/tn', taskName], { timeout: 20000 }, () => resolve());
     });
     await sleep(4000);
-    const ok = !isClientRunning();
+    const ok = probeClientRunning() === false;
     await new Promise((resolve) => {
       execFile('schtasks', ['/delete', '/tn', taskName, '/f'], { timeout: 20000 }, () => resolve());
     });
@@ -157,7 +171,7 @@ function startClient() {
     const taskName = 'RelayGateStartWb_' + Date.now().toString(36);
     const cmd = `"${exe}"`;
     const created = execSyncQuiet(`schtasks /create /tn ${taskName} /tr "${cmd}" /sc once /st 00:00 /IT /f`);
-    if (created.includes('SUCCESS')) {
+    if (created.ok && created.out.includes('SUCCESS')) {
       execSyncQuiet(`schtasks /run /tn ${taskName}`);
       setTimeout(() => {
         try { require('child_process').execSync(`schtasks /delete /tn ${taskName} /f`, { timeout: 10000 }); } catch { /* 清理失败忽略 */ }
@@ -224,8 +238,6 @@ function switchTo(account) {
     return { ok: false, msg: '切换失败: ' + e.message };
   }
 }
-
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 /**
  * 轮换所有账号一遍（每个账号停留 stayMs 让客户端完成初始化）。
@@ -386,6 +398,7 @@ module.exports = {
   seedAll: () => require('./rotate-seed').seedAll(),
   resolveAuthDir,
   isClientRunning,
+  probeClientRunning,
   stopClient,
   startClient,
   resolveWbExe,

@@ -96,6 +96,17 @@ async function run() {
   r = await req('POST', '/v1/api-keys/setup/login-key', { ctype: 'application/json', body: { label: 'cli' } });
   check('M-S1 无 Origin（CLI）在已有 key 时返回 403 而非 origin 拒绝', r.status === 403 && /登录密钥已存在/.test(r.body), `-> ${r.status}`);
 
+  // ---- M-S3：CSP 与安全响应头 ----
+  r = await req('GET', '/health', {});
+  check('M-S3 X-Content-Type-Options', r.headers['x-content-type-options'] === 'nosniff', r.headers['x-content-type-options']);
+  check('M-S3 X-Frame-Options', r.headers['x-frame-options'] === 'DENY', r.headers['x-frame-options']);
+
+  r = await req('GET', '/', {});
+  check('M-S3 面板响应带 CSP', /default-src 'self'/.test(String(r.headers['content-security-policy'])), String(r.headers['content-security-policy']).slice(0, 60));
+
+  r = await req('GET', '/v1/models/status', { token: login.key });
+  check('M-S3 /v1 响应不带 CSP（避免干扰客户端）', r.headers['content-security-policy'] === undefined, String(r.headers['content-security-policy']));
+
   // ---- M-S4：resources 资源 ACL ----
   const restricted = { platform: 'all', scopes: ['models:invoke'], resources: ['model:trae/glm-*'] };
   check('M-S4 通用密钥 resources 命中', canUseModel('all', 'glm-5', restricted).ok === true, JSON.stringify(canUseModel('all', 'glm-5', restricted)));

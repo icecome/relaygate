@@ -27,37 +27,49 @@ const modelConfig = readJson(path.join(ROOT, 'model-config.json'), {
 const fallbackConfig = readJson(path.join(ROOT, 'model-fallback.json'), {});
 
 // 模型映射：key(对外模型名) -> { function, config_name, scene, reasoning }
-const MODEL_MAP = {};
-for (const [key, val] of Object.entries(modelConfig.models || {})) {
-  MODEL_MAP[key.toLowerCase()] = {
-    function: val.function || 'chat_v3',
-    config_name: val.config_name || key,
-    scene: val.scene || null,
-    reasoning: val.reasoning === true,
+function buildModelMap(modelConfig) {
+  const map = {};
+  for (const [key, val] of Object.entries((modelConfig && modelConfig.models) || {})) {
+    map[key.toLowerCase()] = {
+      function: val.function || 'chat_v3',
+      config_name: val.config_name || key,
+      scene: val.scene || null,
+      reasoning: val.reasoning === true,
+    };
+  }
+  map.auto = { function: 'inline_chat', config_name: null, scene: null, reasoning: false };
+  return map;
+}
+
+/**
+ * 构造模型名解析器。初始加载与热重载共用同一实现，避免两处返回形态分叉
+ * （曾出现热重载后丢失 scene / reasoning 的问题）。
+ */
+function makeResolveModelOptions(map) {
+  return function resolveModelOptions(modelName, configNameOverride) {
+    const lower = (modelName || '').toLowerCase();
+    if (lower === 'auto' || !lower) {
+      return { function: 'inline_chat', config_name: null, scene: null, reasoning: false };
+    }
+    if (configNameOverride) {
+      return { function: 'chat_v3', config_name: configNameOverride, scene: null, reasoning: false };
+    }
+    if (map[lower]) {
+      return map[lower];
+    }
+    // 上游 config_name 精确匹配本地映射的 config_name（避免被短别名部分匹配吞掉）
+    for (const val of Object.values(map)) {
+      if (val.config_name && String(val.config_name).toLowerCase() === lower) {
+        return { function: val.function || 'chat_v3', config_name: val.config_name, scene: val.scene || null, reasoning: val.reasoning === true };
+      }
+    }
+    // 未登记的上游 ID：function=chat_v3，config_name 原样透传
+    return { function: 'chat_v3', config_name: modelName, scene: null, reasoning: false };
   };
 }
-MODEL_MAP.auto = { function: 'inline_chat', config_name: null, scene: null, reasoning: false };
 
-function resolveModelOptions(modelName, configNameOverride) {
-  const lower = (modelName || '').toLowerCase();
-  if (lower === 'auto' || !lower) {
-    return { function: 'inline_chat', config_name: null, scene: null, reasoning: false };
-  }
-  if (configNameOverride) {
-    return { function: 'chat_v3', config_name: configNameOverride, scene: null, reasoning: false };
-  }
-  if (MODEL_MAP[lower]) {
-    return MODEL_MAP[lower];
-  }
-  // 上游 config_name 精确匹配本地映射的 config_name（避免被短别名部分匹配吞掉）
-  for (const val of Object.values(MODEL_MAP)) {
-    if (val.config_name && String(val.config_name).toLowerCase() === lower) {
-      return { function: val.function || 'chat_v3', config_name: val.config_name, scene: val.scene || null, reasoning: val.reasoning === true };
-    }
-  }
-  // 未登记的上游 ID：function=chat_v3，config_name 原样透传
-  return { function: 'chat_v3', config_name: modelName, scene: null, reasoning: false };
-}
+const MODEL_MAP = buildModelMap(modelConfig);
+const resolveModelOptions = makeResolveModelOptions(MODEL_MAP);
 
 const apiKey = process.env.API_KEY;
 if (!apiKey) {
@@ -143,43 +155,13 @@ config.reload = function reload() {
   // 重新读取 model-config.json
   const freshModelConfig = readJson(path.join(ROOT, 'model-config.json'), { models: {}, settings: {} });
   const freshFallback = readJson(path.join(ROOT, 'model-fallback.json'), {});
-  // 重新构建模型映射
-  const freshMap = {};
-  for (const [key, val] of Object.entries(freshModelConfig.models || {})) {
-    freshMap[key.toLowerCase()] = {
-      function: val.function || 'chat_v3',
-      config_name: val.config_name || key,
-      scene: val.scene || null,
-      reasoning: val.reasoning === true,
-    };
-  }
-  freshMap.auto = { function: 'inline_chat', config_name: null, scene: null, reasoning: false };
   // 重新加载 .env（不覆盖已存在的环境变量，仅刷新可热更项）
   try { require('dotenv').config(); } catch { /* ignore */ }
   // 更新可热更的运行参数
   config.modelConfig = freshModelConfig;
   config.fallbackConfig = freshFallback;
-  // 同步更新 resolveModelOptions 闭包引用的 MODEL_MAP
-  // 通过重新赋值 config.resolveModelOptions 来重建映射
-  const newResolve = function resolve(modelName, configNameOverride) {
-    const lower = (modelName || '').toLowerCase();
-    if (lower === 'auto' || !lower) {
-      return { function: 'inline_chat', config_name: null };
-    }
-    if (configNameOverride) {
-      return { function: 'chat_v3', config_name: configNameOverride };
-    }
-    if (freshMap[lower]) {
-      return freshMap[lower];
-    }
-    for (const val of Object.values(freshMap)) {
-      if (val.config_name && String(val.config_name).toLowerCase() === lower) {
-        return { function: val.function || 'chat_v3', config_name: val.config_name };
-      }
-    }
-    return { function: 'chat_v3', config_name: modelName };
-  };
-  config.resolveModelOptions = newResolve;
+  // 用同一构造函数重建解析器，保证与初始加载的返回形态一致
+  config.resolveModelOptions = makeResolveModelOptions(buildModelMap(freshModelConfig));
   // 调度与节流参数
   config.poolStrategy = process.env.POOL_STRATEGY || 'least_balance';
   config.maxInFlightPerAccount = parseInt(process.env.MAX_IN_FLIGHT_PER_ACCOUNT || '2', 10);

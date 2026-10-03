@@ -224,11 +224,20 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
   const loadRtConfig = useCallback(() => {
     if (!key) {
       setRtConfig(null);
+      setRtStatus({ msg: '', kind: '' });
       return;
     }
+    setRtStatus({ msg: '', kind: '' });
     getRuntimeConfig(key)
-      .then(setRtConfig)
-      .catch(() => setRtConfig(null));
+      .then((d) => {
+        setRtConfig(d);
+        setRtStatus({ msg: '', kind: '' });
+      })
+      .catch((e: Error) => {
+        // 与 loadNotify / loadScheduler 同口径：失败写状态，界面才能区分「加载中」与「加载失败」
+        setRtConfig(null);
+        setRtStatus({ msg: `运行时配置加载失败：${e.message}`, kind: 'err' });
+      });
   }, [key]);
 
   useEffect(() => {
@@ -1188,6 +1197,11 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                   {rtStatus.msg}
                 </div>
               )}
+            </>
+          ) : rtStatus.kind === 'err' ? (
+            <>
+              <div role="alert" className="text-xs text-danger mb-3">{rtStatus.msg}</div>
+              <button type="button" className="btn btn-ghost" onClick={loadRtConfig}>重试</button>
             </>
           ) : (
             <div className="text-xs text-ink-soft">加载中…</div>

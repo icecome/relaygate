@@ -163,6 +163,7 @@ async function runDailyCheckin() {
       }
     } catch (e) {
       console.error('[scheduler] growth auto error', e.message);
+      appendTaskLog({ task: 'growth-auto', trigger: 'checkin-chain', ok: 0, failed: 1, total: 0, error: e.message });
     }
     state.lastCheckinAt = new Date().toISOString();
     const okCount = (r.ok?.length || 0) + (wb.ok?.length || 0);
@@ -215,7 +216,7 @@ async function runDailyCheckin() {
       },
     };
   } catch (e) {
-    state.lastError = e.message;
+    state.lastError = `checkin: ${e.message}`;
     console.error('[scheduler] checkin error', e.message);
     throw e;
   }
@@ -223,6 +224,7 @@ async function runDailyCheckin() {
 
 async function runKeepalive() {
   console.log('[scheduler] keepalive token refresh start');
+  let failed = 0;
   try {
     // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）
     const accounts = store.list().filter((a) => a.enabled);
@@ -230,6 +232,7 @@ async function runKeepalive() {
       try {
         await auth.ensureAuth(a.id);
       } catch (e) {
+        failed += 1;
         console.error(`[scheduler] keepalive fail ${a.id}: ${e.message}`);
         notify('refresh_fail', {
           accountId: a.id,
@@ -240,8 +243,17 @@ async function runKeepalive() {
       await sleep(200);
     }
     state.lastKeepaliveAt = new Date().toISOString();
+    // 与签到链/轮换同口径：结果写任务日志，面板「任务日志」才看得到保活失败
+    appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: accounts.length - failed, failed, total: accounts.length });
+    if (failed) {
+      state.lastError = `keepalive: ${failed}/${accounts.length} 个账号刷新失败`;
+    }
+    return { total: accounts.length, failed };
   } catch (e) {
-    state.lastError = e.message;
+    state.lastError = `keepalive: ${e.message}`;
+    console.error('[scheduler] keepalive error', e.message);
+    appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: 0, failed: failed || 1, total: failed, error: e.message });
+    return { total: failed, failed: failed || 1, error: e.message };
   }
 }
 
@@ -269,8 +281,9 @@ async function runRotateAccounts() {
     }
     return r;
   } catch (e) {
-    state.lastError = e.message;
+    state.lastError = `account-rotate: ${e.message}`;
     console.error('[scheduler] account rotate error', e.message);
+    appendTaskLog({ task: 'account-rotate', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
     return { ok: 0, failed: 1, error: e.message };
   }
 }
@@ -355,8 +368,9 @@ async function runModelProbe() {
     console.log(`[scheduler] model probe done ${JSON.stringify(state.lastProbeSummary)}`);
     return state.lastProbeSummary;
   } catch (e) {
-    state.lastError = e.message;
+    state.lastError = `model-probe: ${e.message}`;
     console.error('[scheduler] model probe error', e.message);
+    appendTaskLog({ task: 'model-probe', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
     return { probed: 0, usable: 0, unavailable: 0, skipped: 1, error: e.message };
   }
 }
@@ -442,8 +456,11 @@ async function runGrowthAuto() {
     }
     return ga;
   } catch (e) {
-    state.lastError = e.message;
+    state.lastError = `growth-auto: ${e.message}`;
     console.error('[scheduler] growth auto error', e.message);
+    // 整轮抛错时也要落任务日志：否则面板「任务日志」里这条任务永远只有成功记录
+    appendTaskLog({ task: 'growth-auto', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
+    notify('checkin_fail', { message: `成长中心自动化失败：${e.message}` }, '成长中心自动化失败').catch(() => {});
     return { total: 0, okCount: 0, failCount: 1, error: e.message };
   }
 }

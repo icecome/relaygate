@@ -123,14 +123,15 @@ function buildBody(messages, model, stream, options, authInfo) {
   if (Array.isArray(options?.tools) && options.tools.length > 0) {
     body.tools = options.tools.map((t) => {
       const fn = (t && (t.function || t)) || {};
+      // Anthropic 形态用 input_schema 承载 JSON Schema；不映射会让 parameters
+      // 退化成空对象，客户端拿到的工具参数定义全部丢失。
+      const schema = fn.parameters || fn.input_schema || { type: 'object', properties: {} };
       return {
         type: 'function',
         function: {
           name: fn.name || 'unnamed_tool',
           description: fn.description || '',
-          parameters: typeof fn.parameters === 'string'
-            ? fn.parameters
-            : JSON.stringify(fn.parameters || { type: 'object', properties: {} }),
+          parameters: typeof schema === 'string' ? schema : JSON.stringify(schema),
         },
       };
     });
