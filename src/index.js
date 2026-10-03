@@ -68,11 +68,12 @@ app.use('/v1/admin', adminExtras);
 app.use('/v1/admin/model-router', modelRouterAdmin);
 app.use('/v1/admin', adminSecurity);
 app.use('/v1/api-keys', apiKeys);
-// 模型列表双面可用（转发客户端 + 面板）
-app.use('/v1/models', authenticateAny);
+// 模型列表双面可用（转发客户端 + 面板）：与转发面共用同一限流中间件实例
+const rateLimitMw = keyRateLimit();
+app.use('/v1/models', authenticateAny, rateLimitMw);
 app.use(models);
 app.use(authenticate);
-app.use(keyRateLimit());
+app.use(rateLimitMw);
 app.use(openai);
 app.use(anthropic);
 app.use(responses);

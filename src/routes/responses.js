@@ -65,7 +65,7 @@ router.post('/v1/responses', async (req, res) => {
   const model = body.model || 'auto';
   try {
     const { canUseModel, isVirtualModel } = require('../middleware/model-access');
-    const acc = canUseModel(req.platform, model);
+    const acc = canUseModel(req.platform, model, req.authKey || null);
     if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
       return res.status(403).json({
         error: {

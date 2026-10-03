@@ -10,8 +10,12 @@ const { getModelDetailParam } = require('../upstream/client');
 const availability = require('../models/availability');
 const catalog = require('../models/catalog');
 const wbChat = require('../workbuddy/chat');
+const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
+// 运维类子路由（缓存清理 / 强制刷新上游目录 / 直读上游详情）仅管理密钥可用。
+// GET /v1/models 保持双面：转发密钥按绑定平台过滤，登录密钥看全部。
+const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 function wantCustom(req) {
   const v = String(req.query.include_custom || req.query.custom || '').toLowerCase();
@@ -100,7 +104,7 @@ async function listModels(req, res) {
 
 router.get('/v1/models', listModels);
 
-router.get('/v1/models/status', async (req, res) => {
+router.get('/v1/models/status', admin, async (req, res) => {
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
   try {
     const cat = await catalog.listWithStatus({ force: refresh, includeCustom: wantCustom(req) });
@@ -189,13 +193,13 @@ router.get('/v1/models/status', async (req, res) => {
   }
 });
 
-router.delete('/v1/models/status', (req, res) => {
+router.delete('/v1/models/status', admin, (req, res) => {
   const m = req.query.model;
   availability.reset(m ? String(m) : null);
   res.json({ cleared: m || 'all' });
 });
 
-router.get('/v1/models/detail', async (req, res) => {
+router.get('/v1/models/detail', admin, async (req, res) => {
   try {
     const data = await getModelDetailParam(req.query.function || 'chat_v3');
     res.json(data);
@@ -205,7 +209,7 @@ router.get('/v1/models/detail', async (req, res) => {
 });
 
 /** 强制刷新上游目录（运维/面板按钮用）。 */
-router.post('/v1/models/refresh', async (req, res) => {
+router.post('/v1/models/refresh', admin, async (req, res) => {
   try {
     const cat = await catalog.listWithStatus({ force: true });
     res.json({

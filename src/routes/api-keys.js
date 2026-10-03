@@ -18,6 +18,32 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 // ===== 首登 setup（库内无 login key 时开放）=====
 
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
+
+/**
+ * 首登端点的准入判定。
+ *
+ * 该端点无鉴权（库内尚无 login key），若不设闸门，外部页面可用跨源简单请求
+ * （text/plain，不触发预检）抢占首登并把合法用户锁在门外。
+ * 判定为「浏览器发起的跨站请求」时拒绝；无 Origin 的非浏览器调用（CLI/curl）
+ * 与同源请求（含经 LAN IP 访问面板）放行。
+ */
+function setupOriginAllowed(req) {
+  const fetchSite = String(req.headers['sec-fetch-site'] || '').toLowerCase();
+  if (fetchSite === 'cross-site') return false;
+  if (fetchSite === 'same-origin' || fetchSite === 'none') return true;
+  const origin = String(req.headers.origin || '');
+  if (!origin) return true; // 非浏览器调用（CLI 初始化 / curl）
+  try {
+    const host = new URL(origin).hostname;
+    if (LOOPBACK_HOSTS.has(host)) return true;
+    const selfHost = String(req.headers.host || '').replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    return !!selfHost && host === selfHost;
+  } catch {
+    return false;
+  }
+}
+
 router.get('/setup/status', (req, res) => {
   res.json({
     object: 'setup_status',
@@ -27,6 +53,15 @@ router.get('/setup/status', (req, res) => {
 });
 
 router.post('/setup/login-key', (req, res) => {
+  if (!setupOriginAllowed(req)) {
+    return res.status(403).json({
+      error: {
+        message: '首登端点仅接受本机来源的请求。请在服务器上打开管理面板，或执行 CLI：node scripts/login-key.js create',
+        type: 'forbidden',
+        code: 'SETUP_ORIGIN_DENIED',
+      },
+    });
+  }
   if (apiKeys.hasLoginKey()) {
     return res.status(403).json({
       error: {

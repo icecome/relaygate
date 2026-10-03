@@ -77,7 +77,7 @@ router.post('/v1/messages', async (req, res) => {
   const { model = 'glm-5', messages, system, max_tokens, tools, stream = true } = req.body || {};
   try {
     const { canUseModel, isVirtualModel } = require('../middleware/model-access');
-    const acc = canUseModel(req.platform, model);
+    const acc = canUseModel(req.platform, model, req.authKey || null);
     if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
       return res.status(403).json({
         error: {
