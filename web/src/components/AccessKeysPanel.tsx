@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Modal from './Modal';
 import { Note, ICON } from './ui';
 import { useToast } from './Toast';

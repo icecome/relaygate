@@ -1,9 +1,3 @@
-export interface ApiError {
-  status: number;
-  message: string;
-  type?: string;
-}
-
 export class ApiError extends Error {
   status: number;
   type?: string;

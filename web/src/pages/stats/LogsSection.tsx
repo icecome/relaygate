@@ -44,7 +44,7 @@ export default function LogsSection() {
   const pageSize = 50;
 
   const load = useCallback(
-    (p = page) => {
+    (p: number) => {
       if (!key) return;
       getTraffic({ page: p, pageSize, status: status || undefined }, key)
         .then((d) => {
@@ -58,7 +58,7 @@ export default function LogsSection() {
         })
         .catch((e: Error) => setErr(e.message));
     },
-    [key, pageSize, status, page],
+    [key, status],
   );
 
   const loadSseStatus = useCallback(() => {
@@ -78,7 +78,7 @@ export default function LogsSection() {
 
   useEffect(() => {
     if (key) load(1);
-  }, [key, status]);
+  }, [key, load]);
 
   useEffect(() => {
     if (key) loadSseStatus();
@@ -176,7 +176,7 @@ export default function LogsSection() {
         >
           {mode === 'feed' ? '切换为表格' : '切换为自然语言'}
         </button>
-        <button type="button" className="btn btn-ghost" onClick={() => load()}>
+        <button type="button" className="btn btn-ghost" onClick={() => load(page)}>
           刷新日志
         </button>
         {sseEnabled && (

@@ -104,7 +104,7 @@ export default function TokenStats() {
       <div className="flex flex-wrap items-center gap-2">
         <div className="seg-track" role="group" aria-label="统计区间">
           {DAY_OPTIONS.map((d) => (
-            <button key={d} type="button" className="seg-tab" aria-selected={days === d} onClick={() => setDays(d)}>
+            <button key={d} type="button" className="seg-tab" aria-pressed={days === d} onClick={() => setDays(d)}>
               近 {d} 日
             </button>
           ))}

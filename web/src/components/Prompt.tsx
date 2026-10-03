@@ -49,11 +49,11 @@ export function PromptProvider({ children }: { children: ReactNode }) {
         >
           {state.input && (
             <div className="mb-3">
-              <label className="block text-xs font-medium text-ink-soft mb-2">{state.input.label}</label>
+              <label className="block text-xs font-medium text-ink-soft mb-2" htmlFor="prompt-input">{state.input.label}</label>
               <input
+                id="prompt-input"
                 className="field w-full"
                 value={inputVal}
-                autoFocus
                 onChange={(e) => setInputVal(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter') close(inputVal);

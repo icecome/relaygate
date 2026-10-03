@@ -762,12 +762,17 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
               {EVENT_META.map((ev) => {
                 const on = notify.events?.[ev.id] !== false;
                 return (
-                  <label key={ev.id} className="flex items-center justify-between gap-3 px-4 py-2.5 cursor-pointer hover:bg-surf-soft transition-colors">
+                  <label
+                    key={ev.id}
+                    htmlFor={`ev-${ev.id}`}
+                    className="flex items-center justify-between gap-3 px-4 py-2.5 cursor-pointer hover:bg-surf-soft transition-colors"
+                  >
                     <div className="min-w-0">
                       <div className="text-sm text-ink">{ev.label}</div>
                       <div className="text-xs text-ink-faint truncate">{ev.hint}</div>
                     </div>
                     <input
+                      id={`ev-${ev.id}`}
                       type="checkbox"
                       className="w-4 h-4 accent-acc shrink-0"
                       checked={on}

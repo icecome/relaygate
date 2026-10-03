@@ -107,11 +107,13 @@
   .seg-tab {
     @apply shrink-0 px-[15px] py-1.5 rounded-[7px] text-[13px] font-medium whitespace-nowrap text-ink-soft transition-colors;
   }
-  .seg-tab:hover:not([aria-selected='true']) {
+  .seg-tab:hover:not([aria-selected='true']):not([aria-pressed='true']) {
     @apply text-ink;
     background: rgba(255, 255, 255, 0.6);
   }
-  .seg-tab[aria-selected='true'] {
+  /* tablist 用 aria-selected；纯筛选按钮组用 aria-pressed，两者共用同一套选中样式 */
+  .seg-tab[aria-selected='true'],
+  .seg-tab[aria-pressed='true'] {
     @apply bg-surf text-ink font-semibold shadow-[0_1px_2px_rgba(16,24,40,0.08),0_2px_4px_rgba(16,24,40,0.06)];
   }
 

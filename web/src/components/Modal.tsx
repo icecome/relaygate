@@ -116,14 +116,15 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby={titleId}
+      role="presentation"
     >
       <div
         ref={panelRef}
         tabIndex={-1}
         className={`card shadow-pop my-auto animate-pop overflow-hidden flex flex-col max-h-[calc(100vh-3rem)] outline-none ${WIDTH[size]}`}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
       >
         <div className="shrink-0 px-5 pt-4 pb-3 border-b border-line">
           <h2 className="text-sm font-semibold text-ink" id={titleId}>

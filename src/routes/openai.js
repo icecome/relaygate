@@ -187,14 +187,6 @@ router.post('/v1/chat/completions', async (req, res) => {
     return;
   }
 
-  // T8：按模型能力降级 reasoning_effort（非 reasoning 模型剥离该字段）
-  const modelOpts = config.resolveModelOptions(model);
-  const modelMeta = { reasoning: modelOpts.reasoning === true };
-  if (body.reasoning_effort != null && modelMeta.reasoning === false) {
-    // 非 reasoning 模型：剥离 reasoning_effort，避免上游行为异常
-    delete body.reasoning_effort;
-  }
-
   // ===== 密钥权限 + 平台路由 =====
   // 通用密钥（all）：虚拟模型 / 按模型名自动分派 trae|workbuddy
   // 平台密钥：仅本平台；虚拟模型与外平台模型拒绝

@@ -8,6 +8,7 @@
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
     "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js",
+    "lint": "npm --prefix web run lint",
     "test:unit": "node src/test/unit.test.js",
     "test:growth": "node src/test/growth.test.js",
     "test:security": "node src/test/security.test.js"
