@@ -5,22 +5,22 @@
  * 独立于每日签到链：面板可设置刷新间隔（分钟），进程内 setInterval 周期执行，
  * 与签到后的手动刷新互斥（running 标志），刷新过程不阻塞任何请求（不占用账号池租约）。
  */
-const fs = require('fs');
-const config = require('../config');
 const pool = require('../credentials/pool');
 const { refreshBalanceAllEnabled } = require('../upstream/balance');
 const { checkCreditAlerts } = require('./credit-alerts');
 const { appendTaskLog } = require('./task-log');
-const { writeJsonAtomic } = require('../lib/atomic-write');
-const { stateFile, resolveStateFileForRead } = require('../lib/paths');
+const { createSettingsStore } = require('../lib/settings-store');
 
-const FILE = () => stateFile('balance-refresh-settings.json');
-const readFile = () => resolveStateFileForRead('balance-refresh-settings.json', require('fs').existsSync);
+const NAME = 'balance-refresh-settings.json';
 
-const DEFAULTS = {
-  enabled: false,
-  intervalMinutes: 30,
+const SPECS = {
+  enabled: { type: 'bool', env: 'BALANCE_REFRESH_ENABLED', default: false },
+  intervalMinutes: { env: 'BALANCE_REFRESH_INTERVAL_MINUTES', default: 30, min: 5, max: 1440 },
 };
+
+const store = createSettingsStore({ name: NAME, specs: SPECS });
+
+const FILE = () => store.FILE();
 
 let timer = null;
 let running = false;
@@ -32,50 +32,14 @@ const state = {
   running: false,
 };
 
-function clampMinutes(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return null;
-  return Math.min(Math.max(Math.round(v), 5), 1440);
-}
-
-function readStored() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(readFile(), 'utf-8'));
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch {
-    return {};
-  }
-}
-
-/** 生效配置：文件 > env（BALANCE_REFRESH_ENABLED / BALANCE_REFRESH_INTERVAL_MINUTES）> 默认。 */
+/** 生效配置：文件 > env > 默认。 */
 function getEffective() {
-  const stored = readStored();
-  let enabled = stored.enabled;
-  if (enabled == null) {
-    enabled = process.env.BALANCE_REFRESH_ENABLED != null
-      ? process.env.BALANCE_REFRESH_ENABLED !== 'false' && process.env.BALANCE_REFRESH_ENABLED !== '0'
-      : DEFAULTS.enabled;
-  }
-  let intervalMinutes = DEFAULTS.intervalMinutes;
-  const fromEnv = process.env.BALANCE_REFRESH_INTERVAL_MINUTES;
-  const src = stored.intervalMinutes != null && stored.intervalMinutes !== '' ? stored.intervalMinutes : fromEnv;
-  if (src != null && src !== '') {
-    const n = clampMinutes(src);
-    if (n != null) intervalMinutes = n;
-  }
-  return { enabled: !!enabled, intervalMinutes };
+  return store.getEffective();
 }
 
 /** 保存配置，返回生效值。 */
 function save(partial) {
-  const stored = readStored();
-  if (typeof partial.enabled === 'boolean') stored.enabled = partial.enabled;
-  if (partial.intervalMinutes != null && partial.intervalMinutes !== '') {
-    const n = clampMinutes(partial.intervalMinutes);
-    if (n != null) stored.intervalMinutes = n;
-  }
-  writeJsonAtomic(FILE(), stored);
-  return getEffective();
+  return store.save(partial);
 }
 
 /**

@@ -24,37 +24,32 @@ const { notify } = require('../notify');
 const { appendTaskLog } = require('./task-log');
 const { writeFileAtomic, writeJsonAtomic } = require('../lib/atomic-write');
 const { stateFile, resolveStateFileForRead } = require('../lib/paths');
+const { createSettingsStore } = require('../lib/settings-store');
 
-const STATE_FILE = () => process.env.BACKUP_STATE_FILE
-  ? path.resolve(process.env.BACKUP_STATE_FILE)
-  : stateFile('backup-state.json');
-const readStateFile = () => (process.env.BACKUP_STATE_FILE
-  ? path.resolve(process.env.BACKUP_STATE_FILE)
-  : resolveStateFileForRead('backup-state.json', fs.existsSync));
-const DEFAULT_DIR = () => path.join(config.ROOT, 'backups');
-
-const DEFAULTS = {
-  enabled: false,
-  dir: null,
-  keep: 5,
-  intervalHours: 24,
-};
+const STATE_NAME = 'backup-state.json';
+const fromEnvState = () => (process.env.BACKUP_STATE_FILE || '').trim();
+const STATE_FILE = () => (fromEnvState() ? path.resolve(fromEnvState()) : stateFile(STATE_NAME));
+const readStateFile = () =>
+  (fromEnvState() ? path.resolve(fromEnvState()) : resolveStateFileForRead(STATE_NAME, fs.existsSync));
 
 function defaultDir() {
   return path.join(config.ROOT, 'backups');
 }
 
-function clampKeep(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return null;
-  return Math.min(Math.max(Math.round(v), 1), 50);
-}
+const SETTINGS_SPECS = {
+  enabled: { type: 'bool', env: 'BACKUP_ENABLED', default: false },
+  // dir 为路径字符串，空值不回落 env（env 已单独处理），且 keep 在 save 时接受空串
+  dir: { env: 'BACKUP_DIR', default: '', saveEmpty: false, transform: (s) => path.resolve(s) },
+  keep: { env: 'BACKUP_KEEP', default: 5, min: 1, max: 50 },
+  intervalHours: { env: 'BACKUP_INTERVAL_HOURS', default: 24, min: 1, max: 168 },
+};
 
-function clampHours(n) {
-  const v = Number(n);
-  if (!Number.isFinite(v)) return null;
-  return Math.min(Math.max(Math.round(v), 1), 168);
-}
+const settings = createSettingsStore({
+  name: STATE_NAME,
+  specs: SETTINGS_SPECS,
+  fileOf: STATE_FILE,
+  readFileOf: readStateFile,
+});
 
 function readState() {
   try {
@@ -73,35 +68,16 @@ function writeState(patch) {
 
 /** 生效配置：文件 > env > 默认。 */
 function getEffective() {
-  const st = readState();
-  const envEnabled = process.env.BACKUP_ENABLED != null
-    ? process.env.BACKUP_ENABLED !== 'false' && process.env.BACKUP_ENABLED !== '0'
-    : null;
-  let enabled = st.enabled;
-  if (enabled == null) enabled = envEnabled != null ? envEnabled : DEFAULTS.enabled;
-  const dir = st.dir && String(st.dir).trim() ? path.resolve(String(st.dir).trim()) : (process.env.BACKUP_DIR ? path.resolve(process.env.BACKUP_DIR) : defaultDir());
-  let keep = st.keep != null && st.keep !== '' ? st.keep : process.env.BACKUP_KEEP;
-  let keepN = keep != null && keep !== '' ? clampKeep(keep) : null;
-  if (keepN == null) keepN = DEFAULTS.keep;
-  let hours = st.intervalHours != null && st.intervalHours !== '' ? st.intervalHours : process.env.BACKUP_INTERVAL_HOURS;
-  let hoursN = hours != null && hours !== '' ? clampHours(hours) : null;
-  if (hoursN == null) hoursN = DEFAULTS.intervalHours;
-  return { enabled: !!enabled, dir, keep: keepN, intervalHours: hoursN };
+  const eff = settings.getEffective();
+  // dir 缺省回落到默认目录（非 env，已在 spec 内处理）；文件与 env 皆空时取默认目录
+  const dir = eff.dir && String(eff.dir).trim()
+    ? path.resolve(String(eff.dir).trim())
+    : (process.env.BACKUP_DIR ? path.resolve(process.env.BACKUP_DIR) : defaultDir());
+  return { ...eff, dir };
 }
 
 function save(partial) {
-  const st = readState();
-  if (typeof partial.enabled === 'boolean') st.enabled = partial.enabled;
-  if (partial.dir != null && String(partial.dir).trim() !== '') st.dir = String(partial.dir).trim();
-  if (partial.keep != null && partial.keep !== '') {
-    const n = clampKeep(partial.keep);
-    if (n != null) st.keep = n;
-  }
-  if (partial.intervalHours != null && partial.intervalHours !== '') {
-    const n = clampHours(partial.intervalHours);
-    if (n != null) st.intervalHours = n;
-  }
-  writeState(st);
+  const st = settings.save(partial);
   return getEffective();
 }
 

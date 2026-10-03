@@ -3,15 +3,13 @@
  * notify/settings.js — 通知渠道配置读写。
  * 存储：.trae-api/notify-settings.json（本机文件，不进代码库）。
  * 优先级：配置文件非空值 > .env 环境变量 > 空（渠道关闭）。
+ *
+ * 字段读写与 clamp 由 lib/settings-store 承担；事件开关与自定义事件名
+ * （正则白名单）属通知领域独有逻辑，仍在本文件维护。
  */
-const fs = require('fs');
-const path = require('path');
-const config = require('../config');
-const { writeJsonAtomic } = require('../lib/atomic-write');
-const { stateFile, resolveStateFileForRead } = require('../lib/paths');
+const { createSettingsStore } = require('../lib/settings-store');
 
-const FILE = stateFile('notify-settings.json');
-const readFile = () => resolveStateFileForRead('notify-settings.json', fs.existsSync);
+const NAME = 'notify-settings.json';
 
 const FIELDS = [
   'webhookUrl',
@@ -24,6 +22,18 @@ const FIELDS = [
   'telegramBotToken',
   'telegramChatId',
 ];
+
+const ENV_MAP = {
+  webhookUrl: 'NOTIFY_WEBHOOK_URL',
+  webhookMethod: 'NOTIFY_WEBHOOK_METHOD',
+  webhookHeaders: 'NOTIFY_WEBHOOK_HEADERS',
+  webhookTitleKey: 'NOTIFY_WEBHOOK_TITLE_KEY',
+  webhookContentKey: 'NOTIFY_WEBHOOK_CONTENT_KEY',
+  serverChanSendKey: 'SERVERCHAN_SEND_KEY',
+  pushPlusToken: 'PUSHPLUS_TOKEN',
+  telegramBotToken: 'TELEGRAM_BOT_TOKEN',
+  telegramChatId: 'TELEGRAM_CHAT_ID',
+};
 
 /** 可开关的事件类型；未显式保存时默认全部开启。 */
 const EVENTS = [
@@ -39,25 +49,18 @@ const EVENTS = [
   'backup_failed',
 ];
 
-const ENV_MAP = {
-  webhookUrl: 'NOTIFY_WEBHOOK_URL',
-  webhookMethod: 'NOTIFY_WEBHOOK_METHOD',
-  webhookHeaders: 'NOTIFY_WEBHOOK_HEADERS',
-  webhookTitleKey: 'NOTIFY_WEBHOOK_TITLE_KEY',
-  webhookContentKey: 'NOTIFY_WEBHOOK_CONTENT_KEY',
-  serverChanSendKey: 'SERVERCHAN_SEND_KEY',
-  pushPlusToken: 'PUSHPLUS_TOKEN',
-  telegramBotToken: 'TELEGRAM_BOT_TOKEN',
-  telegramChatId: 'TELEGRAM_CHAT_ID',
-};
+// 渠道字段：env 兜底键取自 ENV_MAP；save 接受空串（空串即关闭该渠道）
+const SPECS = Object.fromEntries(
+  FIELDS.map((f) => [f, { env: ENV_MAP[f], default: '', saveEmpty: true }]),
+);
+
+const store = createSettingsStore({ name: NAME, specs: SPECS });
 
 function readStored() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(readFile(), 'utf-8'));
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch {
-    return {};
-  }
+  return store.readStored();
+}
+function writeStored(stored) {
+  return store.writeStored(stored);
 }
 
 function envOf(field) {
@@ -94,7 +97,7 @@ function addEvent(event, enabledFlag) {
   const stored = readStored();
   stored.events = stored.events && typeof stored.events === 'object' ? stored.events : {};
   stored.events[id] = enabledFlag !== false;
-  writeJsonAtomic(FILE, stored);
+  writeStored(stored);
   return true;
 }
 
@@ -103,7 +106,7 @@ function removeEvent(event) {
   const stored = readStored();
   if (stored.events && typeof stored.events === 'object' && event in stored.events) {
     delete stored.events[event];
-    writeJsonAtomic(FILE, stored);
+    writeStored(stored);
     return true;
   }
   return false;
@@ -112,11 +115,7 @@ function removeEvent(event) {
 /** 合并后的生效配置（用于展示与发送）。 */
 function getEffective() {
   const stored = readStored();
-  const out = {};
-  for (const f of FIELDS) {
-    const v = typeof stored[f] === 'string' ? stored[f].trim() : '';
-    out[f] = v || envOf(f);
-  }
+  const out = store.getEffective();
   out.events = getEvents(stored);
   return out;
 }
@@ -137,8 +136,18 @@ function save(partial) {
       if (!(k in EVENTS) && k !== 'merge' && typeof v === 'boolean') stored.events[k] = v;
     }
   }
-  writeJsonAtomic(FILE, stored);
+  writeStored(stored);
   return getEffective();
 }
 
-module.exports = { FIELDS, EVENTS, getEffective, save, isEventEnabled, addEvent, removeEvent, FILE, readFile };
+module.exports = {
+  FIELDS,
+  EVENTS,
+  getEffective,
+  save,
+  isEventEnabled,
+  addEvent,
+  removeEvent,
+  FILE: store.FILE(),
+  readFile: store.readFile,
+};

@@ -14,77 +14,34 @@
  */
 const fs = require('fs');
 const path = require('path');
-const config = require('../config');
-const { writeJsonAtomic } = require('../lib/atomic-write');
+const { createSettingsStore } = require('../lib/settings-store');
 const { stateFile, resolveStateFileForRead } = require('../lib/paths');
 
-const FILE = () => process.env.ROTATE_SETTINGS_FILE
-  ? path.resolve(process.env.ROTATE_SETTINGS_FILE)
-  : stateFile('rotate-settings.json');
-const readFile = () => (process.env.ROTATE_SETTINGS_FILE
-  ? path.resolve(process.env.ROTATE_SETTINGS_FILE)
-  : resolveStateFileForRead('rotate-settings.json', fs.existsSync));
+const NAME = 'rotate-settings.json';
+const fromEnvFile = () => (process.env.ROTATE_SETTINGS_FILE || '').trim();
 
-const DEFAULTS = {
-  enabled: true,
-  intervalMinutes: 240,
-  stayMs: 60000,
-  authDir: '',
-  excludeUids: '',
-  switchBack: true,
+const SPECS = {
+  enabled: { type: 'bool', env: 'ROTATE_ENABLED', default: true },
+  // 与旧实现等价：save 收到非法数值时写默认值而非跳过；空串是有效值（清空该字段）
+  intervalMinutes: { env: 'ROTATE_INTERVAL_MINUTES', default: 240, min: 30, max: 10080, invalidToDefault: true },
+  stayMs: { env: 'ROTATE_STAY_MS', default: 60000, min: 10000, max: 3600000, invalidToDefault: true },
+  // authDir 的 env 为 ROTATE_AUTH_DIR（与字段名不同）；文件空串视为未设置（回落 env）
+  authDir: { env: 'ROTATE_AUTH_DIR', default: '', saveEmpty: true },
+  // excludeUids 与 authDir 不同：文件空串是有效值（空列表），不再回落 env
+  excludeUids: { env: 'ROTATE_EXCLUDE_UIDS', default: '', saveEmpty: true, keepEmpty: true },
+  switchBack: { type: 'bool', env: 'ROTATE_SWITCH_BACK', default: true },
 };
 
-function clampInt(v, min, max, dflt) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return dflt;
-  return Math.min(Math.max(Math.round(n), min), max);
-}
+const store = createSettingsStore({
+  name: NAME,
+  specs: SPECS,
+  fileOf: () => (fromEnvFile() ? path.resolve(fromEnvFile()) : stateFile(NAME)),
+  readFileOf: () => (fromEnvFile() ? path.resolve(fromEnvFile()) : resolveStateFileForRead(NAME, fs.existsSync)),
+});
 
-function readStored() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(readFile(), 'utf-8'));
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch {
-    return {};
-  }
-}
-
-/** 生效配置：文件 > env（ROTATE_ENABLED / ROTATE_INTERVAL_MINUTES / ROTATE_STAY_MS / ROTATE_AUTH_DIR / ROTATE_EXCLUDE_UIDS / ROTATE_SWITCH_BACK）> 默认。 */
-function getEffective() {
-  const st = readStored();
-  const envBool = (name, dflt) => {
-    const v = process.env[name];
-    if (v == null || v === '') return dflt;
-    return v !== 'false' && v !== '0' && v !== 'off';
-  };
-  const enabled = st.enabled != null ? !!st.enabled : envBool('ROTATE_ENABLED', DEFAULTS.enabled);
-  const intervalMinutes = st.intervalMinutes != null && st.intervalMinutes !== ''
-    ? clampInt(st.intervalMinutes, 30, 10080, DEFAULTS.intervalMinutes)
-    : clampInt(process.env.ROTATE_INTERVAL_MINUTES, 30, 10080, DEFAULTS.intervalMinutes);
-  const stayMs = st.stayMs != null && st.stayMs !== ''
-    ? clampInt(st.stayMs, 10000, 3600000, DEFAULTS.stayMs)
-    : clampInt(process.env.ROTATE_STAY_MS, 10000, 3600000, DEFAULTS.stayMs);
-  const authDir = st.authDir && String(st.authDir).trim()
-    ? String(st.authDir).trim()
-    : (process.env.ROTATE_AUTH_DIR ? String(process.env.ROTATE_AUTH_DIR).trim() : '');
-  const excludeUids = st.excludeUids != null
-    ? String(st.excludeUids)
-    : (process.env.ROTATE_EXCLUDE_UIDS || '');
-  const switchBack = st.switchBack != null ? !!st.switchBack : envBool('ROTATE_SWITCH_BACK', DEFAULTS.switchBack);
-  return { enabled, intervalMinutes, stayMs, authDir, excludeUids, switchBack };
-}
-
-/** 保存传入字段（白名单），返回生效配置。 */
-function save(partial) {
-  const st = readStored();
-  if (typeof partial.enabled === 'boolean') st.enabled = partial.enabled;
-  if (partial.intervalMinutes != null && partial.intervalMinutes !== '') st.intervalMinutes = clampInt(partial.intervalMinutes, 30, 10080, DEFAULTS.intervalMinutes);
-  if (partial.stayMs != null && partial.stayMs !== '') st.stayMs = clampInt(partial.stayMs, 10000, 3600000, DEFAULTS.stayMs);
-  if (partial.authDir != null) st.authDir = String(partial.authDir).trim();
-  if (partial.excludeUids != null) st.excludeUids = String(partial.excludeUids).trim();
-  if (typeof partial.switchBack === 'boolean') st.switchBack = partial.switchBack;
-  writeJsonAtomic(FILE(), st);
-  return getEffective();
-}
-
-module.exports = { getEffective, save, FILE, DEFAULTS };
+module.exports = {
+  getEffective: store.getEffective,
+  save: store.save,
+  FILE: () => store.FILE(),
+  DEFAULTS: Object.fromEntries(Object.entries(SPECS).map(([k, s]) => [k, s.default])),
+};

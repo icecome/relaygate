@@ -2,16 +2,9 @@
 /**
  * jobs/scheduler-settings.js — 定时任务可调配置。
  * 存储：.trae-api/scheduler-settings.json；优先级：文件 > .env > 默认值。
+ * 读写与夹紧由 lib/settings-store 承担，本文件只声明字段表。
  */
-const fs = require('fs');
-const path = require('path');
-const config = require('../config');
-const { writeJsonAtomic } = require('../lib/atomic-write');
-const { stateFile, resolveStateFileForRead } = require('../lib/paths');
-
-// 读：新位置优先、旧位置回退；写：一律落新位置（首次保存即完成迁移）
-const FILE = stateFile('scheduler-settings.json');
-const readFile = () => resolveStateFileForRead('scheduler-settings.json', fs.existsSync);
+const { createSettingsStore } = require('../lib/settings-store');
 
 /** key -> { env, default, min, max } */
 const SPECS = {
@@ -36,53 +29,14 @@ const SPECS = {
 
 const FIELDS = Object.keys(SPECS);
 
-function clamp(n, min, max) {
-  if (!Number.isFinite(n)) return null;
-  return Math.min(Math.max(Math.round(n), min), max);
-}
+// 读：新位置优先、旧位置回退；写：一律落新位置（首次保存即完成迁移）
+const store = createSettingsStore({ name: 'scheduler-settings.json', specs: SPECS });
 
-function readStored() {
-  try {
-    const raw = JSON.parse(fs.readFileSync(readFile(), 'utf-8'));
-    return raw && typeof raw === 'object' ? raw : {};
-  } catch {
-    return {};
-  }
-}
-
-function resolveField(key, stored) {
-  const spec = SPECS[key];
-  const fromFile = stored[key];
-  if (fromFile != null && fromFile !== '') {
-    const n = clamp(Number(fromFile), spec.min, spec.max);
-    if (n != null) return n;
-  }
-  const fromEnv = process.env[spec.env];
-  if (fromEnv != null && fromEnv !== '') {
-    const n = clamp(Number(fromEnv), spec.min, spec.max);
-    if (n != null) return n;
-  }
-  return spec.default;
-}
-
-/** 合并后的生效调度配置。 */
-function getEffective() {
-  const stored = readStored();
-  const out = {};
-  for (const key of FIELDS) out[key] = resolveField(key, stored);
-  return out;
-}
-
-/** 保存传入字段；返回生效配置。 */
-function save(partial) {
-  const stored = readStored();
-  for (const key of FIELDS) {
-    if (partial[key] == null || partial[key] === '') continue;
-    const n = clamp(Number(partial[key]), SPECS[key].min, SPECS[key].max);
-    if (n != null) stored[key] = n;
-  }
-  writeJsonAtomic(FILE, stored);
-  return getEffective();
-}
-
-module.exports = { FIELDS, SPECS, getEffective, save, FILE, readFile };
+module.exports = {
+  FIELDS,
+  SPECS,
+  getEffective: store.getEffective,
+  save: store.save,
+  FILE: store.FILE(),
+  readFile: store.readFile,
+};
