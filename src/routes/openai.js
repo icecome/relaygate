@@ -21,6 +21,7 @@ const availability = require('../models/availability');
 const config = require('../config');
 const modelRouter = require('../model-router');
 const { canUseModel, isWorkBuddyOnlyModel } = require('../middleware/model-access');
+const { createLineFeeder } = require('../lib/sse-lines');
 
 const router = Router();
 
@@ -385,14 +386,9 @@ router.post('/v1/chat/completions', async (req, res) => {
 
         const up = await llmUtilsChat(normalizeTraeMessages(messages), model, true, { ...callOpts, accountId });
         req.accountId = accountId;
-        let buffer = '';
-        await consumeStream(up.body, (text) => {
-          buffer += text;
-          const lines = buffer.split('\n');
-          buffer = lines.pop() || '';
-          for (const line of lines) handler.feedLine(line);
-        }, { requestId: completionId, accountId, model });
-        if (buffer.trim()) handler.feedLine(buffer);
+        const feeder = createLineFeeder((line) => handler.feedLine(line));
+        await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model });
+        feeder.flush();
         handler.flushToolAccum();
         ensureStart();
         if (!finished && !res.writableEnded) {

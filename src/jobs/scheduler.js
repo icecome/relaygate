@@ -252,8 +252,9 @@ async function runKeepalive() {
   } catch (e) {
     state.lastError = `keepalive: ${e.message}`;
     console.error('[scheduler] keepalive error', e.message);
-    appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: 0, failed: failed || 1, total: failed, error: e.message });
-    return { total: failed, failed: failed || 1, error: e.message };
+    // catch 中无法取得账号总数（accounts 在 try 内声明），total 用 0 表示未知，与其它任务 catch 约定一致
+    appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: 0, failed: failed || 1, total: 0, error: e.message });
+    return { total: 0, failed: failed || 1, error: e.message };
   }
 }
 

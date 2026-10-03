@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
+const { round2, round4 } = require('../lib/round');
 
 /** 日志根目录。可用 WB_LOG_DIR 覆盖（测试或多机部署）。 */
 function logRoot() {
@@ -37,8 +38,6 @@ const CACHE_DIR = () => {
 const WRITE_DIR = () => path.join(stateDir(), 'client-log-cache');
 /** 缓存结构版本。解析口径变更时递增，使旧缓存失效。 */
 const CACHE_VERSION = 4;
-const round2 = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
-const round4 = (n) => (Number.isFinite(n) ? Math.round(n * 10000) / 10000 : 0);
 
 /** 递归收集 jsonl 文件（含 mtime/size，用于增量判定）。 */
 function listJsonlFiles(root) {

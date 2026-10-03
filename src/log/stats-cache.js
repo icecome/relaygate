@@ -19,6 +19,7 @@ const config = require('../config');
 const { readTrafficLines, isMetered } = require('./stats');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
+const { round2, round4 } = require('../lib/round');
 
 // 读优先新位置，旧位置兜底（缓存本身可重建，不做逐文件迁移）
 const CACHE_DIR = () => {
@@ -32,8 +33,6 @@ const WRITE_DIR = () => path.join(stateDir(), 'stats-cache');
 const CACHE_TTL_MS = 60 * 60 * 1000;
 /** 桶结构版本。新增字段使旧缓存失效，避免用缺 metered 的旧桶算出错误的覆盖率。 */
 const BUCKET_VERSION = 2;
-const round2 = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
-const round4 = (n) => (Number.isFinite(n) ? Math.round(n * 10000) / 10000 : 0);
 
 function todayKey() {
   const d = new Date();

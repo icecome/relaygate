@@ -8,6 +8,7 @@
  */
 const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
+const { createLineFeeder } = require('../lib/sse-lines');
 
 function resolveApiKey(p) {
   if (p.apiKey) return p.apiKey;
@@ -309,52 +310,52 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
     }
     const reader = up.body.getReader();
     const dec = new TextDecoder();
-    let buffer = '';
     let usage = null;
     let sawDone = false;
     let sawToolCalls = false;
     let lastFinish = null;
+    const feeder = createLineFeeder(handleLine);
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
-      buffer += dec.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        const t = line.trim();
-        if (!t) continue;
-        if (!t.startsWith('data:')) {
-          if (!res.writableEnded) res.write(t + '\n');
-          continue;
-        }
-        const payload = t.slice(5).trim();
-        if (payload === '[DONE]') {
-          sawDone = true;
-          continue;
-        }
-        let ev;
-        try { ev = JSON.parse(payload); } catch {
-          if (!res.writableEnded) res.write(t + '\n');
-          continue;
-        }
-        // 裁剪 usage 到官方三字段；记录后合并进末帧
-        if (ev.usage) {
-          usage = sanitizeUsage(ev.usage);
-          delete ev.usage;
-        }
-        // 去掉可能触发客户端校验的非标字段；并记录 tool_calls / finish_reason
-        if (ev.choices && ev.choices[0] && ev.choices[0].delta) {
-          const d = ev.choices[0].delta;
-          if (d.reasoning_content) delete d.reasoning_content;
-          if (Array.isArray(d.tool_calls) && d.tool_calls.length) sawToolCalls = true;
-        }
-        if (ev.choices && ev.choices[0] && ev.choices[0].finish_reason) {
-          lastFinish = ev.choices[0].finish_reason;
-          if (sawToolCalls) ev.choices[0].finish_reason = 'tool_calls';
-        }
-        if (shownModel && ev.model) ev.model = shownModel;
-        if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`);
+      feeder.feed(dec.decode(value, { stream: true }));
+    }
+    feeder.flush();
+
+    function handleLine(line) {
+      const t = line.trim();
+      if (!t) return;
+      if (!t.startsWith('data:')) {
+        if (!res.writableEnded) res.write(t + '\n');
+        return;
       }
+      const payload = t.slice(5).trim();
+      if (payload === '[DONE]') {
+        sawDone = true;
+        return;
+      }
+      let ev;
+      try { ev = JSON.parse(payload); } catch {
+        if (!res.writableEnded) res.write(t + '\n');
+        return;
+      }
+      // 裁剪 usage 到官方三字段；记录后合并进末帧
+      if (ev.usage) {
+        usage = sanitizeUsage(ev.usage);
+        delete ev.usage;
+      }
+      // 去掉可能触发客户端校验的非标字段；并记录 tool_calls / finish_reason
+      if (ev.choices && ev.choices[0] && ev.choices[0].delta) {
+        const d = ev.choices[0].delta;
+        if (d.reasoning_content) delete d.reasoning_content;
+        if (Array.isArray(d.tool_calls) && d.tool_calls.length) sawToolCalls = true;
+      }
+      if (ev.choices && ev.choices[0] && ev.choices[0].finish_reason) {
+        lastFinish = ev.choices[0].finish_reason;
+        if (sawToolCalls) ev.choices[0].finish_reason = 'tool_calls';
+      }
+      if (shownModel && ev.model) ev.model = shownModel;
+      if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
     if (usage && !res.writableEnded) {
       const id = 'chatcmpl-wb-' + Date.now().toString(36);

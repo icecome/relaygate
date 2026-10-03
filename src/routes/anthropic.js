@@ -12,6 +12,7 @@ const { createStreamHandler } = require('../transform/sse');
 const { exportAnthropic } = require('../transform/emitters');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
+const { createLineFeeder } = require('../lib/sse-lines');
 
 const router = Router();
 
@@ -137,13 +138,9 @@ router.post('/v1/messages', async (req, res) => {
     const { result: up, accountId } = await pool.run(async (accountId) =>
       llmUtilsChat(built, model, true, { tools, max_tokens, accountId }));
     streamAccountId = accountId;
-    let buffer = '';
-    await consumeStream(up.body, (text) => {
-      buffer += text;
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) handler.feedLine(line);
-    });
+    const feeder = createLineFeeder((line) => handler.feedLine(line));
+    await consumeStream(up.body, (text) => feeder.feed(text));
+    feeder.flush();
     handler.flushToolAccum();
     if (!res.writableEnded) {
       if (hadToolCall) {

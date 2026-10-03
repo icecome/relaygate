@@ -17,6 +17,7 @@ const { createStreamHandler } = require('../transform/sse');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
+const { createLineFeeder } = require('../lib/sse-lines');
 
 const router = Router();
 
@@ -127,11 +128,10 @@ router.post('/v1/responses', async (req, res) => {
           throw e;
         }
       });
-      await consumeStream(up.body, (text) => {
-        const lines = text.split('\n');
-        // keep partial: simplify by feeding whole text split by newlines with leftover buffer
-        for (const line of lines) if (line) handler.feedLine(line.endsWith('\n') ? line : line + '\n');
-      });
+      // 保留跨块残行：上游 JSON 事件被 chunk 边界切开时，整行解析会失败并丢事件
+      const feeder = createLineFeeder((line) => handler.feedLine(line));
+      await consumeStream(up.body, (text) => feeder.feed(text));
+      feeder.flush();
       handler.flushToolAccum();
       sseWrite(res, 'response.completed', {
         type: 'response.completed',

@@ -7,6 +7,7 @@ const config = require('../config');
 const store = require('../credentials/store');
 const { notify, notifyDetail } = require('../notify');
 const { summarizeExpiry } = require('../upstream/balance');
+const { round2 } = require('../lib/round');
 
 /** 从账号快照提取临期汇总。 */
 function expiryOfAccount(acct) {
@@ -44,7 +45,6 @@ async function checkCreditAlerts(opts = {}) {
     }
   }
 
-  const round2 = (n) => Math.round(n * 100) / 100;
   expiring3d = round2(expiring3d);
   expiring7d = round2(expiring7d);
 

@@ -10,6 +10,7 @@ const oauth = require('../credentials/oauth');
 const { checkinAccount, checkinAllEnabled } = require('../upstream/checkin');
 const { refreshBalance, refreshBalanceAllEnabled, summarizeExpiry } = require('../upstream/balance');
 const { authenticateAdmin, checkAdminToken, extractToken } = require('../middleware/auth');
+const { round2 } = require('../lib/round');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
@@ -81,7 +82,6 @@ router.get('/summary', admin, (req, res) => {
   const enabled = list.filter((a) => a.enabled).length;
   const now = Date.now();
   const cooling = list.filter((a) => a.coolUntil && new Date(a.coolUntil).getTime() > now).length;
-  const round2 = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
   res.json({
     total: list.length,
     enabled,

@@ -10,6 +10,7 @@
  *   - model 剥离 'wb/' 前缀。
  */
 const wbAuth = require('./auth');
+const { createLineFeeder } = require('../lib/sse-lines');
 
 /** 请求体规范化（红线项）。 */
 function normalizeBody(body) {
@@ -57,41 +58,39 @@ async function chatAggregate(acct, body) {
   let finish = 'stop';
   let usage = null;
   const toolCalls = [];
-  let buffer = '';
+  const feeder = createLineFeeder((line) => {
+    const t = line.trim();
+    if (!t.startsWith('data:')) return;
+    const payload = t.slice(5).trim();
+    if (payload === '[DONE]') return;
+    let ev;
+    try { ev = JSON.parse(payload); } catch (e) { return; }
+    const choice = ev.choices && ev.choices[0];
+    if (choice) {
+      const delta = choice.delta || {};
+      if (delta.content) content += delta.content;
+      if (delta.reasoning_content) reasoning += delta.reasoning_content;
+      if (Array.isArray(delta.tool_calls)) {
+        for (const tc of delta.tool_calls) {
+          const idx = tc.index != null ? tc.index : toolCalls.length;
+          toolCalls[idx] = toolCalls[idx] || { id: tc.id || 'call_' + idx, type: 'function', function: { name: '', arguments: '' } };
+          if (tc.id) toolCalls[idx].id = tc.id;
+          if (tc.function) {
+            if (tc.function.name) toolCalls[idx].function.name += tc.function.name;
+            if (tc.function.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
+          }
+        }
+      }
+      if (choice.finish_reason) finish = choice.finish_reason;
+    }
+    if (ev.usage) usage = ev.usage;
+  });
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    buffer += dec.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t.startsWith('data:')) continue;
-      const payload = t.slice(5).trim();
-      if (payload === '[DONE]') continue;
-      let ev;
-      try { ev = JSON.parse(payload); } catch (e) { continue; }
-      const choice = ev.choices && ev.choices[0];
-      if (choice) {
-        const delta = choice.delta || {};
-        if (delta.content) content += delta.content;
-        if (delta.reasoning_content) reasoning += delta.reasoning_content;
-        if (Array.isArray(delta.tool_calls)) {
-          for (const tc of delta.tool_calls) {
-            const idx = tc.index != null ? tc.index : toolCalls.length;
-            toolCalls[idx] = toolCalls[idx] || { id: tc.id || 'call_' + idx, type: 'function', function: { name: '', arguments: '' } };
-            if (tc.id) toolCalls[idx].id = tc.id;
-            if (tc.function) {
-              if (tc.function.name) toolCalls[idx].function.name += tc.function.name;
-              if (tc.function.arguments) toolCalls[idx].function.arguments += tc.function.arguments;
-            }
-          }
-        }
-        if (choice.finish_reason) finish = choice.finish_reason;
-      }
-      if (ev.usage) usage = ev.usage;
-    }
+    feeder.feed(dec.decode(value, { stream: true }));
   }
+  feeder.flush();
   const message = { role: 'assistant', content };
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCalls.length) message.tool_calls = toolCalls;

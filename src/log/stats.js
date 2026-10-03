@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const { estimateCost } = require('../models/rates');
+const { round2, round4 } = require('../lib/round');
 
 /** 读取最近 N 天的 traffic.jsonl 行（按日期从新到旧合并，便于分页场景优先命中近期数据）。 */
 function readTrafficLines(days) {
@@ -31,14 +32,6 @@ function readTrafficLines(days) {
     rows.push(...dayRows.reverse());
   }
   return rows;
-}
-
-function round2(n) {
-  return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0;
-}
-
-function round4(n) {
-  return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : 0;
 }
 
 /** 该行是否带回上游 usage。Trae 平台多数请求带，WorkBuddy 平台目前全部不带。 */

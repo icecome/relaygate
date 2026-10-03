@@ -1487,6 +1487,41 @@ t('原子写入：写入失败返回 false 且不抛出', () => {
   assert.strictEqual(writeFileAtomic(path.join(blocker, 'sub', 'cfg.json'), 'y'), false);
 });
 
+console.log('lib/round 与 lib/sse-lines');
+t('round2 / round4：非有限值归 0，有限值按位舍入', () => {
+  const { round2, round4 } = require('../lib/round');
+  assert.strictEqual(round2(1.2345), 1.23);
+  assert.strictEqual(round2(-1.2345), -1.23);
+  assert.strictEqual(round4(1.23456), 1.2346);
+  for (const bad of [null, undefined, NaN, Infinity, 'x']) {
+    assert.strictEqual(round2(bad), 0, `round2(${String(bad)}) 应为 0`);
+    assert.strictEqual(round4(bad), 0, `round4(${String(bad)}) 应为 0`);
+  }
+});
+
+t('createLineFeeder：跨块残行被拼接后完整投递', () => {
+  const { createLineFeeder } = require('../lib/sse-lines');
+  const got = [];
+  const f = createLineFeeder((line) => got.push(line));
+  // 一个 JSON 事件被切成三块，中间块不含换行
+  f.feed('data: {"a"');
+  f.feed(':1}\ndata: {"b":2}\n');
+  f.feed('data: {"c":');
+  f.feed('3}');
+  f.flush();
+  assert.deepStrictEqual(got, ['data: {"a":1}', 'data: {"b":2}', 'data: {"c":3}']);
+});
+
+t('createLineFeeder：无换行的单行在 flush 时吐出', () => {
+  const { createLineFeeder } = require('../lib/sse-lines');
+  const got = [];
+  const f = createLineFeeder((line) => got.push(line));
+  f.feed('data: [DONE]');
+  assert.deepStrictEqual(got, [], '未遇换行前不应投递');
+  f.flush();
+  assert.deepStrictEqual(got, ['data: [DONE]']);
+});
+
 console.log('credentials/oauth state');
 t('未发起登录流程时任何 state 都被拒绝', () => {
   const oauth = require('../credentials/oauth');

@@ -22,12 +22,12 @@ const auth = require('../auth');
 const wbAuth = require('../workbuddy/auth');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
+const { round2: ROUND2 } = require('../lib/round');
 
 const BASE_PATH = '/billing/meter/get-user-request-usage';
 const PAGE_SIZE = 3000;
 const SCAN_DAYS = 30;
 const CACHE_VERSION = 1;
-const ROUND2 = (n) => (Number.isFinite(n) ? Math.round(n * 100) / 100 : 0);
 
 // 读优先新位置，旧位置兜底；写入固定新目录（缓存可重建，不做逐文件迁移）
 function cacheDir() {
