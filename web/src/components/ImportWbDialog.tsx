@@ -95,7 +95,7 @@ export default function ImportWbDialog({ open, onClose, onDone }: ImportWbDialog
           <button type="button" className="btn btn-ghost btn-sm mt-2" onClick={detectLocal} disabled={busy}>
             检测本机登录态
           </button>
-          <div role="status" className={`text-xs mt-2 ${detect.kind === 'err' ? 'text-danger' : detect.kind === 'ok' ? 'text-[#065F46]' : 'text-ink-soft'}`}>
+          <div role="status" className={`text-xs mt-2 ${detect.kind === 'err' ? 'text-danger' : detect.kind === 'ok' ? 'text-acc-hover' : 'text-ink-soft'}`}>
             {detect.msg}
           </div>
         </div>
@@ -120,7 +120,7 @@ export default function ImportWbDialog({ open, onClose, onDone }: ImportWbDialog
         </div>
 
         {status.msg && (
-          <div role="status" className={`text-xs ${status.kind === 'err' ? 'text-danger' : status.kind === 'ok' ? 'text-[#065F46]' : 'text-ink-soft'}`}>
+          <div role="status" className={`text-xs ${status.kind === 'err' ? 'text-danger' : status.kind === 'ok' ? 'text-acc-hover' : 'text-ink-soft'}`}>
             {status.msg}
           </div>
         )}

@@ -39,9 +39,9 @@ export default function SourceSwitch({
                 className={`inline-block w-[7px] h-[7px] rounded-full shrink-0 ${on ? 'bg-acc' : 'bg-[#D0D5DD]'}`}
                 aria-hidden="true"
               />
-              <span className={`text-[12.5px] font-semibold ${on ? 'text-[#065F46]' : 'text-ink'}`}>{o.label}</span>
+              <span className={`text-[12.5px] font-semibold ${on ? 'text-acc-hover' : 'text-ink'}`}>{o.label}</span>
             </div>
-            <div className={`text-[11px] mt-0.5 pl-[15px] ${on ? 'text-[#065F46] opacity-80' : 'text-ink-faint'}`}>
+            <div className={`text-[11px] mt-0.5 pl-[15px] ${on ? 'text-acc-hover opacity-80' : 'text-ink-faint'}`}>
               {o.hint}
             </div>
           </button>

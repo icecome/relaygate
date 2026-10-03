@@ -1,4 +1,17 @@
-﻿import { fmtTokens, fmtInt } from '../lib/format';
+import { fmtTokens, fmtInt } from '../lib/format';
+
+/**
+ * SVG 图形属性无法使用 Tailwind 工具类，统一引用 index.css 里的调色板变量，
+ * 避免十六进制值散落在图表代码中。
+ */
+const C = {
+  line: 'var(--line)',
+  lineStrong: 'var(--line-strong)',
+  faint: 'var(--ink-faint)',
+  acc: 'var(--acc)',
+  warn: 'var(--warn)',
+  danger: 'var(--danger)',
+} as const;
 
 /**
  * 柱状图：柱高为当日已计量 token；无数据的日子画灰柱并在轴线下标空心圈，
@@ -8,7 +21,7 @@
 export function BarChart({
   series,
   aria = '柱状图',
-  color = '#047857',
+  color = C.acc,
   showUnmeteredMark = false,
 }: {
   series: { label: string; value: number; metered?: number }[];
@@ -30,8 +43,8 @@ export function BarChart({
     const v = max - (max / ticks) * i;
     grid.push(
       <g key={`g${i}`}>
-        <line x1={padL} y1={y} x2={w - padR} y2={y} stroke="#E5E7EB" strokeWidth={1} />
-        <text x={padL - 10} y={y + 3.5} textAnchor="end" fontSize={11} fill="#667085">
+        <line x1={padL} y1={y} x2={w - padR} y2={y} style={{ stroke: C.line }} strokeWidth={1} />
+        <text x={padL - 10} y={y + 3.5} textAnchor="end" fontSize={11} style={{ fill: C.faint }}>
           {fmtTokens(v)}
         </text>
       </g>,
@@ -43,16 +56,24 @@ export function BarChart({
     const bwid = bw * 0.56;
     const bh = (s.value / max) * ih;
     const y = padT + ih - bh;
-    const fill = s.value > 0 ? color : '#D1D5DB';
+    const fill = s.value > 0 ? color : C.lineStrong;
     const rows: JSX.Element[] = [
-      <rect key={`b${i}`} x={x} y={y} width={bwid} height={Math.max(bh, s.value > 0 ? 2 : 1)} rx={2.5} fill={fill} />,
-      <text key={`t${i}`} x={x + bwid / 2} y={h - 9} textAnchor="middle" fontSize={11} fill="#667085">
+      <rect key={`b${i}`} x={x} y={y} width={bwid} height={Math.max(bh, s.value > 0 ? 2 : 1)} rx={2.5} style={{ fill }} />,
+      <text key={`t${i}`} x={x + bwid / 2} y={h - 9} textAnchor="middle" fontSize={11} style={{ fill: C.faint }}>
         {s.label.slice(5)}
       </text>,
     ];
     if (showUnmeteredMark && !s.metered) {
       rows.push(
-        <circle key={`c${i}`} cx={x + bwid / 2} cy={padT + ih - 5} r={2.6} fill="none" stroke="#667085" strokeWidth={1.4} />,
+        <circle
+          key={`c${i}`}
+          cx={x + bwid / 2}
+          cy={padT + ih - 5}
+          r={2.6}
+          fill="none"
+          style={{ stroke: C.faint }}
+          strokeWidth={1.4}
+        />,
       );
     }
     return <g key={i}>{rows}</g>;
@@ -85,11 +106,11 @@ export function CoverageChart({ series }: { series: { date: string; requests: nu
     const v = maxReq - (maxReq / 4) * i;
     grid.push(
       <g key={`g${i}`}>
-        <line x1={padL} y1={y} x2={w - padR} y2={y} stroke="#E5E7EB" />
-        <text x={padL - 10} y={y + 3.5} textAnchor="end" fontSize={11} fill="#667085">
+        <line x1={padL} y1={y} x2={w - padR} y2={y} style={{ stroke: C.line }} />
+        <text x={padL - 10} y={y + 3.5} textAnchor="end" fontSize={11} style={{ fill: C.faint }}>
           {fmtInt(Math.round(v))}
         </text>
-        <text x={w - padR + 10} y={y + 3.5} fontSize={11} fill="#667085">
+        <text x={w - padR + 10} y={y + 3.5} fontSize={11} style={{ fill: C.faint }}>
           {Math.round(100 - 25 * i)}%
         </text>
       </g>,
@@ -111,10 +132,10 @@ export function CoverageChart({ series }: { series: { date: string; requests: nu
     const cov = d.requests ? d.metered / d.requests : 0;
     return (
       <g key={i}>
-        <circle cx={px(i)} cy={pyReq(d)} r={3} fill="#047857" />
-        <circle cx={px(i)} cy={pyCov(d)} r={2.6} fill={cov > 0 ? '#B45309' : '#B91C1C'} />
+        <circle cx={px(i)} cy={pyReq(d)} r={3} style={{ fill: C.acc }} />
+        <circle cx={px(i)} cy={pyCov(d)} r={2.6} style={{ fill: cov > 0 ? C.warn : C.danger }} />
         {i % 2 === 0 && (
-          <text x={px(i)} y={h - 9} textAnchor="middle" fontSize={11} fill="#667085">
+          <text x={px(i)} y={h - 9} textAnchor="middle" fontSize={11} style={{ fill: C.faint }}>
             {d.date.slice(5)}
           </text>
         )}
@@ -125,9 +146,9 @@ export function CoverageChart({ series }: { series: { date: string; requests: nu
   return (
     <svg className="chart" viewBox={`0 0 ${w} ${h}`} role="img" aria-label="请求量与已计量占比趋势">
       {grid}
-      <path d={areaPath} fill="#047857" opacity={0.07} />
-      <path d={linePath} fill="none" stroke="#047857" strokeWidth={2} strokeLinejoin="round" />
-      <path d={covPath} fill="none" stroke="#B45309" strokeWidth={2} strokeDasharray="5 4" />
+      <path d={areaPath} style={{ fill: C.acc }} opacity={0.07} />
+      <path d={linePath} fill="none" style={{ stroke: C.acc }} strokeWidth={2} strokeLinejoin="round" />
+      <path d={covPath} fill="none" style={{ stroke: C.warn }} strokeWidth={2} strokeDasharray="5 4" />
       {dots}
     </svg>
   );

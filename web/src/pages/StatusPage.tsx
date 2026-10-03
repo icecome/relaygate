@@ -259,7 +259,7 @@ export default function StatusPage() {
           </span>
         </div>
         {rotStatus.msg && (
-          <div role="status" className={`text-xs mb-3 ${rotStatus.kind === 'ok' ? 'text-[#065F46]' : rotStatus.kind === 'err' ? 'text-danger' : ''}`}>
+          <div role="status" className={`text-xs mb-3 ${rotStatus.kind === 'ok' ? 'text-acc-hover' : rotStatus.kind === 'err' ? 'text-danger' : ''}`}>
             {rotStatus.msg}
           </div>
         )}
@@ -295,9 +295,9 @@ export default function StatusPage() {
                       <td className="cell-num">
                         {hm ? (
                           hm.error ? (
-                            <span className="text-[#B45309]">查询失败</span>
+                            <span className="text-warn">查询失败</span>
                           ) : (
-                            <span className={`${hm.isActive ? 'text-[#065F46] font-medium' : 'text-ink-faint'}`}>{hm.score ?? 0} 分{hm.statusText ? `（${hm.statusText}）` : ''}</span>
+                            <span className={`${hm.isActive ? 'text-acc-hover font-medium' : 'text-ink-faint'}`}>{hm.score ?? 0} 分{hm.statusText ? `（${hm.statusText}）` : ''}</span>
                           )
                         ) : (
                           <span className="text-ink-faint">—</span>

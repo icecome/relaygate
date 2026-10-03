@@ -150,10 +150,10 @@ export default function CreditStats() {
             desc="按请求日志的逐条估算累加，与上方的快照差分互相印证。两者口径不同，数值不必相等。"
             bodyClass="px-5 py-4"
           >
-            <BarChart series={costSeries} aria="每日估算积分消耗" color="#B45309" />
+            <BarChart series={costSeries} aria="每日估算积分消耗" color="var(--warn)" />
             <div className="legend">
               <span>
-                <i style={{ background: '#B45309' }} />
+                <i style={{ background: 'var(--warn)' }} />
                 当日估算积分
               </span>
             </div>
@@ -275,7 +275,7 @@ export default function CreditStats() {
                       <tr key={a.accountId} className="row-hover">
                         <td className="td font-medium text-ink">
                           {a.label}
-                          {a.error && <span className="ml-2 text-[11px] text-[#B45309]">（部分日取数失败）</span>}
+                          {a.error && <span className="ml-2 text-[11px] text-warn">（部分日取数失败）</span>}
                         </td>
                         <td className="td cell-num">{fmtInt(a.requests)}</td>
                         <td className="td cell-num tabular-nums">{fmtBalance(a.credit)}</td>
@@ -310,7 +310,7 @@ export default function CreditStats() {
                             <td className="td cell-num">
                               <span className="inline-flex items-center justify-end gap-2">
                                 <span className="bar" style={{ maxWidth: 160, width: '100%' }}>
-                                  <i style={{ width: `${pct}%`, background: '#047857' }} />
+                                  <i style={{ width: `${pct}%`, background: 'var(--acc)' }} />
                                 </span>
                                 <span className="text-[11.5px] text-ink-faint tabular-nums shrink-0 w-11 text-right">
                                   {offTotal ? ((m.credit / offTotal) * 100).toFixed(1) : '0.0'}%

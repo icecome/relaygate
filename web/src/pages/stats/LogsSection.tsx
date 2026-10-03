@@ -279,7 +279,7 @@ export default function LogsSection() {
                       </td>
                       <td className="td cell-num text-ink-faint">{r.durationMs != null ? `${r.durationMs}ms` : '—'}</td>
                       <td className="td cell-num text-ink-faint" title={metered ? '' : '上游未回传 usage'}>
-                        {metered ? fmtTokens(r.totalTokens) : <span className="text-[#B45309]">未计量</span>}
+                        {metered ? fmtTokens(r.totalTokens) : <span className="text-warn">未计量</span>}
                       </td>
                       <td className="td cell-num text-ink-faint">{r.estimatedCost != null ? r.estimatedCost.toFixed(2) : '—'}</td>
                       <td className="td">

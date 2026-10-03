@@ -36,7 +36,7 @@ export default function Sidebar() {
               to={g.path}
               className={`px-3 py-1.5 rounded-md text-[13px] transition-colors ${
                 current.id === g.id
-                  ? 'bg-acc-soft text-[#065F46] font-medium'
+                  ? 'bg-acc-soft text-acc-hover font-medium'
                   : 'text-ink-soft hover:bg-surf-soft hover:text-ink'
               }`}
             >

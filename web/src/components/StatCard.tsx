@@ -10,7 +10,7 @@ interface StatCardProps {
 }
 
 export default function StatCard({ label, value, hint, accent = 'default', clickable, onClick }: StatCardProps) {
-  const color = accent === 'acc' ? 'text-[#065F46]' : accent === 'warn' ? 'text-[#B45309]' : 'text-ink';
+  const color = accent === 'acc' ? 'text-acc-hover' : accent === 'warn' ? 'text-warn' : 'text-ink';
   return (
     <div
       role={clickable ? 'button' : undefined}

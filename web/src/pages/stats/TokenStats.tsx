@@ -157,11 +157,11 @@ export default function TokenStats() {
             />
             <div className="legend">
               <span>
-                <i style={{ background: '#047857' }} />
+                <i style={{ background: 'var(--acc)' }} />
                 已计量 token
               </span>
               <span>
-                <i style={{ background: '#D1D5DB' }} />
+                <i style={{ background: 'var(--line-strong)' }} />
                 全部未计量
               </span>
             </div>
@@ -175,11 +175,11 @@ export default function TokenStats() {
             <CoverageChart series={daily} />
             <div className="legend">
               <span>
-                <i style={{ background: '#047857' }} />
+                <i style={{ background: 'var(--acc)' }} />
                 请求量
               </span>
               <span>
-                <i style={{ background: '#B45309' }} />
+                <i style={{ background: 'var(--warn)' }} />
                 已计量占比
               </span>
             </div>
@@ -214,7 +214,7 @@ export default function TokenStats() {
                         <td className="td cell-num tabular-nums">
                           {m.tokens ? fmtTokens(m.tokens) : <span className="text-ink-faint">—</span>}
                         </td>
-                        <td className={`td cell-num tabular-nums ${unm ? 'text-[#B45309]' : 'text-ink-faint'}`}>
+                        <td className={`td cell-num tabular-nums ${unm ? 'text-warn' : 'text-ink-faint'}`}>
                           {unm || '—'}
                         </td>
                         <td className="td cell-num">
@@ -297,7 +297,7 @@ export default function TokenStats() {
                 />
                 <div className="legend">
                   <span>
-                    <i style={{ background: '#047857' }} />
+                    <i style={{ background: 'var(--acc)' }} />
                     客户端 token
                   </span>
                 </div>

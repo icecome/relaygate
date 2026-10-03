@@ -123,7 +123,7 @@ export default function ImportTraeDialog({ open, onClose, onDone }: ImportTraeDi
         </div>
 
         {status.msg && (
-          <div role="status" className={`text-xs ${status.kind === 'err' ? 'text-danger' : status.kind === 'ok' ? 'text-[#065F46]' : 'text-ink-soft'}`}>
+          <div role="status" className={`text-xs ${status.kind === 'err' ? 'text-danger' : status.kind === 'ok' ? 'text-acc-hover' : 'text-ink-soft'}`}>
             {status.msg}
           </div>
         )}

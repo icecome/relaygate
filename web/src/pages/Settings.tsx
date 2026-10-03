@@ -52,6 +52,11 @@ const CHANNEL_META: { id: ChannelId; label: string; hint: string }[] = [
   { id: 'telegram', label: 'Telegram', hint: '填 Bot Token 与 Chat ID' },
 ];
 
+/** 取字符串末 4 位作为可辨识片段；过短则整体用省略号替代 */
+function tailOf(s: string): string {
+  return s.length > 4 ? `…${s.slice(-4)}` : '…';
+}
+
 const EVENT_META: { id: EventId; label: string; hint: string }[] = [
   { id: 'checkin_ok', label: '签到成功', hint: '每日签到全部成功时推送汇总' },
   { id: 'checkin_fail', label: '签到失败', hint: '存在失败账号时推送' },
@@ -547,10 +552,20 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
 
   const channelSummary = (id: ChannelId): string => {
     switch (id) {
-      case 'webhook': return notify.webhookUrl?.trim() || '';
+      case 'webhook': {
+        const url = notify.webhookUrl?.trim();
+        if (!url) return '';
+        // 数据源本身返回明文，摘要只露 host 与路径尾部，兼顾脱敏与可辨识
+        try {
+          const u = new URL(url);
+          return `${u.host} ${tailOf(u.pathname)}`;
+        } catch {
+          return tailOf(url);
+        }
+      }
       case 'serverchan': return notify.serverChanSendKey?.trim() ? `SCT…${notify.serverChanSendKey!.slice(-4)}` : '';
       case 'pushplus': return notify.pushPlusToken?.trim() ? `Token…${notify.pushPlusToken!.slice(-4)}` : '';
-      case 'telegram': return notify.telegramChatId?.trim() || '';
+      case 'telegram': return notify.telegramChatId?.trim() ? `…${notify.telegramChatId!.slice(-4)}` : '';
     }
   };
 
@@ -596,7 +611,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
             IDE/客户端请使用概览页创建的「访问密钥」调用 /v1/chat*。
           </p>
           {keyStatus.msg && (
-            <div role="status" className={`text-xs mt-2.5 ${keyStatus.kind === 'ok' ? 'text-[#065F46]' : keyStatus.kind === 'err' ? 'text-danger' : ''}`}>
+            <div role="status" className={`text-xs mt-2.5 ${keyStatus.kind === 'ok' ? 'text-acc-hover' : keyStatus.kind === 'err' ? 'text-danger' : ''}`}>
               {keyStatus.msg}
             </div>
           )}
@@ -645,6 +660,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                     type="button"
                     className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-surf-soft transition-colors"
                     onClick={() => toggleChannel(ch.id)}
+                    aria-expanded={expanded}
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <span
@@ -659,7 +675,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0 ml-3">
-                      <span className={`text-xs ${configured ? 'text-[#065F46]' : 'text-ink-faint'}`}>
+                      <span className={`text-xs ${configured ? 'text-acc-hover' : 'text-ink-faint'}`}>
                         {configured ? '已配置' : '未配置'}
                       </span>
                       <span className={`text-ink-faint text-xs transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden>
@@ -674,7 +690,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
                           <div className="col-span-2">
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-webhook">请求地址</label>
-                            <input id="n-webhook" className="field w-full" value={notify.webhookUrl || ''} onChange={(e) => setNotify({ ...notify, webhookUrl: e.target.value })} placeholder="https://example.com/hook" onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-webhook" className="field w-full" value={notify.webhookUrl || ''} onChange={(e) => setNotify({ ...notify, webhookUrl: e.target.value })} placeholder="https://example.com/hook" />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-webhook-method">请求方法</label>
@@ -685,15 +701,15 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-webhook-title-key">标题字段名</label>
-                            <input id="n-webhook-title-key" className="field w-full" value={notify.webhookTitleKey || ''} onChange={(e) => setNotify({ ...notify, webhookTitleKey: e.target.value })} placeholder="title（留空则发 event/ts/text/payload）" onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-webhook-title-key" className="field w-full" value={notify.webhookTitleKey || ''} onChange={(e) => setNotify({ ...notify, webhookTitleKey: e.target.value })} placeholder="title（留空则发 event/ts/text/payload）" />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-webhook-content-key">内容字段名</label>
-                            <input id="n-webhook-content-key" className="field w-full" value={notify.webhookContentKey || ''} onChange={(e) => setNotify({ ...notify, webhookContentKey: e.target.value })} placeholder="content（与标题字段名配合）" onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-webhook-content-key" className="field w-full" value={notify.webhookContentKey || ''} onChange={(e) => setNotify({ ...notify, webhookContentKey: e.target.value })} placeholder="content（与标题字段名配合）" />
                           </div>
                           <div className="col-span-2">
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-webhook-headers">自定义 Header（JSON）</label>
-                            <input id="n-webhook-headers" className="field w-full font-mono text-xs" value={notify.webhookHeaders || ''} onChange={(e) => setNotify({ ...notify, webhookHeaders: e.target.value })} placeholder='{"Authorization":"Bearer xxx"}' onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-webhook-headers" className="field w-full font-mono text-xs" value={notify.webhookHeaders || ''} onChange={(e) => setNotify({ ...notify, webhookHeaders: e.target.value })} placeholder='{"Authorization":"Bearer xxx"}' />
                             <p className="text-xs text-ink-faint mt-1">留空则仅发 Content-Type: application/json。填 JSON 可加 Authorization 等自定义头。</p>
                           </div>
                         </div>
@@ -701,24 +717,24 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                       {ch.id === 'serverchan' && (
                         <div className="pt-3">
                           <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-serverchan">SendKey</label>
-                          <input id="n-serverchan" className="field w-full" value={notify.serverChanSendKey || ''} onChange={(e) => setNotify({ ...notify, serverChanSendKey: e.target.value })} placeholder="SCT…（sct.ftqq.com）" onKeyDown={(e) => e.stopPropagation()} />
+                          <input id="n-serverchan" className="field w-full" value={notify.serverChanSendKey || ''} onChange={(e) => setNotify({ ...notify, serverChanSendKey: e.target.value })} placeholder="SCT…（sct.ftqq.com）" />
                         </div>
                       )}
                       {ch.id === 'pushplus' && (
                         <div className="pt-3">
                           <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-pushplus">Token</label>
-                          <input id="n-pushplus" className="field w-full" value={notify.pushPlusToken || ''} onChange={(e) => setNotify({ ...notify, pushPlusToken: e.target.value })} placeholder="www.pushplus.plus" onKeyDown={(e) => e.stopPropagation()} />
+                          <input id="n-pushplus" className="field w-full" value={notify.pushPlusToken || ''} onChange={(e) => setNotify({ ...notify, pushPlusToken: e.target.value })} placeholder="www.pushplus.plus" />
                         </div>
                       )}
                       {ch.id === 'telegram' && (
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
                           <div>
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-tg-token">Bot Token</label>
-                            <input id="n-tg-token" className="field w-full" value={notify.telegramBotToken || ''} onChange={(e) => setNotify({ ...notify, telegramBotToken: e.target.value })} placeholder="123456:ABC…" onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-tg-token" className="field w-full" value={notify.telegramBotToken || ''} onChange={(e) => setNotify({ ...notify, telegramBotToken: e.target.value })} placeholder="123456:ABC…" />
                           </div>
                           <div>
                             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="n-tg-chat">Chat ID</label>
-                            <input id="n-tg-chat" className="field w-full" value={notify.telegramChatId || ''} onChange={(e) => setNotify({ ...notify, telegramChatId: e.target.value })} placeholder="chat_id" onKeyDown={(e) => e.stopPropagation()} />
+                            <input id="n-tg-chat" className="field w-full" value={notify.telegramChatId || ''} onChange={(e) => setNotify({ ...notify, telegramChatId: e.target.value })} placeholder="chat_id" />
                           </div>
                         </div>
                       )}
@@ -772,7 +788,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
           </div>
 
           {notifyStatus.msg && (
-            <div role="status" className={`text-xs mt-2.5 ${notifyStatus.kind === 'ok' ? 'text-[#065F46]' : notifyStatus.kind === 'err' ? 'text-danger' : 'text-ink-soft'}`}>
+            <div role="status" className={`text-xs mt-2.5 ${notifyStatus.kind === 'ok' ? 'text-acc-hover' : notifyStatus.kind === 'err' ? 'text-danger' : 'text-ink-soft'}`}>
               {notifyStatus.msg}
             </div>
           )}
@@ -882,7 +898,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
             </>
           )}
           {schedStatus.msg && (
-            <div role="status" className={`text-xs mt-2.5 ${schedStatus.kind === 'ok' ? 'text-[#065F46]' : schedStatus.kind === 'err' ? 'text-danger' : 'text-ink-soft'}`}>
+            <div role="status" className={`text-xs mt-2.5 ${schedStatus.kind === 'ok' ? 'text-acc-hover' : schedStatus.kind === 'err' ? 'text-danger' : 'text-ink-soft'}`}>
               {schedStatus.msg}
             </div>
           )}
@@ -934,7 +950,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                 </div>
               )}
               {balStatus.msg && (
-                <div role="status" className={`text-xs mt-2.5 ${balStatus.kind === 'ok' ? 'text-[#065F46]' : balStatus.kind === 'err' ? 'text-danger' : ''}`}>
+                <div role="status" className={`text-xs mt-2.5 ${balStatus.kind === 'ok' ? 'text-acc-hover' : balStatus.kind === 'err' ? 'text-danger' : ''}`}>
                   {balStatus.msg}
                 </div>
               )}
@@ -1020,12 +1036,12 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                 </div>
               )}
               {bkVerifyMsg.msg && (
-                <div role="status" className={`text-xs mt-2.5 ${bkVerifyMsg.kind === 'ok' ? 'text-[#065F46]' : bkVerifyMsg.kind === 'err' ? 'text-danger' : ''}`}>
+                <div role="status" className={`text-xs mt-2.5 ${bkVerifyMsg.kind === 'ok' ? 'text-acc-hover' : bkVerifyMsg.kind === 'err' ? 'text-danger' : ''}`}>
                   {bkVerifyMsg.msg}
                 </div>
               )}
               {bkStatus.msg && (
-                <div role="status" className={`text-xs mt-2.5 ${bkStatus.kind === 'ok' ? 'text-[#065F46]' : bkStatus.kind === 'err' ? 'text-danger' : ''}`}>
+                <div role="status" className={`text-xs mt-2.5 ${bkStatus.kind === 'ok' ? 'text-acc-hover' : bkStatus.kind === 'err' ? 'text-danger' : ''}`}>
                   {bkStatus.msg}
                 </div>
               )}
@@ -1073,7 +1089,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                           <td className="cell-num text-ink-faint whitespace-nowrap">{String(r.ts || '').slice(0, 19).replace('T', ' ')}</td>
                           <td className="whitespace-nowrap">{r.task || '—'}</td>
                           <td className="text-ink-faint whitespace-nowrap">{r.trigger || '—'}</td>
-                          <td className={r.failed ? 'text-[#B45309]' : 'text-[#065F46]'}>{taskLogSummary(r)}</td>
+                          <td className={r.failed ? 'text-warn' : 'text-acc-hover'}>{taskLogSummary(r)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -1135,7 +1151,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                 </div>
               )}
               {eventsStatus.msg && (
-                <div role="status" className={`text-xs mt-2 ${eventsStatus.kind === 'ok' ? 'text-[#065F46]' : eventsStatus.kind === 'err' ? 'text-danger' : ''}`}>
+                <div role="status" className={`text-xs mt-2 ${eventsStatus.kind === 'ok' ? 'text-acc-hover' : eventsStatus.kind === 'err' ? 'text-danger' : ''}`}>
                   {eventsStatus.msg}
                 </div>
               )}
@@ -1193,7 +1209,7 @@ export default function Settings({ view = 'config' }: { view?: SettingsView }) {
                 <button type="button" className="btn btn-ghost" onClick={loadRtConfig}>刷新</button>
               </div>
               {rtStatus.msg && (
-                <div role="status" className={`text-xs mt-2.5 ${rtStatus.kind === 'ok' ? 'text-[#065F46]' : rtStatus.kind === 'err' ? 'text-danger' : ''}`}>
+                <div role="status" className={`text-xs mt-2.5 ${rtStatus.kind === 'ok' ? 'text-acc-hover' : rtStatus.kind === 'err' ? 'text-danger' : ''}`}>
                   {rtStatus.msg}
                 </div>
               )}

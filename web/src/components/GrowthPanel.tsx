@@ -174,7 +174,7 @@ export default function GrowthPanel() {
               上次自动化
             </span>
             <span className="text-ink-faint tabular-nums">{fmtTs(Math.floor(new Date(lastRun.ranAt).getTime() / 1000))}</span>
-            <span className={lastRun.failCount ? 'text-[#B45309] font-medium' : 'text-[#065F46] font-medium'}>
+            <span className={lastRun.failCount ? 'text-warn font-medium' : 'text-acc-hover font-medium'}>
               {lastRun.okCount ?? 0}/{lastRun.total ?? 0} 账号正常
             </span>
             {lastRun.actions && lastRun.actions.length > 0 && (
@@ -193,7 +193,7 @@ export default function GrowthPanel() {
             <div className="text-sm font-semibold text-ink">
               成长中心自动化进度
               {autoProgress.running && (
-                <span className="ml-2 inline-flex items-center gap-1.5 text-xs text-[#065F46] font-medium">
+                <span className="ml-2 inline-flex items-center gap-1.5 text-xs text-acc-hover font-medium">
                   <span className="w-1.5 h-1.5 rounded-full bg-acc animate-pulse inline-block" aria-hidden />
                   执行中
                 </span>
@@ -218,7 +218,7 @@ export default function GrowthPanel() {
               {autoProgress.results.map((r) => (
                 <div key={r.accountId} className="px-4 py-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <span className={`text-xs font-medium ${r.ok ? 'text-[#065F46]' : 'text-[#B45309]'}`}>
+                    <span className={`text-xs font-medium ${r.ok ? 'text-acc-hover' : 'text-warn'}`}>
                       {r.label || r.accountId}
                     </span>
                     <span className={`${r.ok ? 'pill-ok' : 'pill-danger'}`}>{r.ok ? '正常' : '有失败'}</span>
@@ -233,7 +233,7 @@ export default function GrowthPanel() {
                     </div>
                   )}
                   {r.actions.filter((a) => !a.ok).length > 0 && (
-                    <div className="mt-1 text-[11px] text-[#B45309]">
+                    <div className="mt-1 text-[11px] text-warn">
                       {r.actions
                         .filter((a) => !a.ok)
                         .map((a, i) => (
@@ -317,7 +317,7 @@ export default function GrowthPanel() {
                         {g.ok && g.state === 'traveling' && g.arriveAt && g.serverNow && (
                           <div className="flex justify-between items-center">
                             <span className="text-ink-faint">剩余</span>
-                            <span className="inline-flex items-center gap-1.5 text-[#B45309] tabular-nums font-medium">
+                            <span className="inline-flex items-center gap-1.5 text-warn tabular-nums font-medium">
                               <span className="w-1.5 h-1.5 rounded-full bg-acc animate-pulse inline-block" aria-hidden />
                               {fmtRemain(g.arriveAt, g.serverNow)}
                             </span>
@@ -325,7 +325,7 @@ export default function GrowthPanel() {
                         )}
                         <div className="flex justify-between">
                           <span className="text-ink-faint">今日次数</span>
-                          <span className={`tabular-nums ${g.dailyLimitReached ? 'text-[#B45309] font-medium' : 'text-[#065F46]'}`}>
+                          <span className={`tabular-nums ${g.dailyLimitReached ? 'text-warn font-medium' : 'text-acc-hover'}`}>
                             {g.dailyLimitReached ? '已派过' : '可出发'}
                           </span>
                         </div>
@@ -390,7 +390,7 @@ export default function GrowthPanel() {
                     <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[12px] mt-2.5">
                       <div className="flex justify-between">
                         <span className="text-ink-faint">能量</span>
-                        <span className={`tabular-nums ${o.affordable ? 'text-[#065F46] font-medium' : 'text-ink'}`}>
+                        <span className={`tabular-nums ${o.affordable ? 'text-acc-hover font-medium' : 'text-ink'}`}>
                           {o.energy ?? '—'}
                           {o.affordable ? ` (可开${o.affordable})` : ''}
                         </span>
@@ -405,7 +405,7 @@ export default function GrowthPanel() {
                       </div>
                       <div className="flex justify-between">
                         <span className="text-ink-faint">抽奖次数</span>
-                        <span className={`tabular-nums ${o.lotteryChances ? 'text-[#065F46] font-medium' : 'text-ink'}`}>
+                        <span className={`tabular-nums ${o.lotteryChances ? 'text-acc-hover font-medium' : 'text-ink'}`}>
                           {o.lotteryChances ?? 0}
                         </span>
                       </div>

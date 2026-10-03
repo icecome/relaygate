@@ -3,11 +3,22 @@
 @tailwind utilities;
 
 @layer base {
+  /* 调色板的 CSS 变量桥。色值权威来源是 tailwind.config.ts；
+     SVG 属性与内联 style 无法使用工具类，只能引用这里的变量，避免十六进制值散落到组件里。 */
+  :root {
+    --ink-faint: #667085;
+    --line: #E5E7EB;
+    --line-strong: #D1D5DB;
+    --acc: #047857;
+    --acc-hover: #065F46;
+    --warn: #B45309;
+    --danger: #B91C1C;
+  }
   html {
     color-scheme: light;
   }
   body {
-    @apply bg-bg text-ink font-sans text-[13px] leading-[1.6] min-h-screen antialiased text-[#111];
+    @apply bg-bg text-ink font-sans text-[13px] leading-[1.6] min-h-screen antialiased;
   }
   button,
   input,
@@ -63,10 +74,10 @@
     @apply inline-flex items-center h-[20px] px-2 rounded-full text-[11px] font-medium whitespace-nowrap;
   }
   .pill-ok {
-    @apply pill bg-acc-soft text-[#065F46];
+    @apply pill bg-acc-soft text-acc-hover;
   }
   .pill-warn {
-    @apply pill bg-warn-soft text-[#B45309];
+    @apply pill bg-warn-soft text-warn;
   }
   .pill-danger {
     @apply pill bg-danger-soft text-danger;
@@ -129,7 +140,7 @@
     @apply border-warn-line bg-warn-soft text-[#78350F];
   }
   .note-acc {
-    @apply border-[#A7F3D0] bg-acc-soft text-[#065F46];
+    @apply border-[#A7F3D0] bg-acc-soft text-acc-hover;
   }
 
   /* ---- 运维动作行：名称 + 作用对象 + 副作用 + 操作 ---- */
@@ -156,13 +167,13 @@
   .who {
     @apply text-[11px] font-medium px-[7px] py-0.5 rounded-[5px] whitespace-nowrap border;
   }
-  .who-acct { @apply bg-acc-soft text-[#065F46] border-[#A7F3D0]; }
+  .who-acct { @apply bg-acc-soft text-acc-hover border-[#A7F3D0]; }
   .who-model { @apply bg-[#EFF6FF] text-[#1D4ED8] border-[#BFDBFE]; }
   .who-key { @apply bg-[#F5F3FF] text-[#5B21B6] border-[#DDD6FE]; }
   .who-local { @apply bg-[#FFF7ED] text-[#9A3412] border-[#FED7AA]; }
   .who-upstream { @apply bg-[#FEF2F2] text-[#991B1B] border-[#FECACA]; }
   .who-task { @apply bg-[#F1F5F9] text-[#334155] border-[#CBD5E1]; }
-  .who-trae { @apply bg-acc-soft text-[#065F46] border-[#A7F3D0]; }
+  .who-trae { @apply bg-acc-soft text-acc-hover border-[#A7F3D0]; }
   .who-wb { @apply bg-[#EEF2FF] text-[#4338CA] border-[#C7D2FE]; }
 
   /* ---- 覆盖率/用量条 ---- */

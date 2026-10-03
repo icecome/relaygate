@@ -250,7 +250,7 @@ export default function ModelsPage() {
         <label className="block text-xs font-medium text-ink-soft mb-1" htmlFor="test-msg">测试消息</label>
         <input id="test-msg" className="field w-full mb-3" value={testMessage} onChange={(e) => setTestMessage(e.target.value)} placeholder="ping" />
         {testResult && (
-          <div className={`rounded-md p-3 text-[13px] ${testResult.ok ? 'bg-acc-soft text-[#065F46]' : 'bg-danger-soft text-danger'}`}>
+          <div className={`rounded-md p-3 text-[13px] ${testResult.ok ? 'bg-acc-soft text-acc-hover' : 'bg-danger-soft text-danger'}`}>
             {testResult.ok ? (
               <>
                 <div className="mb-1">测试成功 · 耗时 {testResult.durationMs}ms{testResult.usage?.total_tokens ? ` · ${testResult.usage.total_tokens} tokens` : ''}</div>
