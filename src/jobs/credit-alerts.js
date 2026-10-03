@@ -6,7 +6,7 @@
 const config = require('../config');
 const store = require('../credentials/store');
 const { notify, notifyDetail } = require('../notify');
-const { summarizeExpiry } = require('../upstream/balance');
+const { summarizeExpiry } = require('../credentials/credits');
 const { round2 } = require('../lib/round');
 
 /** 从账号快照提取临期汇总。 */

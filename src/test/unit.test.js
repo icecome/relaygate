@@ -398,7 +398,7 @@ t('parseEntitlementUsage 回退 pack 汇总并忽略过期包', () => {
 });
 
 t('summarizeExpiry 按自然日窗口汇总 3/7 天', () => {
-  const { summarizeExpiry } = require('../upstream/balance');
+  const { summarizeExpiry } = require('../credentials/credits');
   const now = new Date('2026-05-10T12:00:00');
   const nowMs = now.getTime();
   const dayStart = (offset) => {
@@ -420,13 +420,13 @@ t('summarizeExpiry 按自然日窗口汇总 3/7 天', () => {
 });
 
 t('summarizeExpiry 空列表返回 0', () => {
-  const { summarizeExpiry } = require('../upstream/balance');
+  const { summarizeExpiry } = require('../credentials/credits');
   assert.deepStrictEqual(summarizeExpiry([]), { d3: 0, d7: 0 });
   assert.deepStrictEqual(summarizeExpiry(null), { d3: 0, d7: 0 });
 });
 
 t('roundCredits 消除浮点噪声', () => {
-  const { roundCredits } = require('../upstream/balance');
+  const { roundCredits } = require('../credentials/credits');
   assert.strictEqual(roundCredits(13215.630000000001), 13215.63);
   assert.strictEqual(roundCredits(4309), 4309);
   assert.strictEqual(roundCredits(null), null);
@@ -1694,11 +1694,13 @@ t('naturalDayDiff：今天为 0，明天为 1，非法输入返回 null', () => 
   assert.strictEqual(naturalDayDiff('abc', now), null);
 });
 
-t('summarizeExpiry 与 upstream/balance 的 re-export 同源', () => {
-  const c = require('../credentials/credits');
+t('权益包计算仅 credentials/credits 一个入口，upstream/balance 不再 re-export', () => {
   const b = require('../upstream/balance');
-  assert.strictEqual(b.summarizeExpiry, c.summarizeExpiry, 'balance 应 re-export 同一函数，不得各留一份');
-  assert.strictEqual(b.roundCredits, c.roundCredits);
+  assert.ok(!('summarizeExpiry' in b), 'balance 不应再导出 summarizeExpiry');
+  assert.ok(!('roundCredits' in b), 'balance 不应再导出 roundCredits');
+  const c = require('../credentials/credits');
+  assert.strictEqual(typeof c.summarizeExpiry, 'function');
+  assert.strictEqual(typeof c.roundCredits, 'function');
 });
 
 console.log('依赖方向不变量');

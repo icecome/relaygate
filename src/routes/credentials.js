@@ -8,7 +8,8 @@ const store = require('../credentials/store');
 const { importAccount, importMany, ensureAllMissingDevices, resetAccountDevices } = require('../credentials/import');
 const oauth = require('../credentials/oauth');
 const { checkinAccount, checkinAllEnabled } = require('../upstream/checkin');
-const { refreshBalance, refreshBalanceAllEnabled, summarizeExpiry } = require('../upstream/balance');
+const { refreshBalance, refreshBalanceAllEnabled } = require('../upstream/balance');
+const { summarizeExpiry } = require('../credentials/credits');
 const { authenticateAdmin, checkAdminToken, extractToken } = require('../middleware/auth');
 const { round2 } = require('../lib/round');
 

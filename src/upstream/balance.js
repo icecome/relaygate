@@ -301,7 +301,5 @@ module.exports = {
   refreshBalance,
   refreshBalanceAllEnabled,
   parseEntitlementUsage,
-  summarizeExpiry,
-  roundCredits,
   DEFAULT_UG_HOST,
 };
