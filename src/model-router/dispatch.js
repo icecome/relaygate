@@ -92,7 +92,6 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
     throw e;
   }
 
-  const started = () => res.headersSent || res.writableEnded;
   if (!res.headersSent) {
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');

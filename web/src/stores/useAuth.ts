@@ -18,13 +18,3 @@ export function setKey(key: string) {
 export function clearKey() {
   setKey('');
 }
-
-/** 连接状态：'unset' | 'connecting' | 'ok' | 'err' */
-export const CONN = createStore<{ state: 'unset' | 'connecting' | 'ok' | 'err'; detail: string }>({
-  state: 'unset',
-  detail: '',
-});
-
-export function useConn() {
-  return useStore(CONN);
-}

@@ -101,23 +101,8 @@ function providerAllowedForKey(provider, keyPlatform) {
   return provider.builtin === platform;
 }
 
-/** Express 中间件：校验 req.body.model 是否在密钥权限内。 */
-function enforceModelAccess(req, res, next) {
-  const keyPlatform = req.platform || 'trae';
-  const model = (req.body && req.body.model) || (req.query && req.query.model) || '';
-  const check = canUseModel(keyPlatform, model, req.authKey || null);
-  if (!check.ok) {
-    return res.status(403).json({
-      error: { message: check.message, type: 'auth_error', code: 'MODEL_ACCESS_DENIED', reason: check.reason },
-    });
-  }
-  req.keyScope = keyPlatform === 'all' ? 'universal' : 'platform';
-  next();
-}
-
 module.exports = {
   canUseModel,
-  enforceModelAccess,
   isVirtualModel,
   isWorkBuddyOnlyModel,
   providerAllowedForKey,

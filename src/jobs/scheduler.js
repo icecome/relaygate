@@ -396,7 +396,14 @@ function scheduleOnce(hour, minute, label, fn) {
 /** 周期扫临期 token（默认 15 分钟，可配）。 */
 function scheduleTokenSweep(minutes) {
   const mins = Number(minutes) > 0 ? Number(minutes) : 15;
-  const run = () => refreshExpiringTokens().catch(() => {});
+  const run = () => {
+    // 顺带清理到期的访问密钥：rotateKey 的宽限期约定依赖它把 enabled 置 0，
+    // 否则面板会把已过期密钥一直显示为启用。鉴权侧 isUsableRow 仍会拒绝，故非阻塞项。
+    try { require('../credentials/api-keys').sweepExpired(); } catch (e) {
+      console.error('[scheduler] sweep expired keys failed:', e.message);
+    }
+    refreshExpiringTokens().catch(() => {});
+  };
   run();
   const t = setInterval(run, mins * 60 * 1000);
   t.unref?.();
