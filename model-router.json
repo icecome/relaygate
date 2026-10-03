@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "providers": {
+    "trae": {
+      "type": "builtin",
+      "builtin": "trae",
+      "label": "Trae 内置账号池",
+      "enabled": true,
+      "baseUrl": null,
+      "apiKeyEnv": null,
+      "apiKey": null,
+      "models": null,
+      "timeoutMs": 600000
+    },
+    "workbuddy": {
+      "type": "builtin",
+      "builtin": "workbuddy",
+      "label": "WorkBuddy 内置账号池",
+      "enabled": true,
+      "baseUrl": null,
+      "apiKeyEnv": null,
+      "apiKey": null,
+      "models": null,
+      "timeoutMs": 600000
+    },
+    "deepseek": {
+      "type": "openai",
+      "builtin": null,
+      "label": "DeepSeek（示例）",
+      "enabled": false,
+      "baseUrl": "https://api.deepseek.com/v1",
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "apiKey": null,
+      "models": null,
+      "timeoutMs": 600000
+    }
+  },
+  "virtualModels": {
+    "vm/unified-chat": {
+      "enabled": true,
+      "description": "统一对话入口（示例）",
+      "strategy": "priority",
+      "candidates": [
+        {
+          "id": "trae-glm53",
+          "provider": "trae",
+          "model": "glm-5.3",
+          "priority": 1,
+          "weight": 3,
+          "maxRpm": 12,
+          "enabled": true
+        },
+        {
+          "id": "wb-glm53",
+          "provider": "workbuddy",
+          "model": "glm-5.3",
+          "priority": 2,
+          "weight": 2,
+          "maxRpm": 6,
+          "enabled": true
+        }
+      ],
+      "failover": {
+        "maxAttempts": 3,
+        "switchOn": [
+          "rate_limit",
+          "model",
+          "5xx",
+          "network",
+          "other"
+        ],
+        "cooldownMs": 20000
+      }
+    }
+  }
+}

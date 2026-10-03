@@ -1,0 +1,29 @@
+{
+  "name": "relaygate",
+  "version": "3.0.0",
+  "description": "RelayGate — 多平台账号池网关（OpenAI / Anthropic 兼容，支持 Trae 与 WorkBuddy）",
+  "private": true,
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "test": "node src/test/unit.test.js && node src/test/growth.test.js",
+    "test:unit": "node src/test/unit.test.js",
+    "test:growth": "node src/test/growth.test.js"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/icecome/relaygate.git"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "https-proxy-agent": "^9.0.0",
+    "node-fetch": "^2.7.0",
+    "socks-proxy-agent": "^10.0.0"
+  },
+  "devDependencies": {}
+}

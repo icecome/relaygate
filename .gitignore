@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+
+# Environment & secrets
+.env
+.env.local
+.env.production
+**/os-crypt-key.txt
+decrypted-*.json
+test-*-request.json
+
+# Runtime data & secrets (SQLite 凭据库、加密密钥)
+output/
+*.db
+*.db-shm
+*.db-wal
+.trae-api/
+
+# Logs
+logs/
+
+# Mine temp
+tmp-userdata/
+**/tmp-userdata/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data files (account-bound credentials)
+data/
+
+# Backup
+*.bak*
+
+# 工具/会话残留（非项目内容）
+.mimosa/
+.history/
+.workbuddy/
+backups/
+preview/
+_analysis/
+
+# 临时探针与调试输出（根目录）
+/_*.log
+/_*.log.err
+/_*.out
+/_*.err
+/it-test.log
+
+# 前端构建与本地调试产物
+web/tsconfig.tsbuildinfo
+web/dev.*.log
+web/_dev_v4.out
+web/.playwright-cli/
