@@ -123,7 +123,7 @@ function listen(port, host, fallbacks = []) {
   const server = app.listen(port, host, () => {
     const shown = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
     console.log(`[relay-gate] 服务已启动: http://${shown}:${port} (bind=${host})`);
-    console.log(`[relay-gate] 管理面板: http://${shown}:${port}/dashboard`);
+    console.log(`[relay-gate] 管理面板: http://${shown}:${port}/`);
     console.log(`[relay-gate] 接口地址: http://${shown}:${port}/v1/chat/completions`);
     if (host === '::') {
       console.warn('[relay-gate] 仅绑定 IPv6；请使用 localhost 或 [::1] 访问（127.0.0.1 可能被其他进程占用，如 VMware NAT）。');

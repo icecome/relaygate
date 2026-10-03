@@ -1,16 +1,31 @@
 @echo off
+setlocal
 rem =====================================================
 rem  relay-gate startup script (Windows / srvany service)
 rem  Requires: Node.js >= 22.5 (built-in node:sqlite)
 rem
-rem  服务模式下注意：
-rem  - 不使用 pause：无交互终端时会永久挂死
-rem  - stdout/stderr 重定向到 logs/，否则 srvany 下日志丢失
-rem  - node 前台运行：退出即让服务结束，由服务管理器决定是否拉起
+rem  Service-mode notes:
+rem  - Do not use pause: it hangs forever with no interactive terminal.
+rem  - Redirect stdout/stderr into logs\, otherwise srvany loses them.
+rem  - node runs in the foreground: exit ends the service, the service
+rem    manager decides whether to restart it.
+rem
+rem  Comments here are ASCII on purpose. cmd.exe decodes .bat files with the
+rem  OEM codepage (GBK on zh-CN Windows), so UTF-8 Chinese comments render as
+rem  mojibake in the console.
 rem =====================================================
 cd /d "%~dp0"
 
 if not exist logs mkdir logs
+
+rem Rotate logs at startup once they exceed ~8MB (keep one previous generation).
+rem Without this the redirect target grows without bound across restarts.
+set "MAXBYTES=8388608"
+for %%F in (logs\relay.out.log logs\relay.err.log) do (
+  if exist "%%F" (
+    for %%A in ("%%F") do if %%~zA GTR %MAXBYTES% move /y "%%F" "%%F.1" >nul
+  )
+)
 
 rem Install deps on first run (remove or comment out if installed)
 if not exist node_modules\express (

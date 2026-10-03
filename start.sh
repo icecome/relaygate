@@ -1,9 +1,11 @@
 #!/usr/bin/env sh
-# relay-gate 启动脚本（Linux/macOS）
-# 依赖：Node >= 22.5（使用内置 node:sqlite）
+# relay-gate startup script (Linux/macOS)
+# Requires: Node >= 22.5 (built-in node:sqlite)
+# Comments are ASCII on purpose: this file is UTF-8, but some terminals decode
+# it as GBK on zh-CN Windows and show mojibake.
 cd "$(dirname "$0")" || exit 1
 
-# 首次启动前安装依赖（如已安装可注掉）
+# Install deps on first run (comment out if already installed)
 [ -d "node_modules/express" ] || npm install
 
 if [ -f .env ]; then

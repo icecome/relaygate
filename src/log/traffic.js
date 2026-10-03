@@ -14,10 +14,19 @@ const { estimateCost } = require('../models/rates');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let seq = 0;
+// 已确认存在的日志目录。跨日时才变化，避免每请求一次 mkdir syscall。
+let ensuredDir = null;
 
 function todayDir() {
   const d = new Date();
   return path.join(ROOT, 'logs', d.toISOString().slice(0, 10));
+}
+
+/** 确保目录存在（同一天只 mkdir 一次）。 */
+function ensureDir(dir) {
+  if (ensuredDir === dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  ensuredDir = dir;
 }
 
 function sanitize(obj, depth = 0) {
@@ -58,12 +67,16 @@ function logRequest(entry) {
     }
     const line = sanitize(base);
 
-    // 控制台一行
-    console.log(JSON.stringify(line));
+    // 控制台一行：仅在 LOG_LEVEL=debug 时输出。
+    // start.bat 把 stdout 重定向到 logs/relay.out.log 且该文件无上限，默认每请求
+    // 打一行会让它持续增长；traffic.jsonl 已完整留档，面板也有流量视图，
+    // 故默认不重复写 stdout。
+    if (config.logLevel === 'debug') console.log(JSON.stringify(line));
 
-    // jsonl 追加
+    // jsonl 追加：保持同步写（面板读取与失效判定都依赖「写完即可见」），
+    // 但去掉每请求一次的 mkdir syscall
     const dir = todayDir();
-    fs.mkdirSync(dir, { recursive: true });
+    ensureDir(dir);
     fs.appendFileSync(path.join(dir, 'traffic.jsonl'), JSON.stringify(line) + '\n', 'utf-8');
     // 增量失效统计缓存（当日聚合失效，下次面板请求时重建）
     try {
