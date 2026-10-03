@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import StatCard from '../components/StatCard';
 import { Panel, Note, ActionRow, WhoTag, ICON } from '../components/ui';
 import { OPS } from '../lib/ops';
@@ -45,6 +45,16 @@ export default function Overview() {
   const [status, setStatus] = useState<StatusShape | null>(null);
   const [daily, setDaily] = useState<DailyStat[]>([]);
   const [busy, setBusy] = useState('');
+  const alive = useRef(true);
+  const reloadTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+    };
+  }, []);
 
   const loadStatus = useCallback(() => {
     if (!key) return;
@@ -126,14 +136,18 @@ export default function Overview() {
     setBusy(op);
     try {
       await runScheduler(op as 'checkin' | 'keepalive' | 'balance', key);
+      if (!alive.current) return;
       toast(`已触发：${OPS[op].name}`, 'ok');
-      setTimeout(() => {
+      // 调度器动作异步推进，延后一拍再拉取，避免读到未更新的快照
+      if (reloadTimer.current) clearTimeout(reloadTimer.current);
+      reloadTimer.current = setTimeout(() => {
+        if (!alive.current) return;
         loadStatus();
         loadDaily();
         refresh();
       }, 1200);
     } catch (e) {
-      toast(`执行失败：${(e as Error).message}`, 'err');
+      if (alive.current) toast(`执行失败：${(e as Error).message}`, 'err');
     } finally {
       setBusy('');
     }

@@ -7,6 +7,8 @@ export interface StickyEntry {
 }
 
 export interface TrafficRow {
+  /** 写入时的单调序号，同一日志文件内唯一，可作列表 key */
+  seq?: number;
   ts?: string;
   endpoint?: string;
   model?: string;

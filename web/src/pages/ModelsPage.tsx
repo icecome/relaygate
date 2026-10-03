@@ -63,6 +63,16 @@ export default function ModelsPage() {
     }
   }
 
+  async function copyModelId(id: string) {
+    try {
+      if (!navigator.clipboard) throw new Error('当前环境不支持剪贴板写入（需 HTTPS 或 localhost）');
+      await navigator.clipboard.writeText(id);
+      toast('已复制模型名', 'ok');
+    } catch (e) {
+      toast(`复制失败：${(e as Error).message}`, 'err');
+    }
+  }
+
   // T3：一键测试请求
   function openTest(id: string) {
     setTestModel(id);
@@ -132,7 +142,13 @@ export default function ModelsPage() {
               {models.map((m) => (
                 <div key={m.id} className="flex items-center justify-between py-1.5">
                   <span className="text-[13px] text-ink font-medium truncate">{m.display_name || m.id}</span>
-                  <button type="button" className="btn-quiet text-xs shrink-0 ml-2" onClick={() => { navigator.clipboard?.writeText(m.id); toast('已复制模型名', 'ok'); }}>
+                  <button
+                    type="button"
+                    className="btn-quiet text-xs shrink-0 ml-2"
+                    onClick={() => {
+                      void copyModelId(m.id);
+                    }}
+                  >
                     复制
                   </button>
                 </div>

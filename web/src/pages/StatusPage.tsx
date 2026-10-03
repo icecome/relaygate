@@ -21,10 +21,12 @@ export default function StatusPage() {
   const [rotExclude, setRotExclude] = useState('');
   const [rotBack, setRotBack] = useState(true);
   const [rotStatus, setRotStatus] = useState<{ msg: string; kind: '' | 'ok' | 'err' }>({ msg: '', kind: '' });
+  const [rotErr, setRotErr] = useState<string | null>(null);
 
   const load = useCallback(() => {
     if (!key) {
       setErr('尚未配置登录密钥，请先在「设置 · 配置」保存登录密钥。');
+      setRotErr(null);
       return;
     }
     getStatus(key)
@@ -39,6 +41,7 @@ export default function StatusPage() {
     getRotateStatus(key)
       .then((d) => {
         setRotate(d);
+        setRotErr(null);
         const s = d.settings;
         if (s) {
           setRotOn(s.enabled);
@@ -48,7 +51,11 @@ export default function StatusPage() {
           setRotBack(s.switchBack);
         }
       })
-      .catch(() => setRotate(null));
+      .catch((e: Error) => {
+        // 读取失败时面板字段整体不可信，置空并显式提示
+        setRotate(null);
+        setRotErr(`读取轮换状态失败：${e.message}`);
+      });
   }, [key]);
 
   useEffect(() => {
@@ -184,6 +191,7 @@ export default function StatusPage() {
       </Note>
 
       {err && <Note kind="warn" icon={ICON.alert}>{err}</Note>}
+      {rotErr && <Note kind="warn" icon={ICON.alert}>{rotErr}</Note>}
 
       {/* 客户端账号轮换：作用对象是本机凭据文件，与 API 密钥轮换无关 */}
       <Panel

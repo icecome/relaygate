@@ -14,6 +14,11 @@ import { useSummary } from '../../stores/useSummary';
 
 type LogMode = 'feed' | 'table';
 
+/** 同一秒内同账号可能有多条记录，seq 由 traffic.jsonl 逐行写入，优先用它做行 key */
+function rowKey(r: TrafficRow, i: number) {
+  return r.seq != null ? `s${r.seq}` : `${r.ts}_${r.account}_${i}`;
+}
+
 /**
  * 请求日志。原先与统计面板同页，靠页内二级 tab 切换；
  * 新结构下统计已拆为独立子栏，此处只保留日志部分。
@@ -85,7 +90,7 @@ export default function LogsSection() {
     return hit?.label || id;
   }
 
-  function feedItem(r: TrafficRow) {
+  function feedItem(r: TrafficRow, i: number) {
     const t = (r.ts || '').replace('T', ' ').slice(11, 19);
     const label = acctLabel(r.account);
     const model = r.model || '未知模型';
@@ -97,7 +102,7 @@ export default function LogsSection() {
     if (r.error || (r.status && r.status >= 400)) {
       return (
         <div
-          key={r.ts + '_' + r.account}
+          key={rowKey(r, i)}
           className="px-4 py-3 border-b border-line last:border-b-0 text-[13px] leading-6 bg-danger-soft/60 flex items-start gap-2.5"
         >
           <span className="mt-1.5 w-2 h-2 rounded-full bg-danger shrink-0" aria-hidden />
@@ -115,7 +120,7 @@ export default function LogsSection() {
     }
     return (
       <div
-        key={r.ts + '_' + r.account}
+        key={rowKey(r, i)}
         className="px-4 py-3 border-b border-line last:border-b-0 text-[13px] leading-6 flex items-start gap-2.5"
       >
         <span className="mt-1.5 w-2 h-2 rounded-full bg-acc shrink-0" aria-hidden />
@@ -241,7 +246,7 @@ export default function LogsSection() {
                     ) : null;
                   })()}
                 </div>
-                {rows.map(feedItem)}
+                {rows.map((r, i) => feedItem(r, i))}
               </>
             )}
           </div>
@@ -261,11 +266,11 @@ export default function LogsSection() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {rows.map((r, i) => {
                   const stOk = !r.error && !(r.status && r.status >= 400);
                   const metered = r.promptTokens != null || r.completionTokens != null || r.totalTokens != null;
                   return (
-                    <tr key={r.ts + '_' + r.account} className="row-hover">
+                    <tr key={rowKey(r, i)} className="row-hover">
                       <td className="td text-ink-faint">{(r.ts || '').replace('T', ' ').slice(0, 19)}</td>
                       <td className="td text-ink-faint">{r.endpoint || '—'}</td>
                       <td className="td">{r.model || '—'}</td>

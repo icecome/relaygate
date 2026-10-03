@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useToast } from './Toast';
 import { usePrompt } from './Prompt';
 import { useAuth } from '../stores/useAuth';
@@ -36,6 +36,24 @@ export default function GrowthPanel() {
   const [locations, setLocations] = useState<TravelLocation[]>([]);
   const [loadingGrowth, setLoadingGrowth] = useState(false);
   const [autoProgress, setAutoProgress] = useState<GrowthProgress | null>(null);
+  const alive = useRef(true);
+  const sleepTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (sleepTimer.current) clearTimeout(sleepTimer.current);
+    };
+  }, []);
+
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      sleepTimer.current = setTimeout(() => {
+        sleepTimer.current = null;
+        resolve();
+      }, ms);
+    });
 
   const loadGrowth = async (): Promise<void> => {
     if (!key) return;
@@ -64,16 +82,21 @@ export default function GrowthPanel() {
     let p: GrowthProgress | null = null;
     try {
       for (let i = 0; i < 240; i++) {
+        if (!alive.current) return;
         p = await growthProgress(taskId, key);
+        if (!alive.current) return;
         setAutoProgress(p);
         if (!p.running) break;
-        await new Promise<void>((r) => setTimeout(r, 2500));
+        await sleep(2500);
+        if (!alive.current) return;
       }
     } catch (e) {
-      toast(`进度查询失败：${(e as Error).message}`, 'err');
+      if (alive.current) toast(`进度查询失败：${(e as Error).message}`, 'err');
     } finally {
-      if (p && p.running) toast('查询超时，可在任务日志查看结果', 'warn');
-      loadGrowth();
+      if (alive.current) {
+        if (p && p.running) toast('查询超时，可在任务日志查看结果', 'warn');
+        loadGrowth();
+      }
     }
   };
 

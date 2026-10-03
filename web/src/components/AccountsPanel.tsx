@@ -134,10 +134,15 @@ export default function AccountsPanel({
   };
 
   async function renameAccount(id: string, nextLabel: string) {
-    await patchAccount(id, { label: nextLabel }, key);
-    toast(`账号已重命名为 ${nextLabel}`, 'ok');
-    setDetailAcct(null);
-    refresh();
+    try {
+      await patchAccount(id, { label: nextLabel }, key);
+      toast(`账号已重命名为 ${nextLabel}`, 'ok');
+      setDetailAcct(null);
+      refresh();
+    } catch (e) {
+      // 失败时不关闭弹窗，便于用户改名重试
+      toast(`重命名失败：${(e as Error).message}`, 'err');
+    }
   }
 
   const refreshAll = async () => {
