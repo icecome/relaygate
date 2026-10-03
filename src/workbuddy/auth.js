@@ -38,12 +38,11 @@ const CHAT_HOSTS = WB_HOSTS.chat;
 const BILLING_BASES = WB_HOSTS.billing;
 const DOMAINS = WB_HOSTS.domain;
 
-/** 由 domain/host 字符串推导区域枚举（无法识别时归为 cn）。 */
-function regionOf(domainOrHost) {
-  const s = String(domainOrHost || '').toLowerCase();
-  return /workbuddy\.ai/.test(s) ? 'global' : 'cn';
-}
-function validRegion(r) { return r === 'global' ? 'global' : 'cn'; }
+/** 由 domain/host 字符串推导区域枚举（无法识别时归为 cn）。
+ *  region 判定与规范化统一取自 platform/variant（平台差异单一事实源），
+ *  本地不再各写一份，避免与 Trae 侧的判定口径分叉。 */
+const regionOf = variant.regionOf;
+const validRegion = variant.validRegion;
 
 /** 定位桌面端 auth 文件：优先主文件，否则取最新的轮转备份。 */
 function locateAuthFile() {

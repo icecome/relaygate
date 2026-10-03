@@ -83,13 +83,8 @@ function decrypt(encryptedText) {
   return decrypted;
 }
 
-function hashContent(content) {
-  return crypto.createHash('sha256').update(content).digest('hex');
-}
-
 module.exports = {
   encrypt,
   decrypt,
-  hashContent,
   getEncryptionKey
 };

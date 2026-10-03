@@ -7,8 +7,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const crypto = require('../lib/crypto.js');
 const { writeJsonAtomic } = require('../lib/atomic-write');
+const { maskSecret } = require('../lib/mask');
 const config = require('../config');
 const { estimateCost } = require('../models/rates');
 
@@ -20,20 +20,13 @@ function todayDir() {
   return path.join(ROOT, 'logs', d.toISOString().slice(0, 10));
 }
 
-function mask(value) {
-  if (value == null) return null;
-  const s = String(value);
-  if (s.length <= 12) return s;
-  return `${s.slice(0, 6)}...${crypto.hashContent(s).slice(0, 8)}`;
-}
-
 function sanitize(obj, depth = 0) {
   if (depth > 3 || obj == null || typeof obj !== 'object') return obj;
   if (Array.isArray(obj)) return obj.map((v) => sanitize(v, depth + 1));
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
     if (/authorization|token|password|secret|api[_-]?key/i.test(k)) {
-      out[k] = mask(v);
+      out[k] = maskSecret(v);
     } else if (typeof v === 'object') {
       out[k] = sanitize(v, depth + 1);
     } else {

@@ -16,14 +16,10 @@ const store = require('../credentials/store');
 const wbAuth = require('../workbuddy/auth');
 const { wbCheckinAccount, wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { authenticateAdmin } = require('../middleware/auth');
+const { maskSecret: maskToken } = require('../lib/mask');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
-
-function maskToken(t) {
-  if (!t) return null;
-  return t.length <= 16 ? '***' : t.slice(0, 8) + '…' + t.slice(-6);
-}
 
 /** 读取本机桌面客户端登录态（脱敏）。 */
 router.get('/local', admin, (req, res) => {

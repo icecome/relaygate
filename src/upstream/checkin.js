@@ -28,13 +28,13 @@ const CODE_BUSY = variant.variantOf(variant.TRAE).errors.busy;
 const PATHS = variant.variantOf(variant.TRAE).paths;
 const ERRORS = variant.variantOf(variant.TRAE).errors;
 
-function ugHost(acct) {
+function ugHost() {
   if (process.env.TRAE_UG_HOST) return process.env.TRAE_UG_HOST.replace(/\/$/, '');
   return DEFAULT_UG_HOST;
 }
 
 async function postUg(acct, apiPath) {
-  const url = ugHost(acct) + apiPath;
+  const url = ugHost() + apiPath;
   const headers = legacy.buildCommonHeaders({
     token: acct.token,
     userId: acct.userId,
