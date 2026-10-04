@@ -41,7 +41,7 @@ function check(name, ok, detail) {
   else { fail++; console.error(`FAIL  ${name}  ${detail || ''}`); }
 }
 
-function req(method, p, { token, origin, ctype, body } = {}) {
+function req(method, p, { token, origin, ctype, body, limit } = {}) {
   return new Promise((resolve) => {
     const data = body != null ? JSON.stringify(body) : null;
     const headers = {};
@@ -52,7 +52,7 @@ function req(method, p, { token, origin, ctype, body } = {}) {
     const r = http.request(BASE + p, { method, headers }, (res) => {
       let buf = '';
       res.on('data', (c) => { buf += c; });
-      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: buf.slice(0, 200) }));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: buf.slice(0, limit || 200) }));
     });
     r.on('error', (e) => resolve({ status: 0, headers: {}, body: e.message }));
     if (data) r.write(data);
@@ -119,6 +119,29 @@ async function run() {
 
   r = await req('POST', '/v1/responses', { token: restrictedKey.key, ctype: 'application/json', body: { model: 'deepseek-v4-pro', input: 'hi', stream: false } });
   check('M-S4 /v1/responses 受限模型被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 90)}`);
+
+  // ---- E1：虚拟模型守门 400 透传 error.code=context_length_exceeded ----
+  // E2E 验证客户端可按 .env.example 承诺的结构化 code 识别超限，
+  // 而非匹配错误文案（后端改文案即失效的脆弱契约）。
+  // M-S1 段落已删除库内 login key，此处用 trae 平台 access key：
+  // 虚拟模型对平台密钥不整单拒绝（model-access.js:48-59），守门在候选排序前触发。
+  const mrStore = require('../model-router/store');
+  mrStore.upsertVirtual('vm/sec-guard', {
+    strategy: 'priority',
+    contextWindow: 1000,
+    candidates: [{ id: 'g', provider: 'trae', model: 'glm-5.3', priority: 1 }],
+  });
+  r = await req('POST', '/v1/chat/completions', {
+    token: access.key,
+    ctype: 'application/json',
+    body: { model: 'vm/sec-guard', stream: false, messages: [{ role: 'user', content: 'x'.repeat(12000) }] },
+    limit: 2000,
+  });
+  let guardCode = null;
+  try { guardCode = JSON.parse(r.body).error.code; } catch { /* 非 JSON 忽略 */ }
+  check('E1 守门超限返回 400', r.status === 400, `-> ${r.status} ${r.body.slice(0, 90)}`);
+  check('E1 守门 400 带 error.code=context_length_exceeded', guardCode === 'context_length_exceeded', `-> ${guardCode}`);
+  mrStore.removeVirtual('vm/sec-guard');
 }
 
 // app.listen 在 require 时已发起，等端口就绪后再断言

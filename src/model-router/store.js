@@ -115,6 +115,12 @@ function normalizeVirtual(id, vm) {
     enabled: vm.enabled !== false,
     description: String(vm.description || ''),
     strategy: vm.strategy === 'weighted' ? 'weighted' : 'priority',
+    // 对外声明的上下文窗口（token）。应取候选模型真实窗口的最小值：
+    // 客户端按该值规划历史长度，超限由网关显式拦截，而非上游静默截断。
+    // 仅接受 number 类型（字符串数字由前端保存前归一，避免 true→1 这类误归一）。
+    contextWindow: typeof vm.contextWindow === 'number' && Number.isFinite(vm.contextWindow) && vm.contextWindow > 0
+      ? vm.contextWindow
+      : null,
     candidates,
     failover: {
       maxAttempts: Number(failover.maxAttempts) > 0 ? Number(failover.maxAttempts) : 3,
@@ -184,7 +190,7 @@ function getVirtual(id) {
 
 function upsertVirtual(id, patch) {
   const c = load();
-  const prev = c.virtualModels[id] || { enabled: true, description: '', strategy: 'priority', candidates: [], failover: {} };
+  const prev = c.virtualModels[id] || { enabled: true, description: '', strategy: 'priority', contextWindow: null, candidates: [], failover: {} };
   const merged = normalizeVirtual(id, {
     ...prev,
     ...patch,

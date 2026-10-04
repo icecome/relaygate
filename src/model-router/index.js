@@ -11,6 +11,8 @@
  * 6. 故障恢复重试（maxAttempts + 候选轮换）
  * 7. 状态监控（health.snapshot + traffic 日志）
  * 8. 优先级/权重/最大频率（priority / weight / maxRpm）
+ * 9. 上下文窗口守门（contextWindow：粗估输入超窗口 75% 时显式 400，
+ *    防止客户端按虚高窗口堆积历史后被上游静默截断 → 记忆错乱/幻觉）
  */
 const store = require('./store');
 const health = require('./health');
@@ -18,6 +20,7 @@ const dispatch = require('./dispatch');
 const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
 const { providerAllowedForKey } = require('../middleware/model-access');
+const { estimatePromptTokens } = require('../lib/token-estimate');
 
 const VIRTUAL_PREFIX = 'vm/';
 
@@ -95,6 +98,27 @@ function shouldSwitch(kind, vm) {
   return set.has(kind);
 }
 
+/** 输入超限（相对声明窗口）时预留的比例，保证留有回复空间。 */
+const CONTEXT_INPUT_HEADROOM_RATIO = 0.75;
+
+/**
+ * 声明了 contextWindow 的虚拟模型：分发前粗估输入 token，
+ * 超过窗口 75% 显式 400，让客户端走自己的压缩逻辑。
+ * 不拦截则上游会静默截断头部，system 与早期记忆丢失 → 幻觉。
+ */
+function checkContextLimit(vm, messages) {
+  if (!vm || !vm.contextWindow) return null;
+  const estimated = estimatePromptTokens(messages);
+  const limit = Math.floor(vm.contextWindow * CONTEXT_INPUT_HEADROOM_RATIO);
+  if (estimated <= limit) return null;
+  const e = new Error(
+    `context length exceeded: estimated ${estimated} tokens exceeds input limit ${limit} (contextWindow ${vm.contextWindow} of "${vm.description || 'virtual model'}"). Reduce conversation history before retrying.`,
+  );
+  e.status = 400;
+  e.code = 'context_length_exceeded';
+  return e;
+}
+
 /**
  * 处理虚拟模型 chat 请求（在 openai 路由最前调用）。
  * 成功则直接写响应；失败耗尽候选时抛出/写出最后错误。
@@ -112,6 +136,12 @@ async function handleChat(req, res, ctx) {
     e.status = 403;
     throw e;
   }
+
+  // 窗口守门：声明了 contextWindow 且输入超限时直接拒绝，不做候选切换
+  // （换候选解决不了超限——超限是输入与窗口的关系，不是候选健康度问题）。
+  // 日志不在此处记：handleChat 唯一调用点 openai.js 的 catch 统一落 traffic 日志。
+  const tooLong = checkContextLimit(vm, ctx.messages);
+  if (tooLong) throw tooLong;
 
   const startedAt = ctx.startedAt || Date.now();
   const keyPlatform = ctx.keyPlatform || 'all';
@@ -239,6 +269,7 @@ module.exports = {
   orderCandidates,
   explainCandidates,
   handleChat,
+  checkContextLimit,
   store,
   health,
   dispatch,

@@ -81,6 +81,7 @@ function emptyVirtual(defaultProvider = 'trae'): EditVirtual {
     enabled: true,
     description: '',
     strategy: 'priority',
+    contextWindow: null,
     candidates: [emptyCandidate(defaultProvider)],
     failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'other'], cooldownMs: 20000 },
   };
@@ -229,6 +230,8 @@ export default function ModelRouterPage() {
         enabled: editing.enabled,
         description: editing.description,
         strategy: editing.strategy,
+        contextWindow:
+          editing.contextWindow != null && Number(editing.contextWindow) > 0 ? Number(editing.contextWindow) : null,
         // 提交前再归位一次：覆盖「改完数字直接点保存」未触发 onBlur 重排的情况
         candidates: settlePriority(editing.candidates).map((c) => ({
           id: c.id || autoCandidateId(c),
@@ -345,6 +348,11 @@ export default function ModelRouterPage() {
                   <span className="text-[13px] font-semibold text-ink">{vm.id}</span>
                   <span className={`pill ${vm.enabled ? 'pill-ok' : 'pill-muted'}`}>{vm.enabled ? '启用' : '停用'}</span>
                   <span className="pill pill-warn">{vm.strategy === 'weighted' ? '权重' : '优先级'}</span>
+                  {vm.contextWindow != null && (
+                    <span className="pill pill-muted" title="声明的上下文窗口；输入粗估超过其 75% 时网关直接拒绝">
+                      {Math.round(vm.contextWindow / 1000)}K
+                    </span>
+                  )}
                   {vm.description && <span className="text-xs text-ink-faint">{vm.description}</span>}
                   <div className="ml-auto flex gap-2">
                     <button type="button" className="btn-quiet text-xs" onClick={() => unfreeze(vm.id)}>解除冷却</button>
@@ -484,7 +492,7 @@ export default function ModelRouterPage() {
                   />
                 </label>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                 <div className="flex flex-col justify-end">
                   <span className="block text-xs font-medium text-ink-soft mb-1.5">状态</span>
                   <label className="flex items-center gap-2 h-9 text-[13px] text-ink">
@@ -508,6 +516,21 @@ export default function ModelRouterPage() {
                     <option value="priority">优先级（数字小先用）</option>
                     <option value="weighted">权重（按比例分流）</option>
                   </select>
+                </label>
+                <label className="block" htmlFor="vm-context-window">
+                  <span className="block text-xs font-medium text-ink-soft mb-1.5">上下文窗口（token）</span>
+                  <input
+                    id="vm-context-window"
+                    type="number"
+                    min={0}
+                    step={1000}
+                    className="field w-full tabular-nums"
+                    value={editing.contextWindow ?? ''}
+                    onChange={(e) =>
+                      setEditing({ ...editing, contextWindow: e.target.value === '' ? null : Number(e.target.value) })
+                    }
+                    placeholder="留空则不设守门"
+                  />
                 </label>
                 <label className="block" htmlFor="vm-max-attempts">
                   <span className="block text-xs font-medium text-ink-soft mb-1.5">最大尝试次数</span>

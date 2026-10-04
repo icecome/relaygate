@@ -18,6 +18,7 @@ output/
 
 # Logs
 logs/
+docs/
 
 # Mine temp
 tmp-userdata/

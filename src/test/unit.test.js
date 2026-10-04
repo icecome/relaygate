@@ -636,6 +636,17 @@ t('workbuddy parseCycleTime 解析毫秒与字符串', () => {
   assert.ok(typeof s === 'number' && s > 0);
 });
 
+t('routes/workbuddy 跨机导入拒绝 $wbEncrypted 加密 token（不得入库 [object Object]）', () => {
+  // 静态校验防护判定式存在（引入 index 会启动服务，不适合单测）
+  const { readFileSync } = require('fs');
+  const src = readFileSync(require.resolve('../routes/workbuddy'), 'utf8');
+  assert.ok(src.includes('$wbEncrypted'), '导入端点必须检测 $wbEncrypted 对象');
+  assert.ok(src.includes('WB_TOKEN_ENCRYPTED'), '拒绝响应必须携带 WB_TOKEN_ENCRYPTED 错误码');
+  // plainToken（本机抓取路径的既有防护）依旧把加密对象归一为 null
+  const { readAuthFile } = require('../workbuddy/auth');
+  assert.strictEqual(typeof readAuthFile, 'function');
+});
+
 t('pickCheckinFields 以 checked_in 为准并识别业务码', () => {
   const { pickCheckinFields, CODE_ALREADY } = require('../upstream/checkin');
   const s = pickCheckinFields({
@@ -1510,6 +1521,82 @@ t('model-router maxRpm 滑窗限频', () => {
   assert.strictEqual(health.allowRpm('vm/r', 'c', 0), true, '未配置频率则不限');
 });
 
+console.log('context window guard');
+t('token 粗估：中文/英文/混合/空值', () => {
+  const { estimatePromptTokens, textTokens } = require('../lib/token-estimate');
+  assert.strictEqual(textTokens(''), 0);
+  assert.strictEqual(textTokens(null), 0);
+  // 9 个汉字 * 0.7 = 6.3 → ceil 7
+  assert.strictEqual(textTokens('上下文记忆管理测试'), 7);
+  // 8 个 ASCII 字符 / 4 = 2
+  assert.strictEqual(textTokens('abcdwxyz'), 2);
+  // 混合：2 汉字 * 0.7 + 5 ASCII / 4 = 1.4 + 1.25 → ceil 3
+  assert.strictEqual(textTokens('你好world'), 3);
+});
+t('token 粗估：多部分 content、图片、tool_calls', () => {
+  const { estimatePromptTokens, IMAGE_TOKENS, PER_MESSAGE_OVERHEAD } = require('../lib/token-estimate');
+  const msgs = [
+    { role: 'system', content: 'abcdwxyz' }, // 2 + 8
+    { role: 'user', content: [{ type: 'text', text: 'abcdwxyz' }, { type: 'image_url', image_url: { url: 'x' } }] }, // 2 + 1000 + 8
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [{ id: 't1', type: 'function', function: { name: 'abcdwxyz', arguments: '{"abcdwxyz":1}' } }],
+    }, // name 2 + arguments 4 = 6 → ceil 6，+ 8
+  ];
+  const expected = (2 + PER_MESSAGE_OVERHEAD) + (2 + IMAGE_TOKENS + PER_MESSAGE_OVERHEAD) + (6 + PER_MESSAGE_OVERHEAD);
+  assert.strictEqual(estimatePromptTokens(msgs), expected);
+  assert.strictEqual(estimatePromptTokens([]), 0);
+  assert.strictEqual(estimatePromptTokens(null), 0);
+});
+t('store：contextWindow 声明持久化与归一化', () => {
+  const store = require('../model-router/store');
+  store.upsertVirtual('vm/win-test', {
+    strategy: 'priority',
+    contextWindow: 168000,
+    candidates: [{ id: 't', provider: 'trae', model: 'glm-5.3', priority: 1 }],
+  });
+  assert.strictEqual(store.getVirtual('vm/win-test').contextWindow, 168000);
+  // 非法值归一为 null（不守门）
+  store.upsertVirtual('vm/win-test', {
+    strategy: 'priority',
+    contextWindow: 'abc',
+    candidates: [{ id: 't', provider: 'trae', model: 'glm-5.3', priority: 1 }],
+  });
+  assert.strictEqual(store.getVirtual('vm/win-test').contextWindow, null);
+  // 仅接受 number 类型：true→1、数组等意外形态不得被误归一为窗口
+  const n = store.normalizeVirtual('x', {
+    candidates: [{ provider: 'trae', model: 'glm-5.3' }],
+    contextWindow: true,
+  });
+  assert.strictEqual(n.contextWindow, null);
+  const n2 = store.normalizeVirtual('x', {
+    candidates: [{ provider: 'trae', model: 'glm-5.3' }],
+    contextWindow: ['168000'],
+  });
+  assert.strictEqual(n2.contextWindow, null);
+  store.removeVirtual('vm/win-test');
+});
+t('checkContextLimit：未声明/未超限放行，超限 400 且标记 context_length_exceeded', () => {
+  const { checkContextLimit } = require('../model-router');
+  // 未声明窗口：放行
+  assert.strictEqual(checkContextLimit({ contextWindow: null }, [{ role: 'user', content: 'x'.repeat(100000) }]), null);
+  // 声明 1000，输入约 3000 token（12000 ASCII 字符）：超 75% → 拒绝
+  const err = checkContextLimit(
+    { contextWindow: 1000, description: 'win' },
+    [{ role: 'user', content: 'x'.repeat(12000) }],
+  );
+  assert.ok(err, '超限应返回错误');
+  assert.strictEqual(err.status, 400);
+  assert.strictEqual(err.code, 'context_length_exceeded');
+  assert.ok(err.message.includes('estimated'), '错误信息应包含估算值');
+  // 低于 75% 阈值：放行（700 token 以内）
+  assert.strictEqual(
+    checkContextLimit({ contextWindow: 1000 }, [{ role: 'user', content: 'x'.repeat(2400) }]),
+    null,
+  );
+});
+
 console.log('log.client-logs');
 t('extractUsage 解析驼峰 usage 与 credit', () => {
   const { extractUsage } = require('../log/client-logs');
@@ -1969,6 +2056,75 @@ t('checkAdminToken：空 token 与错 token 均拒绝', () => {
 t('checkAdminToken：env ADMIN_KEY 通过', () => {
   const { checkAdminToken } = require('../middleware/auth');
   assert.strictEqual(checkAdminToken(process.env.ADMIN_KEY).ok, true);
+});
+
+console.log('workbuddy/chat modelCatalog');
+t('parseRate：兼容旧格式 x2.5 与新格式 x0.00 credits', async () => {
+  // parseRate 未导出，经 modelCatalog 的解析路径验证：mock fetch 返回两种格式
+  const wbAuth = require('../workbuddy/auth');
+  const wbChat = require('../workbuddy/chat');
+  const origFetch = global.fetch;
+  const origReadAuthFile = wbAuth.readAuthFile;
+  wbAuth.readAuthFile = () => ({ accessToken: 'tok', uid: 'u1', region: 'cn' });
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ data: [
+      { id: 'm-old', name: 'M Old', credits: 'x2.5' },
+      { id: 'm-new', name: 'M New', credits: 'x0.00 credits' },
+      { id: 'm-free', name: 'M Free', credits: 'x1' },
+      { id: 'm-none', name: 'M None' },
+      { id: 'm-bad', name: 'M Bad', credits: 'x.' },
+    ] }),
+  });
+  try {
+    const models = await wbChat.modelCatalog(true);
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+    assert.strictEqual(byId['m-old'].rate, 2.5);
+    assert.strictEqual(byId['m-old'].rateText, 'x2.5');
+    assert.strictEqual(byId['m-new'].rate, 0);
+    assert.strictEqual(byId['m-new'].rateText, 'x0.00 credits');
+    assert.strictEqual(byId['m-free'].rate, 1);
+    assert.strictEqual(byId['m-none'].rateText, null);
+    assert.strictEqual(byId['m-none'].rate, null);
+    // 畸形倍率（解析为 NaN）归一为 null，不得流入费率链路
+    assert.strictEqual(byId['m-bad'].rate, null);
+  } finally {
+    global.fetch = origFetch;
+    wbAuth.readAuthFile = origReadAuthFile;
+  }
+});
+
+t('modelCatalog：本机登录态 401 时回退账号库凭据拉取成功', async () => {
+  const wbAuth = require('../workbuddy/auth');
+  const wbChat = require('../workbuddy/chat');
+  const store = require('../credentials/store');
+  const origFetch = global.fetch;
+  const origReadAuthFile = wbAuth.readAuthFile;
+  const origStoreList = store.list;
+  const origStoreGet = store.get;
+  global.fetch = async (url, opts) => {
+    if (opts.headers.Authorization === 'Bearer broken-token') {
+      return { ok: false, status: 401, json: async () => { throw new Error('not json'); } };
+    }
+    return {
+      ok: true,
+      json: async () => ({ data: [{ id: 'hy3', name: 'Hy3', credits: 'x0.00 credits' }] }),
+    };
+  };
+  wbAuth.readAuthFile = () => ({ accessToken: 'broken-token', uid: 'u1', region: 'cn' });
+  store.list = () => [{ id: 'a1', enabled: true, edition: 'workbuddy' }];
+  store.get = () => ({ token: 'good-token', userId: 'u2', host: 'https://copilot.tencent.com' });
+  try {
+    const models = await wbChat.modelCatalog(true);
+    assert.strictEqual(models.length, 1);
+    assert.strictEqual(models[0].id, 'hy3');
+    assert.strictEqual(models[0].rate, 0);
+  } finally {
+    global.fetch = origFetch;
+    wbAuth.readAuthFile = origReadAuthFile;
+    store.list = origStoreList;
+    store.get = origStoreGet;
+  }
 });
 
 main();

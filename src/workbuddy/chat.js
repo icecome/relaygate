@@ -136,42 +136,82 @@ const WB_MODELS = [
 let _catalogCache = null;
 
 /**
+ * 倍率解析：兼容旧格式 "x2.5" 与新格式 "x0.00 credits"（上游 2026-09 起带单位后缀）。
+ * 非法输入（如 "x." 解析为 NaN）归一为 null，避免 NaN 绕过下游 != null 检查。
+ */
+function parseRate(credits) {
+  const mt = /^x([\d.]+)/.exec(String(credits || '').trim());
+  const n = mt ? Number(mt[1]) : NaN;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 目录候选凭据：账号库 enabled 账号优先（与 chat 同源），本机桌面登录态兜底。 */
+function catalogCredentials() {
+  const out = [];
+  let store = null;
+  try {
+    store = require('../credentials/store');
+  } catch { /* 账号库未就绪时只用本机登录态 */ }
+  if (store) {
+    let accounts = [];
+    try {
+      accounts = store.list().filter((a) => a.enabled && a.edition === 'workbuddy');
+    } catch { /* 列表查询失败时跳过账号库 */ }
+    for (const a of accounts) {
+      // 逐账号兜异常：单个账号密文损坏不应中断其余账号的尝试
+      try {
+        const full = store.get(a.id);
+        if (full && full.token) out.push({ source: 'account:' + a.id, info: { accessToken: full.token, uid: full.userId, region: wbAuth.regionOf(full.host) } });
+      } catch (e) {
+        console.error('[wb-catalog] 账号凭据读取失败，跳过:', a.id, e.message);
+      }
+    }
+  }
+  const local = wbAuth.readAuthFile();
+  if (local && local.accessToken) out.push({ source: 'local', info: local });
+  return out;
+}
+
+async function fetchCatalog(info) {
+  const url = wbAuth.chatHost(info.region || 'cn') + '/console/enterprises/personal/models';
+  const resp = await fetch(url, { headers: wbAuth.authHeaders(info), signal: AbortSignal.timeout(10000) });
+  if (!resp.ok) throw new Error('HTTP ' + resp.status);
+  const j = await resp.json();
+  const data = j.data || j.Result || j;
+  const arr = Array.isArray(data) ? data : (data.models || data.list || []);
+  if (!arr.length) throw new Error('empty catalog');
+  return arr.map((m) => ({
+    id: m.id,
+    name: m.name || m.id,
+    rateText: typeof m.credits === 'string' ? m.credits : null,
+    rate: parseRate(m.credits),
+    maxInputTokens: m.maxInputTokens || null,
+    maxOutputTokens: m.maxOutputTokens || null,
+    supportsToolCall: !!m.supportsToolCall,
+    supportsReasoning: !!m.supportsReasoning,
+  }));
+}
+
+/**
  * 拉取 WorkBuddy 模型目录（GET /console/enterprises/personal/models）。
- * 使用本机桌面端登录态；失败回退静态目录（倍率 null）。
+ * 凭据按 catalogCredentials 顺序逐个尝试；全部失败回退静态目录（倍率 null）。
  * @returns {Promise<Array<{id, rateText, rate, maxInputTokens, maxOutputTokens}>>}
  */
 async function modelCatalog(force) {
   if (!force && _catalogCache && Date.now() - _catalogCache.at < 600000) return _catalogCache.models;
-  try {
-    const info = wbAuth.readAuthFile();
-    if (!info || !info.accessToken) throw new Error('no local workbuddy session');
-    const url = wbAuth.chatHost(info.region) + '/console/enterprises/personal/models';
-    const resp = await fetch(url, { headers: wbAuth.authHeaders(info) });
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    const j = await resp.json();
-    const data = j.data || j.Result || j;
-    const arr = Array.isArray(data) ? data : (data.models || data.list || []);
-    if (!arr.length) throw new Error('empty catalog');
-    const models = arr.map((m) => {
-      const credits = typeof m.credits === 'string' ? m.credits : null;
-      const mt = /^x([\d.]+)$/.exec(credits || '');
-      return {
-        id: m.id,
-        name: m.name || m.id,
-        rateText: credits,
-        rate: mt ? Number(mt[1]) : null,
-        maxInputTokens: m.maxInputTokens || null,
-        maxOutputTokens: m.maxOutputTokens || null,
-        supportsToolCall: !!m.supportsToolCall,
-        supportsReasoning: !!m.supportsReasoning,
-      };
-    });
-    _catalogCache = { at: Date.now(), models };
-    return models;
-  } catch (e) {
-    if (_catalogCache) return _catalogCache.models;
-    return WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null, maxInputTokens: null, maxOutputTokens: null }));
+  const errors = [];
+  for (const { source, info } of catalogCredentials()) {
+    try {
+      const models = await fetchCatalog(info);
+      _catalogCache = { at: Date.now(), models };
+      return models;
+    } catch (e) {
+      errors.push(source + ': ' + e.message);
+    }
   }
+  if (errors.length) console.error('[wb-catalog] 动态目录拉取失败，回退静态目录（倍率不可用）:', errors.join(' | '));
+  if (_catalogCache) return _catalogCache.models;
+  return WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null, maxInputTokens: null, maxOutputTokens: null }));
 }
 
 module.exports = { chatStream, chatAggregate, normalizeBody, modelCatalog, WB_MODELS };

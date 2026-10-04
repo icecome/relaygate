@@ -199,7 +199,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       });
       if (!res.writableEnded && !res.headersSent) {
         res.status(err.status && err.status >= 400 ? err.status : 500).json({
-          error: { message: err.message, type: 'upstream_error' },
+          error: { message: err.message, type: 'upstream_error', ...(err.code ? { code: err.code } : {}) },
         });
       }
     }

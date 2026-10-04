@@ -59,22 +59,30 @@ function locateAuthFile() {
   return candidates.length ? candidates[0].full : null;
 }
 
-/** 读取并归一化 auth 文件（region 为枚举）。 */
+/** 读取并归一化 auth 文件（region 为枚举）。
+ *  新版桌面客户端将 accessToken/refreshToken 存为 {$wbEncrypted:1, envelope} 加密对象，
+ *  本项目无法解密——这类字段归一化为 null，避免垃圾值流进请求头或账号库。 */
+function plainToken(v) {
+  return (typeof v === 'string' && v && !v.startsWith('[object')) ? v : null;
+}
+
 function readAuthFile(filePath) {
   const file = filePath || locateAuthFile();
   if (!file || !fs.existsSync(file)) return null;
   const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   const acc = raw.account || {};
   const auth = raw.auth || {};
-  if (!auth.accessToken && !auth.refreshToken) return null;
+  const accessToken = plainToken(auth.accessToken);
+  const refreshToken = plainToken(auth.refreshToken);
+  if (!accessToken && !refreshToken) return null;
   return {
     file,
     uid: acc.uid || null,
-    nickname: acc.nickname || null,
+    nickname: plainToken(acc.nickname) || null,
     phoneNumber: acc.phoneNumber || null,
     uin: acc.uin || null,
-    accessToken: auth.accessToken || null,
-    refreshToken: auth.refreshToken || null,
+    accessToken,
+    refreshToken,
     expiresAtMs: auth.expiresAt || (auth.expiresIn ? Date.now() + auth.expiresIn * 1000 : null),
     refreshExpiresAtMs: auth.refreshExpiresIn ? Date.now() + auth.refreshExpiresIn * 1000 : null,
     region: regionOf(auth.domain),

@@ -84,6 +84,7 @@ async function listModels(req, res) {
             display_name: vm.description || vm.id,
             custom: true,
             virtual: true,
+            ...(vm.contextWindow ? { context_length: vm.contextWindow } : {}),
           }));
         data = virt.concat(data);
       }
@@ -168,6 +169,7 @@ router.get('/v1/models/status', admin, async (req, res) => {
           peak: null,
           candidates: cands.length,
           usableCandidates: usable,
+          contextWindow: vm.contextWindow || null,
         };
       });
       data = virt.concat(data);

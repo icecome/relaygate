@@ -40,6 +40,7 @@
       "enabled": true,
       "description": "统一对话入口（示例）",
       "strategy": "priority",
+      "contextWindow": 168000,
       "candidates": [
         {
           "id": "trae-glm53",

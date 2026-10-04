@@ -64,6 +64,17 @@ router.post('/import', admin, async (req, res) => {
       }
       const acc = raw.account || {};
       const auth = raw.auth || {};
+      // 新版客户端把 token 存为 {$wbEncrypted,envelope} 加密对象（无法离线解密），
+      // 复用 plainToken 归一化为 null，避免被 String() 成 "[object Object]" 污染账号库
+      if (auth.accessToken && typeof auth.accessToken === 'object' && auth.accessToken.$wbEncrypted) {
+        return res.status(400).json({
+          error: {
+            message: '新版客户端的 .info 文件中 token 已加密（$wbEncrypted 对象），无法直接导入。请在本机登录该账号后使用「方式一：抓取本机客户端登录态」导入。',
+            type: 'invalid_request_error',
+            code: 'WB_TOKEN_ENCRYPTED',
+          },
+        });
+      }
       if (!auth.accessToken && !auth.refreshToken) {
         return res.status(400).json({ error: { message: '文件内容缺少 auth.accessToken/refreshToken', type: 'invalid_request_error' } });
       }

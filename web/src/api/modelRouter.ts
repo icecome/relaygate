@@ -33,6 +33,8 @@ export interface VirtualModel {
   enabled: boolean;
   description: string;
   strategy: 'priority' | 'weighted';
+  /** 对外声明的上下文窗口（token）；取候选模型真实窗口的最小值，null=不设守门 */
+  contextWindow?: number | null;
   candidates: RouterCandidate[];
   failover: {
     maxAttempts: number;
