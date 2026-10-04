@@ -58,6 +58,12 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
   const panelRef = useRef<HTMLDivElement | null>(null);
   // 记录打开前的焦点，关闭时归还，避免键盘用户被丢回页面顶部
   const openerRef = useRef<HTMLElement | null>(null);
+  // onClose 多为行内箭头函数，每次渲染都换身份；用 ref 取最新值，
+  // 使下方副作用只随 open 变化执行，否则父组件每渲染一次就会重置初始焦点
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  });
 
   useEffect(() => {
     if (!open) return;
@@ -69,9 +75,16 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
     const first = initialFocusTarget(panel);
     (first || panel)?.focus();
 
+    // 面板内最近一次获得焦点的元素：Tab 逃逸兜底时据此归还，而非一律拉回首个元素
+    let lastInPanel: HTMLElement | null = first || panel;
+    const onFocusIn = (e: FocusEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target && panel?.contains(target)) lastInPanel = target;
+    };
+
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose();
+        onCloseRef.current();
         return;
       }
       if (e.key !== 'Tab') return;
@@ -85,10 +98,11 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
       const head = list[0];
       const tail = list[list.length - 1];
       const active = document.activeElement as HTMLElement | null;
-      // 焦点已逃出面板（如被脚本移走）：拉回首个元素
+      // 焦点已逃出面板（如被脚本移走）：归还到面板内最近一次聚焦处，
+      // 无条件拉回首个元素会让正在编辑的输入框突然被顶部输入框顶替
       if (!active || !panelRef.current?.contains(active)) {
         e.preventDefault();
-        head.focus();
+        (lastInPanel && lastInPanel.isConnected ? lastInPanel : head).focus();
         return;
       }
       if (e.shiftKey && active === head) {
@@ -101,13 +115,15 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
     };
 
     document.addEventListener('keydown', onKey);
+    document.addEventListener('focusin', onFocusIn);
     return () => {
       document.removeEventListener('keydown', onKey);
+      document.removeEventListener('focusin', onFocusIn);
       // 关闭时归还焦点；元素可能已卸载，需判 isConnected
       const opener = openerRef.current;
       if (opener && opener.isConnected) opener.focus();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return (

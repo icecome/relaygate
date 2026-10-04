@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FocusEvent } from 'react';
 import StatCard from '../components/StatCard';
 import Modal from '../components/Modal';
 import { useAuth } from '../stores/useAuth';
@@ -17,7 +17,24 @@ import {
   type ModelOption,
 } from '../api/modelRouter';
 
-const emptyCandidate = (provider: string): RouterCandidate => ({
+/**
+ * 编辑期的候选：在 RouterCandidate 之上挂一个仅存在于前端的 uid。
+ * 候选 id 会随输入实时变化、priority 会因归位而重排，二者都不能当 React key；
+ * uid 在候选被创建时确定，重排后随数据一起移动，输入焦点才不会跟错行。
+ * 保存时按字段显式映射，uid 不会进入请求体。
+ */
+type EditCandidate = RouterCandidate & { uid: string };
+
+type EditVirtual = Omit<VirtualModel, 'candidates'> & { candidates: EditCandidate[] };
+
+let uidSeq = 0;
+const nextUid = () => `c${++uidSeq}`;
+
+/** 判定「焦点交给了真正的交互控件」：用于区分用户主动切换与点空白处的被动失焦 */
+const USER_TARGET = 'input,select,textarea,button,a[href],[tabindex]:not([tabindex="-1"])';
+
+const emptyCandidate = (provider: string): EditCandidate => ({
+  uid: nextUid(),
   id: '',
   provider,
   model: '',
@@ -36,12 +53,12 @@ function autoCandidateId(c: RouterCandidate): string {
  * 优先级升序重排（与 orderCandidates 的实际取用顺序一致）。
  * priority 相同时按 id 稳定排序，避免不同优先级相撞时表格抖动。
  */
-function sortByPriority(list: RouterCandidate[]): RouterCandidate[] {
+function sortByPriority<T extends RouterCandidate>(list: T[]): T[] {
   return list.slice().sort((a, b) => (a.priority - b.priority) || String(a.id).localeCompare(String(b.id)));
 }
 
 /** 重排后把 priority 归一为 1..n，保证新增候选不会与既有值相撞 */
-function renumberPriority(list: RouterCandidate[]): RouterCandidate[] {
+function renumberPriority<T extends RouterCandidate>(list: T[]): T[] {
   return list.map((c, i) => (c.priority === i + 1 ? c : { ...c, priority: i + 1 }));
 }
 
@@ -50,7 +67,7 @@ function renumberPriority(list: RouterCandidate[]): RouterCandidate[] {
  * 出现重复或非法值（清空得到 0）时归一为 1..n，
  * 否则保留用户设定的稀疏值（如 1/5/10）。
  */
-function settlePriority(list: RouterCandidate[]): RouterCandidate[] {
+function settlePriority<T extends RouterCandidate>(list: T[]): T[] {
   const sorted = sortByPriority(list);
   const dirty =
     new Set(sorted.map((c) => c.priority)).size !== sorted.length ||
@@ -58,7 +75,7 @@ function settlePriority(list: RouterCandidate[]): RouterCandidate[] {
   return dirty ? renumberPriority(sorted) : sorted;
 }
 
-function emptyVirtual(defaultProvider = 'trae'): VirtualModel {
+function emptyVirtual(defaultProvider = 'trae'): EditVirtual {
   return {
     id: '',
     enabled: true,
@@ -74,7 +91,7 @@ export default function ModelRouterPage() {
   const toast = useToast();
   const [data, setData] = useState<RouterOverview | null>(null);
   const [err, setErr] = useState<string | null>(null);
-  const [editing, setEditing] = useState<VirtualModel | null>(null);
+  const [editing, setEditing] = useState<EditVirtual | null>(null);
   const [editId, setEditId] = useState('');
   const [busy, setBusy] = useState(false);
   const [provEdit, setProvEdit] = useState<RouterProvider | null>(null);
@@ -91,10 +108,11 @@ export default function ModelRouterPage() {
     [],
   );
 
-  const rowKey = (c: RouterCandidate) => c.id || `${c.provider}:${c.model}`;
+  /** 行标识用 uid：候选 id 会随输入变化，拿它比对位次会误判成「换位」 */
+  const rowKey = (c: EditCandidate) => c.uid;
 
   /** 比对重排前后位次，把换了位置的候选标记出来 */
-  function markMoved(before: RouterCandidate[], after: RouterCandidate[]) {
+  function markMoved(before: EditCandidate[], after: EditCandidate[]) {
     const idx = new Map(before.map((c, i) => [rowKey(c), i]));
     const changed = after.filter((c, i) => idx.has(rowKey(c)) && idx.get(rowKey(c)) !== i).map(rowKey);
     if (!changed.length) return;
@@ -147,7 +165,7 @@ export default function ModelRouterPage() {
   }
 
   /** 只按优先级归位，不改写用户设定的数值 */
-  function setCandidates(list: RouterCandidate[]) {
+  function setCandidates(list: EditCandidate[]) {
     if (!editing) return;
     const before = editing.candidates;
     const after = sortByPriority(list);
@@ -155,13 +173,28 @@ export default function ModelRouterPage() {
     setEditing({ ...editing, candidates: after });
   }
 
-  /** 优先级失焦提交：按新值归位，重复/非法值归一为 1..n */
-  function commitPriority() {
+  /**
+   * 优先级失焦提交：按新值归位，重复/非法值归一为 1..n。
+   * 归位真的挪动了行、且焦点不是被用户主动交给别的控件时，把焦点还给同一个输入框：
+   * 行换了位次，人的注意力不该被甩掉。行以 uid 作 key，重排时 React 移动的是同一个
+   * DOM 节点，因此可直接复用该元素，无需按位次重新查找。
+   */
+  function commitPriority(e: FocusEvent<HTMLInputElement>) {
     if (!editing) return;
+    const el = e.currentTarget;
+    // 点弹窗空白处时焦点落到面板（tabindex=-1）或 body，relatedTarget 非空但不是控件；
+    // 只有落到真正的交互控件上（Tab 到别的输入框、点按钮）才算用户主动切换。
+    const rt = e.relatedTarget as HTMLElement | null;
+    const deliberate = !!rt && rt instanceof HTMLElement && rt.matches(USER_TARGET);
     const before = editing.candidates;
     const after = settlePriority(before);
+    const reordered = before.some((c, i) => c.uid !== after[i]?.uid);
     markMoved(before, after);
     setEditing({ ...editing, candidates: after });
+    if (!reordered || deliberate) return;
+    window.requestAnimationFrame(() => {
+      if (el.isConnected) el.focus();
+    });
   }
 
   function openCreate() {
@@ -173,7 +206,10 @@ export default function ModelRouterPage() {
   function openEdit(vm: VirtualModel) {
     setEditId(vm.id);
     // 仅按优先级归位展示，不重写既有数值，避免「打开即改动」
-    setEditing({ ...vm, candidates: sortByPriority(vm.candidates.map((c) => ({ ...c }))) });
+    setEditing({
+      ...vm,
+      candidates: sortByPriority(vm.candidates.map((c) => ({ ...c, uid: nextUid() }))),
+    });
   }
 
   async function saveVirtual() {
@@ -529,13 +565,15 @@ export default function ModelRouterPage() {
                 ) : (
                   editing.candidates.map((c, i) => {
                     const opts = modelOptions(c.provider, c.model);
-                    const listId = `mr-models-${i}`;
+                    // 与行同源用 uid：行会重排，下标会变，id 跟着变会让 label/datalist 关联错行
+                    const listId = `mr-models-${c.uid}`;
                     const known = modelsOf(c.provider).length;
                     return (
                       <div
-                        // 用下标作 key：候选 id 会随输入实时生成，用它作 key 会让输入框每敲一个字就重挂载而失焦；
-                        // 行内全是受控输入，重排只在失焦后发生，按下标复用节点即可正确渲染
-                        key={i}
+                        // key 用 uid：候选 id 会随输入实时变化，priority 会因归位而重排，
+                        // 两者都不能标识「同一行」。uid 随数据移动，重排后 DOM 节点跟着走，
+                        // 正在编辑的输入框（及其焦点）不会被顶到别的候选上。
+                        key={c.uid}
                         className={`grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_78px_78px_96px_56px] gap-2 items-center px-3 py-2.5 border-b border-line last:border-b-0 transition-colors duration-500 ${
                           moved.has(rowKey(c)) ? 'bg-acc-soft' : ''
                         }`}
@@ -606,11 +644,11 @@ export default function ModelRouterPage() {
                         </button>
 
                         <div className="col-span-6 flex flex-wrap items-center gap-2 -mt-0.5">
-                          <label className="text-[11px] text-ink-faint shrink-0" htmlFor={`mr-cand-id-${i}`}>
+                          <label className="text-[11px] text-ink-faint shrink-0" htmlFor={`mr-cand-id-${c.uid}`}>
                             候选 id
                           </label>
                           <input
-                            id={`mr-cand-id-${i}`}
+                            id={`mr-cand-id-${c.uid}`}
                             className="field h-7 w-56 px-2 text-[11px] font-mono"
                             placeholder={`${autoCandidateId(c)}（留空自动生成）`}
                             value={c.id}
