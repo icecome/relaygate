@@ -1,6 +1,7 @@
 import type { Account, AccountState, PoolAccount } from '../api/types';
-import { statePill, fmtBalance, fmtCool } from '../lib/format';
+import { fmtBalance, fmtCool } from '../lib/format';
 import { WhoTag } from './ui';
+import StatusDot from './StatusDot';
 
 export interface AccountRowAction {
   act: string;
@@ -90,10 +91,7 @@ export default function AccountTable({
                     <div className="acct-id">{a.id}</div>
                   </td>
                   <td className="td">
-                    {statePill(st)}
-                    {st === 'cool' && (
-                      <div className="text-[11px] text-ink-faint mt-0.5">{fmtCool(a.coolUntil)}</div>
-                    )}
+                    <StatusDot state={st} hint={st === 'cool' ? fmtCool(a.coolUntil) : undefined} />
                   </td>
                   <td className="td cell-num">
                     {hasPacks || exp3 > 0 || exp7 > 0 ? (

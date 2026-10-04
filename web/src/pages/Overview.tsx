@@ -8,7 +8,8 @@ import { useAuth } from '../stores/useAuth';
 import { useToast } from '../components/Toast';
 import { getStatus, getStatsDaily, runScheduler, type DailyStat } from '../api/admin';
 import { fmtBalance, fmtTokens, fmtInt, relTime, untilTime, strategyLabel } from '../lib/format';
-import type { Account, PoolAccount } from '../api/types';
+import type { Account, AccountState, PoolAccount } from '../api/types';
+import StatusDot from '../components/StatusDot';
 
 /** /status 的关键片段。字段多且后端无类型定义，此处只声明用到的部分 */
 interface StatusShape {
@@ -291,13 +292,7 @@ export default function Overview() {
                       <div className="acct-id">{a.id}</div>
                     </td>
                     <td className="td">
-                      {!a.enabled ? (
-                        <span className="pill-muted">禁用</span>
-                      ) : cooling ? (
-                        <span className="pill-warn">冷却</span>
-                      ) : (
-                        <span className="pill-ok">启用</span>
-                      )}
+                      <StatusDot state={(!a.enabled ? 'off' : cooling ? 'cool' : 'ok') as AccountState} />
                     </td>
                     <td className="td cell-num tabular-nums">{fmtBalance(a.balance)}</td>
                     <td className={`td cell-num ${(a.errorCount || 0) > 0 ? 'text-danger font-semibold' : 'text-ink-faint'}`}>
