@@ -109,7 +109,7 @@ router.post('/v1/responses', async (req, res) => {
     try {
       const { result: up, accountId } = await pool.run(async (accountId) =>
         llmUtilsChat(normalizeTraeMessages(messages), model, true, { tools: body.tools, accountId }),
-        { stickyKey, stickyAccountId });
+        { stickyKey, stickyAccountId, model });
       streamAccountId = accountId;
       if (stickyKey && accountId) sticky.bind(stickyKey, accountId);
 
@@ -148,7 +148,7 @@ router.post('/v1/responses', async (req, res) => {
       });
     } catch (err) {
       // 流内错误经 handler 抛出，这里回灌账号池触发冷却/轮换
-      if (isRateLimitCode(err.upstreamCode) && streamAccountId) pool.record(streamAccountId, 'rate_limit');
+      if (isRateLimitCode(err.upstreamCode) && streamAccountId) pool.record(streamAccountId, 'rate_limit', { model, message: err.message });
       const status = err.status && err.status >= 400 ? err.status : 500;
       sseWrite(res, 'response.failed', {
         type: 'response.failed',
@@ -168,7 +168,7 @@ router.post('/v1/responses', async (req, res) => {
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
       llmUtilsChat(normalizeTraeMessages(messages), model, false, { tools: body.tools, accountId }),
-      { stickyKey, stickyAccountId });
+      { stickyKey, stickyAccountId, model });
     if (stickyKey && accountId) sticky.bind(stickyKey, accountId);
     const data = up.data || {};
     let text = '';

@@ -141,6 +141,8 @@ const config = {
   rateWindowMs: parseInt(process.env.RATE_WINDOW_MS || '30000', 10),
   rateWindowMax: parseInt(process.env.RATE_WINDOW_MAX || '2', 10),
   rateCooldownMs: parseInt(process.env.RATE_COOLDOWN_MS || '20000', 10),
+  // 连续 rate_limit 的指数退避封顶（20s → 40s → … → 此值）
+  rateCooldownMaxMs: parseInt(process.env.RATE_COOLDOWN_MAX_MS || String(30 * 60 * 1000), 10),
 
   // 定时任务（进程内）
   schedulerEnabled: process.env.SCHEDULER_ENABLED !== 'false',
@@ -177,6 +179,7 @@ config.reload = function reload() {
   config.rateWindowMs = parseInt(process.env.RATE_WINDOW_MS || '30000', 10);
   config.rateWindowMax = parseInt(process.env.RATE_WINDOW_MAX || '2', 10);
   config.rateCooldownMs = parseInt(process.env.RATE_COOLDOWN_MS || '20000', 10);
+  config.rateCooldownMaxMs = parseInt(process.env.RATE_COOLDOWN_MAX_MS || String(30 * 60 * 1000), 10);
   config.schedulerEnabled = process.env.SCHEDULER_ENABLED !== 'false';
   config.checkinHour = parseInt(process.env.CHECKIN_HOUR || '9', 10);
   config.checkinMinute = parseInt(process.env.CHECKIN_MINUTE || '0', 10);

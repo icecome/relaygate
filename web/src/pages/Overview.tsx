@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import StatCard from '../components/StatCard';
 import { Panel, Note, ActionRow, WhoTag, ICON } from '../components/ui';
 import { OPS } from '../lib/ops';
+import useHeartbeat from '../lib/useHeartbeat';
 import { useSummary } from '../stores/useSummary';
 import { useAuth } from '../stores/useAuth';
 import { useToast } from '../components/Toast';
@@ -69,6 +70,15 @@ export default function Overview() {
       .then((d) => setDaily(d.data || []))
       .catch(() => setDaily([]));
   }, [key]);
+
+  const loadAll = useCallback(() => {
+    loadStatus();
+    loadDaily();
+    refresh();
+  }, [loadStatus, loadDaily, refresh]);
+
+  // 可见性感知的周期刷新：后台暂停，切回立即拉取（lib/useHeartbeat）
+  useHeartbeat(loadAll, 30_000);
 
   useEffect(() => {
     loadStatus();

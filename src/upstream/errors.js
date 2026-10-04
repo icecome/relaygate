@@ -93,6 +93,35 @@ function isModelRateLimitError(err) {
 }
 
 /**
+ * 从上游限流文案中解析精确恢复时刻。
+ * 实测两种形态（对齐 hub parse_rate_limit_reset 的输入面）：
+ *   - WorkBuddy 6004 中文: "…将在 2026-09-29 20:48:47 UTC+8 重置…"
+ *   - 英文: "usage will reset at 2026-10-04 23:00:00"（按本地时区解释）
+ * 解析失败返回 null，调用方退回指数退避。
+ * @param {string} text
+ * @returns {string|null} ISO 时刻
+ */
+function parseRateLimitReset(text) {
+  const s = String(text || '');
+  // 中文形态：UTC+8（固定偏移，不依赖本机时区）
+  const zh = s.match(/(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?\s*UTC\+8/);
+  if (zh) {
+    const [, y, mo, d, h, mi, sec] = zh;
+    // Date.UTC 的 month 从 0 起
+    const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec || 0)) - 8 * 3600 * 1000;
+    return new Date(ms).toISOString();
+  }
+  // 英文形态：无时区后缀，按上游惯用 UTC 解释（对齐 hub 口径）
+  const en = s.match(/(?:usage will )?reset at (\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/i);
+  if (en) {
+    const [, y, mo, d, h, mi, sec] = en;
+    const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec || 0));
+    return new Date(ms).toISOString();
+  }
+  return null;
+}
+
+/**
  * 是否值得重试：限流/网络/5xx 可重试；auth 与 other 不重试。
  */
 function isRetryable(kind) {
@@ -132,5 +161,6 @@ module.exports = {
   isModelConfigError,
   isPlanLimitError,
   isModelRateLimitError,
+  parseRateLimitReset,
   RATE_LIMIT_CODES,
 };

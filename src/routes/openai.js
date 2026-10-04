@@ -242,7 +242,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     };
     const wbStickyKey = sticky.stickyKeyFromRequest(req);
     const wbStickyAcct = sticky.lookup(wbStickyKey);
-    const wbRunOpts = { stickyKey: wbStickyKey, stickyAccountId: wbStickyAcct, edition: 'workbuddy' };
+    const wbRunOpts = { stickyKey: wbStickyKey, stickyAccountId: wbStickyAcct, edition: 'workbuddy', model: wbModel };
     try {
       if (stream !== false) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -309,7 +309,7 @@ router.post('/v1/chat/completions', async (req, res) => {
   const completionId = `chatcmpl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const stickyKey = sticky.stickyKeyFromRequest(req);
   const stickyAccountId = sticky.lookup(stickyKey);
-  const runOpts = { stickyKey, stickyAccountId };
+  const runOpts = { stickyKey, stickyAccountId, model };
 
   const callOpts = {
     tools: tools || undefined,
@@ -372,7 +372,7 @@ router.post('/v1/chat/completions', async (req, res) => {
           case 'error': {
             // 抛错交还账号池：流未开始时由外层整体轮换；已开始则由外层补错误帧
             requestError = evt.message;
-            if (isRateLimitCode(evt.code)) pool.record(accountId, 'rate_limit');
+            if (isRateLimitCode(evt.code)) pool.record(accountId, 'rate_limit', { model, message: evt.message });
             const e = new Error(evt.message || 'upstream stream error');
             e.code = 'UPSTREAM_STREAM_ERROR';
             if (evt.code != null) e.upstreamCode = evt.code;

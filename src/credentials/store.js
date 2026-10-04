@@ -79,6 +79,9 @@ function acctToRow(acct) {
     auth_client_id: bindText(acct.authClientId),
     auth_host: bindText(acct.authHost),
     cost_tier: bindInt(acct.costTier, 1),
+    model_cooldowns: acct.modelCooldowns && Object.keys(acct.modelCooldowns).length ? JSON.stringify(acct.modelCooldowns) : null,
+    rate_streak: bindInt(acct.rateStreak, 0),
+    model_cool_streak: bindInt(acct.modelCoolStreak, 0),
   };
 }
 
@@ -122,6 +125,9 @@ function rowToDecrypted(r, withSecrets = true) {
     authClientId: r.auth_client_id || null,
     authHost: r.auth_host || null,
     costTier: r.cost_tier != null ? Number(r.cost_tier) : 1,
+    modelCooldowns: parseSnapshotJson(r.model_cooldowns) || null,
+    rateStreak: r.rate_streak != null ? Number(r.rate_streak) || 0 : 0,
+    modelCoolStreak: r.model_cool_streak != null ? Number(r.model_cool_streak) || 0 : 0,
   };
 }
 
@@ -168,13 +174,15 @@ function add(cred, source) {
       id, label, edition, token_enc, refresh_token_enc, expired_at, refresh_expired_at,
       token_release_at, user_id, host, user_region, devices, source, enabled,
       balance, error_count, cool_until, last_picked_at, last_checkin_at, last_checkin_result,
-      entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier,
+      model_cooldowns, rate_streak, model_cool_streak
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
     r.devices, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result, r.entitlement_snapshot,
-    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier);
+    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
+    r.model_cooldowns, r.rate_streak, r.model_cool_streak);
   return safeTok(acct);
 }
 
@@ -191,13 +199,15 @@ function update(id, patch) {
       devices = ?, source = ?, enabled = ?, balance = ?, error_count = ?, cool_until = ?,
       last_picked_at = ?, last_checkin_at = ?, last_checkin_result = ?,
       entitlement_snapshot = ?, priority = ?, tags = ?,
-      group_name = ?, device_gen = ?, auth_client_id = ?, auth_host = ?, cost_tier = ?
+      group_name = ?, device_gen = ?, auth_client_id = ?, auth_host = ?, cost_tier = ?,
+      model_cooldowns = ?, rate_streak = ?, model_cool_streak = ?
     WHERE id = ?
   `).run(r.label, r.edition, r.token_enc, r.refresh_token_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
     r.devices, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result, r.entitlement_snapshot,
-    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier, id);
+    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
+    r.model_cooldowns, r.rate_streak, r.model_cool_streak, id);
   return safeTok(merged);
 }
 

@@ -19,7 +19,9 @@ const fs = require('fs');
 const path = require('path');
 const { DatabaseSync } = require('node:sqlite');
 
-const OLD_DB = 'C:/opt/workstations/project/web/my-trae-api/output/.trae-api/trae-relay.db';
+// 旧库路径：优先 OLD_TRAE_DB 环境变量，缺省按「与当前项目同级的 my-trae-api」推导
+const OLD_DB = process.env.OLD_TRAE_DB
+  || path.resolve('..', 'my-trae-api', 'output/.trae-api/trae-relay.db');
 const NEW_DB = path.resolve('output/.trae-api/trae-relay.db');
 const BACKUP_DIR = path.resolve('backups');
 

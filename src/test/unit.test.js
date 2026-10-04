@@ -596,6 +596,78 @@ t('quota 错误硬冷却到次日', () => {
   assert.ok(pool.inCooldown(after));
 });
 
+// ===== 模型级冷却 + 429 退避（P0-1/P0-2）=====
+t('parseRateLimitReset 解析中文 UTC+8 恢复时刻', () => {
+  const { parseRateLimitReset } = require('../upstream/errors');
+  const iso = parseRateLimitReset('您的使用量已超出频率限制，将在 2026-09-29 20:48:47 UTC+8 重置，您也可以切换其他模型继续使用。');
+  assert.ok(iso, '应解析出时刻');
+  // 2026-09-29 20:48:47 UTC+8 == 12:48:47Z
+  assert.strictEqual(iso, '2026-09-29T12:48:47.000Z');
+});
+
+t('parseRateLimitReset 解析英文 reset at（按 UTC）', () => {
+  const { parseRateLimitReset } = require('../upstream/errors');
+  const iso = parseRateLimitReset('usage will reset at 2026-10-04 23:00:00');
+  assert.strictEqual(iso, '2026-10-04T23:00:00.000Z');
+  assert.strictEqual(parseRateLimitReset('no timestamp here'), null);
+  assert.strictEqual(parseRateLimitReset(''), null);
+});
+
+t('model 级限流只冷 (账号,模型)，其他模型仍可被 pick', () => {
+  const a = pStore.add({ label: 'mc-a', token: 't' }, 'import');
+  pool.record(a.id, 'model', { model: 'kimi-k3' });
+  const after = pStore.get(a.id);
+  assert.ok(!after.coolUntil, '不应整号冷却');
+  assert.ok(pool.modelCooling(after, 'kimi-k3'), '该模型应在冷却');
+  assert.strictEqual(pool.modelCooling(after, 'glm-5.3'), false, '其他模型不受影响');
+  // pick 该模型时应跳过此账号
+  const got = pool.pick(null, { model: 'kimi-k3' });
+  if (got) assert.notStrictEqual(got.id, a.id, '冷却中的模型不应被选中');
+  pStore.remove(a.id);
+});
+
+t('model 级限流解析到精确恢复时刻则用精确值', () => {
+  const a = pStore.add({ label: 'mc-b', token: 't' }, 'import');
+  pool.record(a.id, 'model', { model: 'm1', message: '将在 2030-01-01 00:00:00 UTC+8 重置' });
+  const after = pStore.get(a.id);
+  assert.strictEqual(after.modelCooldowns.m1, '2029-12-31T16:00:00.000Z');
+  pStore.remove(a.id);
+});
+
+t('rate_limit 无精确时刻时指数退避（连续翻倍，封顶 RATE_COOLDOWN_MAX_MS）', () => {
+  const a = pStore.add({ label: 'bl-a', token: 't' }, 'import');
+  const base = 20000;
+  pool.record(a.id, 'rate_limit', { model: 'm-x' });
+  let cur = pStore.get(a.id);
+  const wait1 = new Date(cur.coolUntil).getTime() - Date.now();
+  assert.ok(wait1 > base * 0.8 && wait1 <= base + 1000, `第一次应约等于基数，实际 ${wait1}ms`);
+  // 连续第二次：带 model 时模型冷却翻倍（账号级不动，因模型维度已有精确路径外退避）
+  pool.record(a.id, 'rate_limit', { model: 'm-x' });
+  pool.record(a.id, 'rate_limit', { model: 'm-x' });
+  cur = pStore.get(a.id);
+  assert.ok(cur.modelCooldowns && cur.modelCooldowns['m-x'], '模型冷却应存在');
+  pStore.remove(a.id);
+});
+
+t('rate_limit 带精确恢复时刻且无 model：整号冷到精确时刻', () => {
+  const a = pStore.add({ label: 'bl-b', token: 't' }, 'import');
+  pool.record(a.id, 'rate_limit', { message: 'usage will reset at 2030-01-01 00:00:00' });
+  const after = pStore.get(a.id);
+  assert.strictEqual(after.coolUntil, '2030-01-01T00:00:00.000Z');
+  pStore.remove(a.id);
+});
+
+t('record ok 清除限流计数与过期模型冷却', () => {
+  const a = pStore.add({ label: 'bl-c', token: 't' }, 'import');
+  pool.record(a.id, 'rate_limit', { model: 'm1' });
+  pool.record(a.id, 'ok');
+  const after = pStore.get(a.id);
+  assert.strictEqual(after.rateStreak || 0, 0, 'ok 应清零 rateStreak');
+  assert.strictEqual(after.coolUntil, null);
+  pStore.remove(a.id);
+});
+// ===== 模型级冷却 + 429 退避 结束 =====
+
 t('sticky 映射绑定与查询', () => {
   const sticky = require('../session/sticky');
   sticky.bind('sess-1', 'acct_test');

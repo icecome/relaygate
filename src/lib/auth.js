@@ -312,11 +312,23 @@ async function exchangeToken(refreshToken, opts = {}) {
     UserID: ''
   };
 
+  // 刷新请求与业务请求保持一致的客户端外观：UA/app_id/版本头由真实客户端元数据
+  // 提供，缺省回落内置默认值。裸 JSON POST（无 UA 无版本头）是登录面易识别特征。
+  const headers = {
+    'Content-Type': 'application/json',
+    'user-agent': 'TraeClient/TTNet',
+    'x-app-id': process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8',
+    'x-app-version': getAppVersion(),
+    'x-ide-version': getIdeVersion(),
+    'x-app-version-code': getIdeVersionCode(),
+    'x-ide-version-code': getIdeVersionCode(),
+    'package-type': 'stable_cn',
+    'request-traffic-type': 'prod',
+  };
+
   const fetchOptions = {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json'
-    },
+    headers,
     body: JSON.stringify(body)
   };
 
@@ -335,7 +347,12 @@ async function exchangeToken(refreshToken, opts = {}) {
     }
   }
 
-  const resp = await fetch(url, fetchOptions);
+  let resp;
+  try {
+    resp = await fetch(url, fetchOptions);
+  } catch (e) {
+    throw new Error(`ExchangeToken network error: ${e.message}`);
+  }
 
   if (!resp.ok) {
     const errText = await resp.text();

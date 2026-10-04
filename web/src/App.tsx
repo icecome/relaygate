@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import Layout from './components/Layout';
 import { ToastProvider } from './components/Toast';
@@ -11,6 +11,14 @@ import SettingsPage from './pages/settings/SettingsPage';
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(false);
+
+  // 管理面任意请求收到 401（密钥失效/被删）时回到首登引导；
+  // 事件由 lib/api.ts 的全局分支发出，页面无需各自处理。
+  useEffect(() => {
+    const onAuthLost = () => setSetupDone(false);
+    window.addEventListener('relaygate:auth-lost', onAuthLost);
+    return () => window.removeEventListener('relaygate:auth-lost', onAuthLost);
+  }, []);
 
   return (
     <ToastProvider>

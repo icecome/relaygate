@@ -55,6 +55,10 @@ function ensureSchema(db) {
   if (!names.has('auth_client_id')) db.exec('ALTER TABLE accounts ADD COLUMN auth_client_id TEXT');
   if (!names.has('auth_host')) db.exec('ALTER TABLE accounts ADD COLUMN auth_host TEXT');
   if (!names.has('cost_tier')) db.exec('ALTER TABLE accounts ADD COLUMN cost_tier INTEGER DEFAULT 1');
+  // 模型级冷却（P0：6004 类模型限流只冷 (账号,模型)；rateStreak/modelCoolStreak 供指数退避计数）
+  if (!names.has('model_cooldowns')) db.exec('ALTER TABLE accounts ADD COLUMN model_cooldowns TEXT');
+  if (!names.has('rate_streak')) db.exec('ALTER TABLE accounts ADD COLUMN rate_streak INTEGER DEFAULT 0');
+  if (!names.has('model_cool_streak')) db.exec('ALTER TABLE accounts ADD COLUMN model_cool_streak INTEGER DEFAULT 0');
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');

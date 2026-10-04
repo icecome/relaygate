@@ -131,7 +131,7 @@ router.post('/v1/messages', async (req, res) => {
       case 'token_usage': lastUsage = evt.data || null; return;
       case 'error':
         requestError = evt.message;
-        if (isRateLimitCode(evt.code) && streamAccountId) pool.record(streamAccountId, 'rate_limit');
+        if (isRateLimitCode(evt.code) && streamAccountId) pool.record(streamAccountId, 'rate_limit', { model, message: evt.message });
         bytes = out.error(msgId, model, evt.code, evt.message);
         break;
       default: return;
@@ -141,7 +141,7 @@ router.post('/v1/messages', async (req, res) => {
 
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
-      llmUtilsChat(built, model, true, { tools, max_tokens, accountId }));
+      llmUtilsChat(built, model, true, { tools, max_tokens, accountId }), { model });
     streamAccountId = accountId;
     const feeder = createLineFeeder((line) => handler.feedLine(line));
     await consumeStream(up.body, (text) => feeder.feed(text));

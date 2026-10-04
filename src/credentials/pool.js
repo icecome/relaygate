@@ -3,7 +3,7 @@
  * credentials/pool.js — 账号池：积分优先调度 + 分级冷却 + 在途租约 + 签到解冻。
  *
  * pick()
- *   - 过滤 enabled / coolUntil / 余额低于阈值
+ *   - 过滤 enabled / coolUntil / 模型级冷却 / 余额低于阈值
  *   - least_balance：余额高优先（对照 trae2api-web / Sliverkiss）
  *   - round_robin：errorCount → lastPickedAt
  *   - 排除 maxInFlight 满员账号与 100ms 防撞
@@ -12,14 +12,15 @@
  *   - ok：清 errorCount；若余额>阈值可解冻
  *   - auth：短冷却
  *   - quota(402)：硬冷却到次日 04:00
- *   - rate_limit：短冷却
+ *   - rate_limit：优先用上游恢复时刻，否则指数退避；带 model 时只冷 (账号,模型)
+ *   - model：模型级冷却（6004 类），不冷却整号
  *   - 5xx：计数熔断
  *
  * run()
  *   - 租约 acquire/release；auth/quota 换号
  */
 const store = require('./store');
-const { classifyError } = require('../upstream/errors');
+const { classifyError, parseRateLimitReset } = require('../upstream/errors');
 const { summarizeExpiry } = require('./credits');
 const config = require('../config');
 const { notify } = require('../notify');
@@ -30,6 +31,10 @@ const COOL_THRESHOLD = 5;
 const MAX_ERROR_COUNT = 50;
 const WAIT_TIMEOUT_MS = 30_000; // 等号最长等待，超过则放弃
 const WAIT_CAPACITY_PROBE_MS = 200; // 在途满时的探测步长（无法精确预测完成时刻）
+
+/** 模型级冷却的指数退避基数与封顶（6004 类：上游未给恢复时刻时用）。 */
+const MODEL_COOL_BASE_MS = 60 * 1000;
+const MODEL_COOL_MAX_MS = 6 * 60 * 60 * 1000;
 
 /** 进程内在途计数（不持久化）。 */
 const inFlight = new Map();
@@ -134,6 +139,7 @@ function pickCandidate(opts = {}) {
   return store.list().find((a) =>
     a.enabled
     && !inCooldown(a)
+    && !modelCooling(a, opts.model)
     && balanceOk(a)
     && groupOk(a)
     && editionOk(a, opts.edition)
@@ -153,6 +159,13 @@ function nextAvailableIn(opts = {}) {
   let best = Infinity;
   for (const a of store.list()) {
     if (!a.enabled || balanceOk(a) === false || !groupOk(a) || !editionOk(a, opts.edition) || exclude.has(a.id)) continue;
+    if (modelCooling(a, opts.model)) {
+      // 模型级冷却可精确计算解除时刻
+      const until = modelCooldownMap(a)[String(opts.model)];
+      const t = until ? new Date(until).getTime() - now : 0;
+      if (t > 0) best = Math.min(best, Math.max(0, t));
+      continue;
+    }
     let wait = 0;
     // 冷却
     if (a.coolUntil) wait = Math.max(wait, new Date(a.coolUntil).getTime() - now);
@@ -211,10 +224,26 @@ function minPickGapMs() {
   return Number.isFinite(n) && n > 0 ? n : 5000;
 }
 
-/** rate_limit 后账号冷却时长。 */
+/** rate_limit 后账号冷却基数。 */
 function rateCooldownMs() {
   const n = Number(config.rateCooldownMs);
   return Number.isFinite(n) && n > 0 ? n : 20000;
+}
+
+/** rate_limit 指数退避封顶（连续 429 时按次数翻倍，到此为止）。 */
+function rateCooldownMaxMs() {
+  const n = Number(config.rateCooldownMaxMs);
+  return Number.isFinite(n) && n > 0 ? n : 30 * 60 * 1000;
+}
+
+/**
+ * 连续 rate_limit 的退避时长：基数 × 2^(连续次数-1)，封顶 maxMs。
+ * @param {number} streak 当前账号连续 rate_limit 次数（≥1）
+ */
+function backoffMs(streak) {
+  const s = Math.max(1, Math.trunc(streak) || 1);
+  const capped = Math.min(s, 16); // 2^16 已远超封顶，防溢出与无意义计算
+  return Math.min(rateCooldownMs() * Math.pow(2, capped - 1), rateCooldownMaxMs());
 }
 
 /** 滚动窗口长度。 */
@@ -260,6 +289,50 @@ function strategy() {
 function inCooldown(a) {
   if (!a.coolUntil) return false;
   return new Date(a.coolUntil).getTime() > Date.now();
+}
+
+/** 模型级冷却表（账号字段 modelCooldowns: { [model]: ISO }）。 */
+function modelCooldownMap(a) {
+  return a && a.modelCooldowns && typeof a.modelCooldowns === 'object' && !Array.isArray(a.modelCooldowns)
+    ? a.modelCooldowns
+    : {};
+}
+
+/** 该账号对指定模型是否处于冷却中。model 为空时只看整号冷却（此处只负责模型维度）。 */
+function modelCooling(a, model) {
+  if (!a || !model) return false;
+  const until = modelCooldownMap(a)[String(model)];
+  if (!until) return false;
+  const t = new Date(until).getTime();
+  if (!Number.isFinite(t)) return false;
+  if (t <= Date.now()) return false; // 过期条目惰性清理（写入时顺带删除）
+  return true;
+}
+
+/** 清理已过期的模型冷却条目（返回 null 表示无可清理）。 */
+function pruneModelCooldowns(a) {
+  const map = modelCooldownMap(a);
+  const now = Date.now();
+  const kept = {};
+  let changed = false;
+  for (const [m, until] of Object.entries(map)) {
+    const t = new Date(until).getTime();
+    if (Number.isFinite(t) && t > now) kept[m] = until;
+    else changed = true;
+  }
+  return changed ? kept : null;
+}
+
+/** 写一条模型级冷却（durationMs 或精确 ISO 时刻二选一）。 */
+function coolModel(a, model, { durationMs, untilIso } = {}) {
+  if (!a || !model) return;
+  const map = { ...modelCooldownMap(a) };
+  const prev = map[model] ? new Date(map[model]).getTime() : 0;
+  const until = untilIso ? new Date(untilIso).getTime() : Date.now() + (durationMs || 0);
+  // 只延长不缩短：短时间内多次命中时保留最严格的约束
+  if (until <= prev) return;
+  map[String(model)] = new Date(until).toISOString();
+  store.update(a.id, { modelCooldowns: map });
 }
 
 function getInFlight(id) {
@@ -330,6 +403,7 @@ function pick(excludeId, opts = {}) {
   const all = store.list().filter((a) =>
     a.enabled
     && !inCooldown(a)
+    && !modelCooling(a, opts.model)
     && balanceOk(a)
     && groupOk(a)
     && editionOk(a, opts.edition)
@@ -409,15 +483,24 @@ function nextDayFourAmIso() {
 /**
  * 记录一次调用结果。
  * @param {string} id
- * @param {'ok'|'auth'|'network'|'5xx'|'rate_limit'|'quota'|'other'} kind
+ * @param {'ok'|'auth'|'network'|'5xx'|'rate_limit'|'quota'|'model'|'other'} kind
+ * @param {{model?:string, message?:string}} [info] model=触发限流的模型；message=上游错误文案（用于解析精确恢复时刻）
  */
-function record(id, kind) {
+function record(id, kind, info = {}) {
   if (!id) return;
   const a = store.get(id);
   if (!a) return;
 
   if (kind === 'ok') {
-    store.update(id, { errorCount: 0, coolUntil: null });
+    const pruned = pruneModelCooldowns(a);
+    // 成功即重置连续限流计数：否则再次限流时退避会从上次残留次数继续翻倍
+    store.update(id, {
+      errorCount: 0,
+      coolUntil: null,
+      rateStreak: 0,
+      modelCoolStreak: 0,
+      ...(pruned ? { modelCooldowns: pruned } : {}),
+    });
     // 该账号解冻后重新可用，唤醒排队者
     wakeWaiters();
     return;
@@ -425,8 +508,20 @@ function record(id, kind) {
 
   if (kind === 'network') return;
 
-  // 4001 / 6004 模型问题：换号无意义，不冷却也不记错误（对齐 Sliverkiss 模型级限流处理）
-  if (kind === 'model') return;
+  // 模型级限流（6004 类）：只冷 (账号, 模型) 组合，不冷却整号。
+  // 此前完全放行会让同一账号对同一模型被反复撞限；有恢复时刻用精确值，否则指数退避。
+  if (kind === 'model') {
+    const model = info.model ? String(info.model) : null;
+    if (!model) return;
+    const untilIso = parseRateLimitReset(info.message || '')
+      || new Date(Date.now() + Math.min(
+        MODEL_COOL_BASE_MS * Math.pow(2, Math.min(a.modelCoolStreak || 0, 10)),
+        MODEL_COOL_MAX_MS,
+      )).toISOString();
+    coolModel(a, model, { untilIso });
+    store.update(id, { modelCoolStreak: Math.min((a.modelCoolStreak || 0) + 1, 16) });
+    return;
+  }
 
   if (kind === 'quota') {
     store.update(id, {
@@ -437,14 +532,28 @@ function record(id, kind) {
   }
 
   if (kind === 'rate_limit') {
-    store.update(id, {
-      coolUntil: new Date(Date.now() + rateCooldownMs()).toISOString(),
-    });
+    const model = info.model ? String(info.model) : null;
+    // 上游给出精确恢复时刻（"将在 … 重置" / "usage will reset at …"）则直接采用
+    const untilIso = parseRateLimitReset(info.message || '');
+    if (model) {
+      // 模型维度记录：只冷该模型，账号其余模型继续服务
+      coolModel(a, model, untilIso ? { untilIso } : { durationMs: backoffMs((a.rateStreak || 0) + 1) });
+    }
+    if (!model || !untilIso) {
+      // 账号级兜底：无 model 或无精确时刻时，按连续限流次数指数退避（替代此前固定 20s）
+      const streak = Math.min((a.rateStreak || 0) + 1, 16);
+      store.update(id, {
+        coolUntil: untilIso || new Date(Date.now() + backoffMs(streak)).toISOString(),
+        rateStreak: streak,
+      });
+    } else {
+      store.update(id, { rateStreak: Math.min((a.rateStreak || 0) + 1, 16) });
+    }
     return;
   }
 
   const next = Math.min((a.errorCount || 0) + 1, MAX_ERROR_COUNT);
-  const patch = { errorCount: next };
+  const patch = { errorCount: next, rateStreak: 0, modelCoolStreak: 0 };
 
   if (kind === 'auth') {
     patch.coolUntil = new Date(Date.now() + COOL_AUTH_MS).toISOString();
@@ -482,7 +591,8 @@ async function run(fn, opts = {}) {
   if (opts.stickyAccountId) {
     const sticky = store.get(opts.stickyAccountId);
     const now = Date.now();
-    if (sticky && sticky.enabled && !inCooldown(sticky) && balanceOk(sticky) && hasCapacity(sticky)
+    if (sticky && sticky.enabled && !inCooldown(sticky) && !modelCooling(sticky, opts.model)
+        && balanceOk(sticky) && hasCapacity(sticky)
         && editionOk(sticky, opts.edition)
         && now - (sticky.lastPickedAt || 0) >= minPickGapMs()
         && recentCount(sticky.id) < rateWindowMax()) {
@@ -496,7 +606,7 @@ async function run(fn, opts = {}) {
         return { result, accountId: sticky.id };
       } catch (err) {
         const kind = classifyError(err);
-        record(sticky.id, kind);
+        record(sticky.id, kind, { model: opts.model, message: err.message });
         lastErr = err;
         // rate_limit 同样切换：账号已进入短冷却，继续重试只会重复 3004
         if (kind !== 'auth' && kind !== 'quota' && kind !== 'rate_limit') throw err;
@@ -512,15 +622,15 @@ async function run(fn, opts = {}) {
   let switches = 0;
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const acct = pick(null, { exclude: Array.from(attempted), edition: opts.edition });
+    const acct = pick(null, { exclude: Array.from(attempted), edition: opts.edition, model: opts.model });
     if (!acct) {
       // 无任何账号可救（禁用/冷却/余额不足）才判池空；仅节流则继续排队
-      const hasHope = nextAvailableIn({ exclude: Array.from(attempted), edition: opts.edition });
+      const hasHope = nextAvailableIn({ exclude: Array.from(attempted), edition: opts.edition, model: opts.model });
       if (hasHope === null) {
         alertIfPoolEmpty();
         break;
       }
-      const wait = await enqueueWaiter({ exclude: Array.from(attempted), edition: opts.edition });
+      const wait = await enqueueWaiter({ exclude: Array.from(attempted), edition: opts.edition, model: opts.model });
       if (wait.reason === 'timeout') break;
       continue;
     }
@@ -535,7 +645,7 @@ async function run(fn, opts = {}) {
       return { result, accountId };
     } catch (err) {
       const kind = classifyError(err);
-      record(accountId, kind);
+      record(accountId, kind, { model: opts.model, message: err.message });
       lastErr = err;
       // rate_limit 同样切换：账号已进入短冷却，继续重试只会重复 3004
       if (kind !== 'auth' && kind !== 'quota' && kind !== 'rate_limit') throw err;
@@ -576,9 +686,13 @@ function explainCandidates(excludeIds = []) {
     const reasons = [];
     if (!a.enabled) reasons.push('disabled');
     if (a.coolUntil && new Date(a.coolUntil).getTime() > now) reasons.push('cooling');
+    if (modelCooling(a, a._explainModel)) reasons.push('model_cooling');
     if (typeof a.balance === 'number' && a.balance < min) reasons.push('low_balance');
     if (getInFlight(a.id) >= maxIn) reasons.push('full_inflight');
     if (exclude.has(a.id)) reasons.push('excluded');
+    const pruned = pruneModelCooldowns(a);
+    if (pruned) store.update(a.id, { modelCooldowns: pruned });
+    const modelCooldowns = pruned || modelCooldownMap(a);
     return {
       id: a.id,
       label: a.label,
@@ -586,6 +700,7 @@ function explainCandidates(excludeIds = []) {
       priority: a.priority || 0,
       errorCount: a.errorCount || 0,
       coolUntil: a.coolUntil || null,
+      modelCooldowns: Object.keys(modelCooldowns).length ? modelCooldowns : null,
       inFlight: getInFlight(a.id),
       usable: reasons.length === 0,
       reasons,
@@ -599,16 +714,22 @@ function snapshot() {
     strategy: strategy(),
     maxInFlight: maxInFlight(),
     waiters: waiterSnapshot(),
-    accounts: list.map((a) => ({
-      id: a.id,
-      label: a.label,
-      balance: a.balance,
-      errorCount: a.errorCount,
-      coolUntil: a.coolUntil,
-      priority: a.priority || 0,
-      inFlight: getInFlight(a.id),
-      usable: a.enabled && !inCooldown(a) && balanceOk(a) && hasCapacity(a),
-    })),
+    accounts: list.map((a) => {
+      const pruned = pruneModelCooldowns(a);
+      if (pruned) store.update(a.id, { modelCooldowns: pruned });
+      const modelCooldowns = pruned || modelCooldownMap(a);
+      return {
+        id: a.id,
+        label: a.label,
+        balance: a.balance,
+        errorCount: a.errorCount,
+        coolUntil: a.coolUntil,
+        modelCooldowns: Object.keys(modelCooldowns).length ? modelCooldowns : null,
+        priority: a.priority || 0,
+        inFlight: getInFlight(a.id),
+        usable: a.enabled && !inCooldown(a) && balanceOk(a) && hasCapacity(a),
+      };
+    }),
   };
 }
 
@@ -617,6 +738,7 @@ module.exports = {
   record,
   run,
   inCooldown,
+  modelCooling,
   snapshot,
   unfreezeIfHealthy,
   getInFlight,

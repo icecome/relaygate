@@ -144,8 +144,13 @@ async function trySchtasksStop() {
     await new Promise((resolve) => {
       execFile('schtasks', ['/run', '/tn', taskName], { timeout: 20000 }, () => resolve());
     });
-    await sleep(4000);
-    const ok = probeClientRunning() === false;
+    // 调度器侧从 /run 到实际执行有迟滞（实测 ~30s），轮询等待而非固定 sleep
+    let stopOk = false;
+    for (let i = 0; i < 12; i++) {
+      await sleep(3500);
+      if (probeClientRunning() === false) { stopOk = true; break; }
+    }
+    const ok = stopOk;
     await new Promise((resolve) => {
       execFile('schtasks', ['/delete', '/tn', taskName, '/f'], { timeout: 20000 }, () => resolve());
     });
@@ -158,38 +163,137 @@ async function trySchtasksStop() {
   return false;
 }
 
-/**
- * 启动客户端到「用户交互会话」（客户端必须在交互会话才有意义）。
- * 服务会话（Session 0）无交互桌面，execFile 直接启动对用户不可见 → 用
- * schtasks /IT（交互式任务）在登录用户会话拉起 WorkBuddy（窗口可见）。
- * /IT 任务以当前登录用户运行；服务创建时也须带 /IT。
- */
-function startClient() {
-  const exe = resolveWbExe();
-  // schtasks /IT 交互式任务（用户会话、可见窗口）
-  try {
-    const taskName = 'RelayGateStartWb_' + Date.now().toString(36);
-    const cmd = `"${exe}"`;
-    const created = execSyncQuiet(`schtasks /create /tn ${taskName} /tr "${cmd}" /sc once /st 00:00 /IT /f`);
-    if (created.ok && created.out.includes('SUCCESS')) {
-      execSyncQuiet(`schtasks /run /tn ${taskName}`);
-      setTimeout(() => {
-        try { require('child_process').execSync(`schtasks /delete /tn ${taskName} /f`, { timeout: 10000 }); } catch { /* 清理失败忽略 */ }
-      }, 10000);
-      return true;
+/** 本进程所在会话 ID；探测失败返回 null（未知）。结果缓存（进程不换会话）。 */
+let ownSessionIdCache;
+function probeOwnSessionId() {
+  if (ownSessionIdCache !== undefined) return ownSessionIdCache;
+  const sess = execSyncQuiet('powershell -NoProfile -Command (Get-Process -Id $PID).SessionId');
+  ownSessionIdCache = sess.ok && /^\d+$/.test(sess.out) ? Number(sess.out) : null;
+  return ownSessionIdCache;
+}
+
+/** 最新一个 WorkBuddy 进程所在会话；无进程或探测失败返回 null。
+ *  取最新（CreationDate 降序）：残留旧进程在场时，新启动的进程才是判定对象；
+ *  Electron 子进程继承主进程会话，会话归属不受影响。 */
+function probeClientSession() {
+  const r = execSyncQuiet('powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"Name=\'WorkBuddy.exe\'\\" | Sort-Object CreationDate -Descending | Select-Object -First 1 -ExpandProperty SessionId)"');
+  if (!r.ok || !/^\d+$/.test(r.out)) return null;
+  return Number(r.out);
+}
+
+/** 轮询等待客户端进程真实出现。
+ *  基线 count0 之后的增量才算新进程——否则启动前残留的旧进程（如
+ *  Session 0 隐形实例）会让验证误判成功。count0 为 null 时退化为存在性判断。 */
+async function waitForClientStart(timeoutMs, count0) {
+  const deadline = Date.now() + timeoutMs;
+  const base = typeof count0 === 'number' ? count0 : null;
+  while (Date.now() < deadline) {
+    await sleep(1000);
+    if (probeClientRunning() !== true) continue;
+    if (base !== null) {
+      const now = clientProcessCount();
+      if (now !== null && now > base) return { started: true, session: probeClientSession() };
+      continue;
     }
-  } catch (e) {
-    console.error(`[rotate] schtasks /IT start failed: ${e.message}`);
+    return { started: true, session: probeClientSession() };
   }
-  // 兜底：直接启动（交互会话可用）
+  return { started: false, session: null };
+}
+
+/** WorkBuddy 进程数；探测失败返回 null。 */
+function clientProcessCount() {
+  const own = probeOwnSessionId();
+  const cmd = own === 0
+    ? 'powershell -NoProfile -Command "(Get-CimInstance Win32_Process -Filter \\"Name=\'WorkBuddy.exe\'\\" | Measure-Object).Count"'
+    : 'powershell -NoProfile -Command "(Get-Process WorkBuddy -ErrorAction SilentlyContinue | Measure-Object).Count"';
+  const r = execSyncQuiet(cmd);
+  if (!r.ok) return null;
+  const n = Number(r.out);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** 删除临时计划任务；延迟 2s 再试（任务刚 /run 完处于状态切换期，立即删除易失败）。
+ *  原实现的 10s 单次删除在服务下长期失败，累积数百残留。 */
+function deleteTaskQuiet(taskName) {
+  setTimeout(() => {
+    (async () => {
+      for (let i = 0; i < 3; i++) {
+        if (schtasksCmd(['/delete', '/tn', taskName, '/f'])) return;
+        await sleep(3000 * (i + 1));
+      }
+      console.warn(`[rotate] 临时任务清理失败（残留，可手动删除）：schtasks /delete /tn ${taskName} /f`);
+    })();
+  }, 2000);
+}
+
+/** schtasks 子命令：execFileSync 数组传参（绕开 shell 与 GBK 输出编码层），以退出码判定成败。 */
+function schtasksCmd(args) {
+  try {
+    require('child_process').execFileSync('schtasks', args, { encoding: 'utf8', timeout: 20000 });
+    return true;
+  } catch (e) {
+    // WARNING 类输出（/ST 早于当前时间）退出码为 0，走 ok 分支；非 0 才是失败
+    return false;
+  }
+}
+
+/**
+ * 启动客户端并验证进程真的出现（返回 ok=true 才算启动成功）。
+ *
+ * 首选 schtasks /IT 交互式任务：客户端必须在用户交互会话才有窗口；
+ * 服务会话（Session 0）里 execFile 直接启动产生的正是无窗口的隐形后台
+ * 进程，因此服务会话下禁止该兜底。/IT 任务在服务上下文触发时可能静默
+ * 不运行（历史实测 Last Result=267011），故必须轮询验证并向调用方如实
+ * 报告失败原因，而非默认成功。
+ *
+ * @returns {Promise<{ok:boolean, via?:'schtasks'|'direct', session?:number|null,
+ *                     reason?:'service_session'|'no_process'|'start_failed'|'session0'}>}
+ */
+async function startClient() {
+  const exe = resolveWbExe();
+  const ownSession = probeOwnSessionId();
+  const taskName = 'RelayGateStartWb_' + Date.now().toString(36);
+  const count0 = clientProcessCount();
+
+  const created = schtasksCmd(['/create', '/tn', taskName, '/tr', `"${exe}"`, '/sc', 'once', '/st', '00:00', '/IT', '/f']);
+  if (created) {
+    try {
+      schtasksCmd(['/run', '/tn', taskName]);
+      // SYSTEM 上下文实测：/IT 任务从 /run 到进程出现有 ~30s 迟滞，等待过短会误判失败
+      const w = await waitForClientStart(45000, count0);
+      if (w.started) {
+        // 交互会话发起却落在 Session 0：客户端不可见，视为失败
+        if (ownSession !== 0 && w.session === 0) return { ok: false, reason: 'session0', session: w.session };
+        return { ok: true, via: 'schtasks', session: w.session };
+      }
+      // /run 已下发但进程未出现：落到下方判断（服务会话下不再兜底）
+    } finally {
+      deleteTaskQuiet(taskName);
+    }
+  } else {
+    console.warn(`[rotate] schtasks create failed (exit != 0): ${taskName}`);
+  }
+
+  if (ownSession === null) {
+    // 会话未知时不得兜底：execFile 若落在 Session 0 会产生隐形后台进程
+    console.error('[rotate] 无法判定本进程会话，拒绝 execFile 兜底以防隐形进程');
+    return { ok: false, reason: 'service_session' };
+  }
+  if (ownSession === 0) {
+    console.error('[rotate] 服务会话无法拉起可见客户端（schtasks /IT 未生效），拒绝 execFile 隐形兜底');
+    return { ok: false, reason: 'service_session' };
+  }
   try {
     const child = execFile(exe, [], { detached: true, stdio: 'ignore' });
     child.unref();
-    return true;
   } catch (e) {
     console.error(`[rotate] start client failed: ${e.message}`);
-    return false;
+    return { ok: false, reason: 'start_failed' };
   }
+  const w2 = await waitForClientStart(20000, count0);
+  if (!w2.started) return { ok: false, reason: 'no_process' };
+  if (w2.session === 0) return { ok: false, reason: 'session0', session: w2.session };
+  return { ok: true, via: 'direct', session: w2.session };
 }
 
 const STATE_FILE = stateFile('rotate-accounts-state.json');
@@ -241,9 +345,36 @@ function switchTo(account) {
 
 /**
  * 轮换所有账号一遍（每个账号停留 stayMs 让客户端完成初始化）。
- * @returns {Promise<{ok:number, failed:number, results:Array, skippedUids?:Array}>}
+ * 互斥：定时轮与手动触发并发时会互杀进程，进行中的轮换直接拒绝新请求。
+ * @returns {Promise<{ok:number, failed:number, results:Array, skippedUids?:Array, busy?:boolean}>}
  */
+let rotateRunning = false;
 async function rotateAll() {
+  if (rotateRunning) {
+    return { ok: 0, failed: 0, busy: true, results: [{ msg: '轮换已在进行中，本次触发被跳过' }] };
+  }
+  rotateRunning = true;
+  try {
+    return await rotateAllInner();
+  } finally {
+    rotateRunning = false;
+  }
+}
+
+/** 单账号切换与整遍轮换共用互斥（同锁：两者都杀/启客户端进程）。 */
+async function switchAccount(uid) {
+  if (rotateRunning) {
+    return { ok: false, busy: true, msg: '轮换已在进行中，请稍后再切换账号' };
+  }
+  rotateRunning = true;
+  try {
+    return await switchAccountInner(uid);
+  } finally {
+    rotateRunning = false;
+  }
+}
+
+async function rotateAllInner() {
   const rs = require('./rotate-settings').getEffective();
   const stayMs = rs.stayMs > 0 ? rs.stayMs : SWITCH_WAIT_MS;
   // 无备份时先由账号库生成种子，保证轮换可立即执行（无需手动登录客户端）
@@ -285,8 +416,13 @@ async function rotateAll() {
     results.push({ label: acct.label, uid: acct.uid, ...r });
     if (r.ok) ok++; else failed++;
     if (r.ok) {
-      // 切换后启动客户端热加载该账号，停留观察
-      startClient();
+      // 切换后启动客户端热加载该账号，停留观察；启动失败如实计失败
+      const s = await startClient();
+      if (!s.ok) {
+        results.push({ label: acct.label, uid: acct.uid, ok: false, msg: `客户端启动失败（${s.reason || 'unknown'}）` });
+        failed++;
+        break;
+      }
       await sleep(stayMs);
       // 下一个账号前再停止客户端（当前进程已在跑，直接覆盖可能被写回）
       const stopped2 = await stopClient();
@@ -305,11 +441,11 @@ async function rotateAll() {
     if (back) {
       switchTo(back);
       await sleep(1000);
-      if (!isClientRunning()) startClient();
+      if (!isClientRunning()) await startClient();
       await sleep(5000);
     }
   } else if (!isClientRunning()) {
-    startClient();
+    await startClient();
   }
 
   const st = readState();
@@ -321,8 +457,8 @@ async function rotateAll() {
   return { ok, failed, results, skippedUids };
 }
 
-/** 单账号切换：停止客户端（含提权/交互任务兜底）→ 覆盖 auth → 启动客户端（立即生效）。 */
-async function switchAccount(uid) {
+/** 单账号切换实际逻辑（互斥包装见上方 switchAccount）。 */
+async function switchAccountInner(uid) {
   const acct = discoverAccounts().find((a) => a.uid.startsWith(uid) || a.label === uid);
   if (!acct) return { ok: false, msg: '账号未找到: ' + uid };
   const cur = readUid();
@@ -339,11 +475,13 @@ async function switchAccount(uid) {
   await sleep(1000);
   const r = replaceAuthFile(acct.backup === 'workbuddy-desktop.info' ? AUTH_FILE : path.join(AUTH_DIR, acct.backup));
   if (!r.ok) {
-    startClient();
+    await startClient();
     return { ok: false, msg: r.msg };
   }
-  startClient();
-  await sleep(3000);
+  const s = await startClient();
+  if (!s.ok) {
+    return { ok: false, msg: r.msg + `，但客户端启动失败（${s.reason || 'unknown'}）`, uid: acct.uid, label: acct.label };
+  }
   return { ok: true, msg: '已切换到 ' + (acct.label || acct.uid.slice(0, 8)) + '（客户端已重启热加载）', uid: acct.uid, label: acct.label };
 }
 

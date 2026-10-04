@@ -105,7 +105,8 @@ function normalizeDevices(devices) {
     machineId: machineId || genDevices(devDeviceId).machineId,
     sqmId: devices.sqmId || devices.sqm_id || null,
     devDeviceId: devDeviceId || genDevices(machineId).devDeviceId,
-    deviceId: devices.deviceId || devices.device_id || null,
+    // deviceId 缺失时按 machineId 推导，保证与登录面/签到面的 x-device-id 同源
+    deviceId: devices.deviceId || devices.device_id || hashDeviceId(machineId || genDevices(devDeviceId).machineId),
     deviceModel: devices.deviceModel || devices.device_model || process.env.TRAE_DEVICE_MODEL || '82RF',
     osName: devices.osName || devices.os_name || process.env.TRAE_OS_NAME || 'windows',
     osVersion: devices.osVersion || devices.os_version || process.env.TRAE_OS_VERSION || 'Windows 10',
@@ -178,6 +179,17 @@ function ensureAllMissingDevices() {
 }
 
 /**
+ * 重复导入时的设备指纹取舍：原账号已有完整指纹则保留（身份稳定优先），
+ * 否则用本次导入的指纹补齐。storage.json 导入带真实 telemetry，视为可信更新。
+ */
+function keepExistingDevices(existingDevices, incomingDevices) {
+  const cur = normalizeDevices(existingDevices);
+  const inc = normalizeDevices(incomingDevices);
+  if (cur && cur.machineId && cur.devDeviceId) return cur;
+  return inc || cur;
+}
+
+/**
  * 导入账号凭据。
  * @param {object} input { storageJsonText?, authObject?, refreshToken?, label?, devices?, edition?, forceNew? }
  * @returns {object} 已入库账号（脱敏）；重复 userId 且非 forceNew 时更新凭据并带 action:'updated'
@@ -188,7 +200,7 @@ function importAccount(input = {}) {
 
   if (input.authObject) {
     auth = input.authObject;
-    storageDevices = normalizeDevices(input.authObject.devices) || normalizeDevices(input.devices);
+    storageDevices = normalizeDevices(input.devices) || normalizeDevices(input.authObject.devices);
   } else if (input.refreshToken) {
     auth = { refreshToken: input.refreshToken, label: input.label };
     storageDevices = normalizeDevices(input.devices);
@@ -205,7 +217,8 @@ function importAccount(input = {}) {
     throw new Error('imported credential has neither token nor refreshToken');
   }
 
-  // 任何导入路径最终都保证有独立设备指纹
+  // 任何导入路径最终都保证有独立设备指纹；OAuth 登录传入的 pending.device（input.devices）
+  // 优先于随机生成，使登录面与 API 面使用同一设备身份
   const devices = storageDevices || genDevices(auth.userId || input.label || Date.now());
 
   const account = toAccount(auth, {
@@ -225,8 +238,9 @@ function importAccount(input = {}) {
         edition: account.edition || existing.edition,
         host: account.host || existing.host,
         userRegion: account.userRegion || existing.userRegion,
-        // 新导入指纹优先；无则保留原账号指纹
-        devices: account.devices || existing.devices,
+        // 保留既有稳定指纹优先：同账号反复登录不应漂移设备身份（设备维度风控的典型信号）。
+        // 仅当原账号缺指纹或本次导入带全新指纹（storage.json 来源）时才更新。
+        devices: keepExistingDevices(existing.devices, account.devices),
         lastCheckinResult: 'import_updated',
       };
       if (account.token) patch.token = account.token;
@@ -298,6 +312,7 @@ module.exports = {
   genDevices,
   devicesFromStorage,
   normalizeDevices,
+  keepExistingDevices,
   ensureAccountDevices,
   ensureAllMissingDevices,
   resetAccountDevices,

@@ -108,7 +108,8 @@ async function refreshExpiringTokens() {
         message: e.message,
       }).catch(() => {});
     }
-    await sleep(300);
+    // 账号间随机间隔：替代固定 300ms 的整齐节奏
+    await sleep(600 + Math.floor(Math.random() * 1600));
   }
   state.lastRefreshAt = new Date().toISOString();
   state.lastError = failed ? `${failed} failed` : null;
@@ -228,6 +229,9 @@ async function runKeepalive() {
   try {
     // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）
     const accounts = store.list().filter((a) => a.enabled);
+    // 账号间加随机间隔：固定 200ms 的整齐节奏是上游易识别的机器化特征
+    const gapMin = 800;
+    const gapMax = 2500;
     for (const a of accounts) {
       try {
         await auth.ensureAuth(a.id);
@@ -240,7 +244,7 @@ async function runKeepalive() {
           message: `keepalive: ${e.message}`,
         }).catch(() => {});
       }
-      await sleep(200);
+      await sleep(gapMin + Math.floor(Math.random() * (gapMax - gapMin)));
     }
     state.lastKeepaliveAt = new Date().toISOString();
     // 与签到链/轮换同口径：结果写任务日志，面板「任务日志」才看得到保活失败

@@ -10,12 +10,17 @@
  *
  * 注意：OAuth 发放的 refreshToken 必须用同一 ClientID 换新（SOLO 线 en1oxy7wnw8j9n），
  * 账号落库时记录 authClientId/authHost，续期时按账号使用。
+ *
+ * 设备身份：授权 URL 携带的 machine_id/device_id 不再随机生成。随机值会让同一账号
+ * 每次登录都表现为「全新设备」，与落库 devices 及后续 API 面指纹互相矛盾，是设备维度
+ * 风控的典型触发信号。改为 genDevices 确定性指纹：登录面与 API 面同源。
  */
 const http = require('http');
 const crypto = require('crypto');
 const fetch = require('node-fetch');
 const store = require('./store');
-const { importAccount } = require('./import');
+const { importAccount, genDevices } = require('./import');
+const legacyAuth = require('../lib/auth');
 const variant = require('../platform/variant');
 
 const TRAE_HOSTS = variant.variantOf(variant.TRAE).hosts;
@@ -40,16 +45,23 @@ function assertAllowedHost(urlStr) {
   return urlStr;
 }
 
-const pending = { state: null, group: null, server: null, timer: null, result: null };
+const pending = { state: null, group: null, server: null, timer: null, result: null, device: null };
 
 function randomHex(n) {
   return crypto.randomBytes(Math.ceil(n / 2)).toString('hex').slice(0, n);
 }
 
-function randomDigits(n) {
-  let out = '';
-  while (out.length < n) out += String(crypto.randomInt(0, 10));
-  return out;
+/**
+ * 生成登录用设备身份。
+ *
+ * 授权 URL 的 machine_id/device_id 是 Trae 服务端记录「本次登录来自哪台设备」的依据。
+ * 这里复用 genDevices 的确定性形态（与账号落库 devices 同一构造），使登录面与 API 面
+ * 的设备身份同源；同时生成一次后挂在 pending 上，整个登录流程内保持一致。
+ * @returns {{machineId:string, deviceId:string}}
+ */
+function loginDeviceIdentity() {
+  const d = genDevices(randomHex(32));
+  return { machineId: d.machineId, deviceId: d.devDeviceId };
 }
 
 /** 生成授权登录 URL，并启动本地回调监听。 */
@@ -58,9 +70,9 @@ function getLoginUrl(group) {
   pending.state = randomHex(32);
   pending.group = group || null;
   pending.result = null;
+  pending.device = loginDeviceIdentity();
 
-  const machineId = randomHex(32);
-  const deviceId = randomDigits(15);
+  const { machineId, deviceId } = pending.device;
   const redirectUri = `http://127.0.0.1:${OAUTH_REDIRECT_PORT}/authorize`;
   const url = `${OAUTH_AUTH_BASE}?client_id=${OAUTH_CLIENT_ID}&client_secret=${OAUTH_CLIENT_SECRET}`
     + `&app_id=${OAUTH_APP_ID}&auth_callback_url=${encodeURIComponent(redirectUri)}`
@@ -286,6 +298,10 @@ async function completeLogin(creds = {}) {
         account: label,
         expiredAt: jwtExp(token),
       },
+      devices: pending.device ? {
+        machineId: pending.device.machineId,
+        devDeviceId: pending.device.deviceId,
+      } : undefined,
       authClientId: OAUTH_CLIENT_ID,
       authHost: OAUTH_EXCHANGE_HOST,
     });
@@ -301,28 +317,18 @@ async function completeLogin(creds = {}) {
   }
 }
 
-/** ExchangeToken（兼容信封 {code:0,data:{access_token}} 与平铺 {token} 两种响应形态）。 */
+/**
+ * ExchangeToken（登录流程内使用）。
+ * 委托 lib/auth 的完整实现（带客户端外观头 + 信封归一化），host 走白名单校验；
+ * 这里的签名只取 {token, refreshToken} 两项供 completeLogin 消费。
+ */
 async function exchangeToken(refreshToken) {
-  const url = assertAllowedHost(`${OAUTH_EXCHANGE_HOST}/cloudide/api/v3/trae/oauth/ExchangeToken`);
-  const resp = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ClientID: OAUTH_CLIENT_ID, RefreshToken: refreshToken, ClientSecret: OAUTH_CLIENT_SECRET, UserID: '' }),
+  assertAllowedHost(`${OAUTH_EXCHANGE_HOST}/cloudide/api/v3/trae/oauth/ExchangeToken`);
+  const r = await legacyAuth.exchangeToken(refreshToken, {
+    clientId: OAUTH_CLIENT_ID,
+    host: OAUTH_EXCHANGE_HOST,
   });
-  const body = await resp.json();
-  if (body && typeof body.code === 'number' && body.code !== 0) {
-    throw new Error(`ExchangeToken failed: code=${body.code} ${body.message || ''}`);
-  }
-  // 兼容三种响应形态：
-  //   1) {code:0, data:{access_token, refresh_token}}   —— 文档/TWA 形态
-  //   2) {token, refreshToken, expiredAt}               —— IDE 线平铺形态
-  //   3) {ResponseMetadata, Result:{Token, RefreshToken, TokenExpireAt}} —— api.trae(.cn|.com.cn) 实测形态
-  const data = body && body.data ? body.data : body;
-  const result = body && body.Result ? body.Result : null;
-  const token = (data && (data.access_token || data.token)) || (result && result.Token) || null;
-  if (!token) throw new Error('ExchangeToken response has no access token');
-  const newRefresh = (data && (data.refresh_token || data.refreshToken)) || (result && result.RefreshToken) || null;
-  return { token, refreshToken: newRefresh };
+  return { token: r.token, refreshToken: r.refreshToken };
 }
 
 /** GetUserInfo：拿 user_id / 用户名（失败不阻塞落库）。 */
@@ -331,7 +337,12 @@ async function getUserInfo(token) {
   const auth = token.startsWith('Cloud-IDE-JWT ') ? token : `Cloud-IDE-JWT ${token}`;
   const resp = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', authorization: auth },
+    headers: {
+      'Content-Type': 'application/json',
+      authorization: auth,
+      'user-agent': 'TraeClient/TTNet',
+      'x-app-id': OAUTH_APP_ID,
+    },
     body: JSON.stringify({}),
   });
   const body = await resp.json();
