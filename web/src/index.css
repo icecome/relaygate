@@ -9,9 +9,14 @@
     --ink-faint: #667085;
     --line: #E5E7EB;
     --line-strong: #D1D5DB;
+    --hairline: #E4E7EB;
+    --page: #EAECEF;
+    --surf: #FFFFFF;
+    --surf-2: #F7F8FA;
     --acc: #047857;
     --acc-hover: #065F46;
     --warn: #B45309;
+    --warn-fg: #78350F;
     --danger: #B91C1C;
   }
   html {

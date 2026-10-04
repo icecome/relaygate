@@ -14,10 +14,14 @@ export default {
         line: {
           DEFAULT: '#E5E7EB',
           strong: '#D1D5DB',
+          // 表面阶梯的分界描边。比 line 略深，保证在 #EAECEF 页面底上仍可辨
+          hairline: '#E4E7EB',
         },
         surf: {
           DEFAULT: '#FFFFFF',
           soft: '#F6F7F8',
+          // 二级表面：表头 / 输入框 / 嵌套区。比卡片暗一阶，让层级靠明度而非阴影区分
+          '2': '#F7F8FA',
         },
         // 单一强调色：深翠绿（唯一品牌/交互色，克制使用）
         acc: {
@@ -40,7 +44,9 @@ export default {
           soft: '#FEF2F2',
           line: '#FDBA74',
         },
-        bg: '#F5F6F7',
+        // 页面底：承载留白，不承载内容。比 surf-2 再暗一阶，
+        // 使白色卡片能靠明度差「浮起来」，而非依赖阴影堆叠
+        bg: '#EAECEF',
       },
       fontFamily: {
         sans: ['system-ui', 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC', 'sans-serif'],
