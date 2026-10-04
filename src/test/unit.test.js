@@ -1017,6 +1017,182 @@ t('resolveStreamFinish：有 tool_calls 时不得回落 stop', () => {
   assert.strictEqual(resolveStreamFinish({ sawToolCalls: false, lastFinish: 'length' }), 'length');
 });
 
+t('isTruncatedFinish：识别截断类结束原因（截断优先于 tool_calls）', () => {
+  const { isTruncatedFinish, resolveStreamFinish } = require('../model-router/dispatch');
+  assert.strictEqual(isTruncatedFinish('length'), true);
+  assert.strictEqual(isTruncatedFinish('max_tokens'), true);
+  assert.strictEqual(isTruncatedFinish('content_filter'), true);
+  assert.strictEqual(isTruncatedFinish('stop'), false);
+  assert.strictEqual(isTruncatedFinish('tool_calls'), false);
+  assert.strictEqual(isTruncatedFinish(null), false);
+  // 核心回归：tool_calls 存在时截断信号仍须胜出，否则客户端会执行残缺工具调用
+  assert.strictEqual(resolveStreamFinish({ sawToolCalls: true, lastFinish: 'length' }), 'length');
+  assert.strictEqual(resolveStreamFinish({ sawToolCalls: true, lastFinish: 'max_tokens' }), 'max_tokens');
+  assert.strictEqual(resolveStreamFinish({ sawToolCalls: true, lastFinish: 'content_filter' }), 'content_filter');
+});
+
+t('writeCompletionChunks：工具被截断时不得报 tool_calls', () => {
+  const { writeCompletionChunks } = require('../model-router/dispatch');
+  const chunks = [];
+  const res = {
+    writableEnded: false,
+    headersSent: true,
+    write(s) { chunks.push(s); return true; },
+    end() { this.writableEnded = true; },
+  };
+  writeCompletionChunks(res, {
+    id: 'chatcmpl-trunc',
+    object: 'chat.completion',
+    created: 1,
+    model: 'm',
+    choices: [{
+      index: 0,
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: '{"path":"a"' } }],
+      },
+      finish_reason: 'length',
+    }],
+    usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+  }, 'vm/unified-chat');
+  const parsed = chunks.filter((c) => c.startsWith('data: ')).map((c) => c.slice(6).trim())
+    .filter((d) => d !== '[DONE]').map((d) => JSON.parse(d));
+  const fin = parsed.find((o) => o.choices[0].finish_reason);
+  assert.strictEqual(fin.choices[0].finish_reason, 'length', '截断必须透传，不得被 tool_calls 覆盖');
+});
+
+t('createStreamHandler：参数残缺的工具调用置 sawIncompleteToolArgs（B2 依据）', () => {
+  const { createStreamHandler } = require('../transform/sse');
+  const events = [];
+  const handler = createStreamHandler((e) => events.push(e), { userText: '' });
+  // 半截 JSON：有键值骨架但解析不出对象
+  handler.feedLine('event: output');
+  handler.feedLine('data: ' + JSON.stringify({ tool_calls: [{ index: 0, id: 'c1', function: { name: 'write_file', arguments: '{"path":"out.txt","cont' } }] }));
+  handler.flushToolAccum();
+  assert.strictEqual(handler.sawIncompleteToolArgs(), true, '半截参数应置位');
+  const call = events.find((e) => e.type === 'tool_call');
+  assert.ok(call, '工具调用仍应发出（不丢弃）');
+  // 默认不注入标记（避免严格 schema 客户端不认额外键），但行为判定仍生效
+  assert.strictEqual(call.call.arguments, '{}', '默认应给合法空对象，不注入 __incomplete');
+
+  // 完整参数不应置位
+  const h2 = createStreamHandler(() => {}, { userText: '' });
+  h2.feedLine('event: output');
+  h2.feedLine('data: ' + JSON.stringify({ tool_calls: [{ index: 0, id: 'c2', function: { name: 'read_file', arguments: '{"path":"a.js"}' } }] }));
+  h2.flushToolAccum();
+  assert.strictEqual(h2.sawIncompleteToolArgs(), false, '完整参数不应置位');
+
+  // 显式空对象不算残缺
+  const h3 = createStreamHandler(() => {}, { userText: '' });
+  h3.feedLine('event: output');
+  h3.feedLine('data: ' + JSON.stringify({ tool_calls: [{ index: 0, id: 'c3', function: { name: 'list_dir', arguments: '{}' } }] }));
+  h3.flushToolAccum();
+  assert.strictEqual(h3.sawIncompleteToolArgs(), false, '空对象不算残缺');
+
+  // markIncomplete=true 时才注入诊断标记
+  const h4 = createStreamHandler(() => {}, { userText: '', markIncomplete: true });
+  h4.feedLine('event: output');
+  h4.feedLine('data: ' + JSON.stringify({ tool_calls: [{ index: 0, id: 'c4', function: { name: 'write_file', arguments: '{"path":"o.tx' } }] }));
+  h4.flushToolAccum();
+  assert.strictEqual(h4.sawIncompleteToolArgs(), true, '开启开关时仍应置位');
+});
+
+t('continue：shouldContinue 仅对输出上限类结束原因触发', () => {
+  const { shouldContinue } = require('../transform/continue');
+  assert.strictEqual(shouldContinue('length'), true);
+  assert.strictEqual(shouldContinue('max_tokens'), true);
+  assert.strictEqual(shouldContinue('stop'), false);
+  assert.strictEqual(shouldContinue('tool_calls'), false);
+  // content_filter 是内容策略拦截，重试不会改变结果
+  assert.strictEqual(shouldContinue('content_filter'), false);
+  assert.strictEqual(shouldContinue(null), false);
+});
+
+t('continue：buildContinueMessages 追加 assistant 产出与续写指令', () => {
+  const { buildContinueMessages, CONTINUE_PROMPT } = require('../transform/continue');
+  const msgs = [{ role: 'user', content: 'q' }];
+  const out = buildContinueMessages(msgs, '已输出内容');
+  assert.strictEqual(out.length, 3);
+  assert.strictEqual(out[1].role, 'assistant');
+  assert.strictEqual(out[1].content, '已输出内容');
+  assert.strictEqual(out[2].role, 'user');
+  assert.strictEqual(out[2].content, CONTINUE_PROMPT);
+  assert.strictEqual(msgs.length, 1, '不得修改原数组');
+  assert.strictEqual(buildContinueMessages(msgs, '').length, 1, '无产出时不追加');
+});
+
+t('continue：截断时续写直到正常结束，并累计内容', async () => {
+  const { runWithContinuation } = require('../transform/continue');
+  let round = 0;
+  const r = await runWithContinuation({
+    messages: [{ role: 'user', content: 'q' }],
+    maxContinues: 5,
+    callOnce: async () => {
+      round++;
+      if (round === 1) return { content: 'A', finishReason: 'length', toolCalls: [], usage: { total_tokens: 1 } };
+      if (round === 2) return { content: 'B', finishReason: 'length', toolCalls: [], usage: { total_tokens: 2 } };
+      return { content: 'C', finishReason: 'stop', toolCalls: [], usage: { total_tokens: 3 } };
+    },
+  });
+  assert.strictEqual(r.content, 'ABC');
+  assert.strictEqual(r.continues, 2);
+  assert.strictEqual(r.truncated, false);
+  assert.strictEqual(r.usage.total_tokens, 3, 'usage 取最后一轮');
+});
+
+t('continue：达到上限仍截断则如实标记 truncated', async () => {
+  const { runWithContinuation } = require('../transform/continue');
+  let calls = 0;
+  const r = await runWithContinuation({
+    messages: [],
+    maxContinues: 2,
+    callOnce: async () => { calls++; return { content: 'X', finishReason: 'length', toolCalls: [], usage: null }; },
+  });
+  assert.strictEqual(calls, 3, '首次 + 2 次续写');
+  assert.strictEqual(r.content, 'XXX');
+  assert.strictEqual(r.continues, 2);
+  assert.strictEqual(r.truncated, true, '未收敛时必须如实标记，不得假装完整');
+});
+
+t('continue：maxContinues=0 不续写，且工具轮不续写', async () => {
+  const { runWithContinuation } = require('../transform/continue');
+  let calls = 0;
+  const r0 = await runWithContinuation({
+    messages: [], maxContinues: 0,
+    callOnce: async () => { calls++; return { content: 'Y', finishReason: 'length', toolCalls: [], usage: null }; },
+  });
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(r0.truncated, true);
+
+  let toolCalls = 0;
+  await runWithContinuation({
+    messages: [], maxContinues: 5,
+    callOnce: async () => {
+      toolCalls++;
+      return { content: 'T', finishReason: 'length', toolCalls: [{ id: 'c1', name: 'f', arguments: '{}' }], usage: null };
+    },
+  });
+  assert.strictEqual(toolCalls, 1, '工具调用轮不得续写（避免残缺参数二次拼接）');
+});
+
+t('continue：续写请求带上已产出内容（user,assistant,user）', async () => {
+  const { runWithContinuation } = require('../transform/continue');
+  const seen = [];
+  await runWithContinuation({
+    messages: [{ role: 'user', content: 'q' }],
+    maxContinues: 1,
+    callOnce: async (msgs) => {
+      seen.push(msgs.map((m) => m.role).join(','));
+      return seen.length === 1
+        ? { content: 'P1', finishReason: 'length', toolCalls: [], usage: null }
+        : { content: 'P2', finishReason: 'stop', toolCalls: [], usage: null };
+    },
+  });
+  assert.strictEqual(seen[0], 'user');
+  assert.strictEqual(seen[1], 'user,assistant,user');
+});
+
 t('api-keys 不落库明文（仅哈希）', () => {
   const keys = require('../credentials/api-keys');
   const { db } = require('../credentials/db');

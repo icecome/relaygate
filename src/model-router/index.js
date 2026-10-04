@@ -171,6 +171,10 @@ async function handleChat(req, res, ctx) {
         if (!res.writableEnded) res.json(result);
       }
       health.markOk(virtualId, cand.id, Date.now() - t0);
+      // 结束原因可观测性：truncated=true 表示上游截断（客户端会走续写/提示超长）
+      const fr = (result && result.finishReason)
+        || (result && result.choices && result.choices[0] && result.choices[0].finish_reason)
+        || null;
       logRequest({
         endpoint: '/v1/chat/completions',
         method: 'POST',
@@ -184,6 +188,7 @@ async function handleChat(req, res, ctx) {
         platform: provider.type === 'openai' ? `openai:${cand.provider}` : provider.builtin,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
+        ...(fr ? { finishReason: fr, truncated: dispatch.isTruncatedFinish(fr) } : {}),
       });
       return { ok: true, candidate: cand, attempts };
     } catch (err) {

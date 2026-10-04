@@ -12,6 +12,8 @@ const wbChat = require('../workbuddy/chat');
 const auth = require('../auth');
 const { normalizeTraeMessages } = require('../transform/request');
 const { createStreamHandler } = require('../transform/sse');
+const { isTruncatedFinish } = require('../transform/finish');
+const { runWithContinuation } = require('../transform/continue');
 const { exportOpenAI } = require('../transform/emitters');
 const { logRequest } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
@@ -120,6 +122,23 @@ router.post('/v1/chat/completions', async (req, res) => {
   let requestError = null;
   let requestStatus = 200;
   let lastUsage = null; // 上游 token_usage 事件（流式/非流式均捕获）
+  let finalFinishReason = null; // 实际下发给客户端的结束原因（可观测性：能直接查出截断）
+  let continueCount = 0; // 截断自动续写的实际轮数
+  const finishFields = () => {
+    if (!finalFinishReason) return {};
+    return {
+      finishReason: finalFinishReason,
+      truncated: isTruncatedFinish(finalFinishReason),
+      ...(continueCount > 0 ? { continues: continueCount } : {}),
+    };
+  };
+  // 末帧结束原因：上游截断信号优先，其次 tool_calls，最后兜底 stop
+  const finalFinish = (upstreamFinish) => {
+    if (isTruncatedFinish(upstreamFinish)) return upstreamFinish;
+    if (upstreamFinish === 'tool_calls') return 'tool_calls';
+    if (toolCalls > 0) return 'tool_calls';
+    return upstreamFinish || 'stop';
+  };
   const usageFields = () => {
     const pt = lastUsage ? (lastUsage.prompt_tokens || 0) : 0;
     const ct = lastUsage ? (lastUsage.completion_tokens || 0) : 0;
@@ -313,7 +332,6 @@ router.post('/v1/chat/completions', async (req, res) => {
     let finished = false;
     let toolCallIndex = 0;
     let started = false; // out.start 是否已下发（延迟到首个上游事件，保证流未开始时可整体轮换）
-    const finishReason = () => (toolCalls > 0 ? 'tool_calls' : 'stop');
 
     const write = (bytes) => bytes.forEach((d) => { if (!res.writableEnded) res.write(d); });
     const ensureStart = () => {
@@ -322,6 +340,68 @@ router.post('/v1/chat/completions', async (req, res) => {
         write(out.start(completionId, model));
       }
     };
+
+    /**
+     * 单轮流式消费。emitBytes=true 时边收边发给客户端（原行为）；
+     * false 时只缓冲，供续写模式聚合后一次性下发。
+     */
+    const runRound = async (roundMessages, accountId, emitBytes) => {
+      let roundContent = '';
+      let roundFinish = null;
+      let roundUsage = null;
+      const roundToolCalls = [];
+      let roundIncompleteTools = false;
+
+      const handler = createStreamHandler((evt) => {
+        switch (evt.type) {
+          case 'text':
+            if (evt.content) roundContent += evt.content;
+            if (emitBytes) { ensureStart(); write(out.text(completionId, model, evt.content, evt.reasoning)); }
+            break;
+          case 'tool_call':
+            roundToolCalls.push(evt.call);
+            if (emitBytes) {
+              ensureStart();
+              write(out.toolCall(completionId, model, evt.call, toolCallIndex));
+              toolCallIndex += 1;
+            }
+            break;
+          case 'done':
+            roundFinish = evt.finish_reason || 'stop';
+            break;
+          case 'error': {
+            // 抛错交还账号池：流未开始时由外层整体轮换；已开始则由外层补错误帧
+            requestError = evt.message;
+            if (isRateLimitCode(evt.code)) pool.record(accountId, 'rate_limit');
+            const e = new Error(evt.message || 'upstream stream error');
+            e.code = 'UPSTREAM_STREAM_ERROR';
+            if (evt.code != null) e.upstreamCode = evt.code;
+            throw e;
+          }
+          case 'token_usage':
+            roundUsage = evt.data || null;
+            lastUsage = evt.data || null;
+            return;
+          default:
+            return;
+        }
+      }, { userText, markIncomplete: config.markIncompleteToolArgs });
+
+      const up = await llmUtilsChat(normalizeTraeMessages(roundMessages), model, true, { ...callOpts, accountId });
+      const feeder = createLineFeeder((line) => handler.feedLine(line));
+      await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model });
+      feeder.flush();
+      handler.flushToolAccum();
+
+      // B2：参数残缺的工具调用 => 按截断收尾（不续写工具轮，交由客户端处置）
+      if (handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs()) {
+        roundFinish = 'length';
+        roundIncompleteTools = true;
+      }
+      return { content: roundContent, finishReason: roundFinish, usage: roundUsage, toolCalls: roundToolCalls, incompleteTools: roundIncompleteTools };
+    };
+
+    const continueEnabled = config.autoContinue && config.maxContinues > 0;
 
     try {
       await pool.run(async (accountId) => {
@@ -332,59 +412,46 @@ router.post('/v1/chat/completions', async (req, res) => {
         started = false;
         requestError = null;
 
-        const handler = createStreamHandler((evt) => {
-          let bytes = [];
-          switch (evt.type) {
-            case 'text':
-              ensureStart();
-              bytes = out.text(completionId, model, evt.content, evt.reasoning);
-              break;
-            case 'tool_call':
-              ensureStart();
-              toolCalls += 1;
-              bytes = out.toolCall(completionId, model, evt.call, toolCallIndex);
-              toolCallIndex += 1;
-              break;
-            case 'done':
-              ensureStart();
-              if (!finished) {
-                bytes = out.done(completionId, model, evt.finish_reason === 'tool_calls' ? 'tool_calls' : finishReason());
-                finished = true;
-              }
-              break;
-            case 'error':
-              requestError = evt.message;
-              if (!started) {
-                // 流未开始（一个字节都没发给客户端）：抛错交还账号池冷却并轮换。
-                // 多数 3004 限流在首个 output 之前到达，此窗口轮换收益最大。
-                const e = new Error(evt.message || 'upstream stream error');
-                e.code = 'UPSTREAM_STREAM_ERROR';
-                if (evt.code != null) e.upstreamCode = evt.code;
-                throw e;
-              }
-              // 已有输出后的流内错误：回灌账号池冷却，并向客户端下发错误事件
-              if (isRateLimitCode(evt.code)) pool.record(accountId, 'rate_limit');
-              bytes = out.error(completionId, model, evt.code, evt.message);
-              break;
-            case 'token_usage':
-              // 上游真实 token 消耗（进流量日志，供门户展示）
-              lastUsage = evt.data || null;
-              return;
-            default:
-              return;
-          }
-          write(bytes);
-        }, { userText });
+        // 续写模式需缓冲后再下发（已发出的半截内容无法撤回），故 emitBytes=false
+        const emitDuringRound = !continueEnabled;
 
-        const up = await llmUtilsChat(normalizeTraeMessages(messages), model, true, { ...callOpts, accountId });
+        let finalContent = '';
+        let finalToolCalls = [];
+        let finalReason = null;
+
+        if (!continueEnabled) {
+          const r = await runRound(messages, accountId, emitDuringRound);
+          finalContent = r.content;
+          finalToolCalls = r.toolCalls;
+          finalReason = r.finishReason;
+          toolCalls = r.toolCalls.length;
+          continueCount = 0;
+        } else {
+          const agg = await runWithContinuation({
+            callOnce: (msgs) => runRound(msgs, accountId, false),
+            messages,
+            maxContinues: config.maxContinues,
+          });
+          finalContent = agg.content;
+          finalToolCalls = agg.toolCalls;
+          finalReason = agg.finishReason;
+          continueCount = agg.continues || 0;
+        }
+
         req.accountId = accountId;
-        const feeder = createLineFeeder((line) => handler.feedLine(line));
-        await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model });
-        feeder.flush();
-        handler.flushToolAccum();
         ensureStart();
-        if (!finished && !res.writableEnded) {
-          write(out.done(completionId, model, finishReason()));
+
+        if (continueEnabled) {
+          // 聚合结果一次性下发
+          if (finalContent) write(out.text(completionId, model, finalContent));
+          finalToolCalls.forEach((c, i) => write(out.toolCall(completionId, model, c, i)));
+          toolCalls = finalToolCalls.length;
+        }
+
+        if (!finished) {
+          const fr = finalFinish(finalReason);
+          finalFinishReason = fr;
+          write(out.done(completionId, model, fr));
           finished = true;
         }
         if (!res.writableEnded) res.end();
@@ -414,6 +481,7 @@ router.post('/v1/chat/completions', async (req, res) => {
         durationMs: Date.now() - startedAt,
         error: requestError,
         ...usageFields(),
+        ...finishFields(),
       });
     }
     return;
@@ -421,8 +489,59 @@ router.post('/v1/chat/completions', async (req, res) => {
 
   // ----- 非流式 -----
   try {
-    const { result: up, accountId } = await pool.run(async (accountId) =>
-      llmUtilsChat(normalizeTraeMessages(messages), model, false, { ...callOpts, accountId }), runOpts);
+    const continueEnabled = config.autoContinue && config.maxContinues > 0;
+    let up = null;
+    let accountId = null;
+
+    if (!continueEnabled) {
+      const r = await pool.run(async (id) =>
+        llmUtilsChat(normalizeTraeMessages(messages), model, false, { ...callOpts, accountId: id }), runOpts);
+      up = r.result;
+      accountId = r.accountId;
+    } else {
+      // 续写模式：逐轮调用，把截断的产出拼回上下文直到正常结束或达上限
+      const agg = await runWithContinuation({
+        messages,
+        maxContinues: config.maxContinues,
+        callOnce: async (msgs) => {
+          const r = await pool.run(async (id) =>
+            llmUtilsChat(normalizeTraeMessages(msgs), model, false, { ...callOpts, accountId: id }), runOpts);
+          accountId = r.accountId;
+          const d = (r.result && r.result.data) || {};
+          const choice = (d.choices && d.choices[0]) || {};
+          const msg = choice.message || {};
+          return {
+            content: msg.content || d.response || d.content || '',
+            finishReason: choice.finish_reason || 'stop',
+            toolCalls: Array.isArray(msg.tool_calls) ? msg.tool_calls : [],
+            usage: d.usage || null,
+          };
+        },
+      });
+      // 组装成本地 completion 对象，与原非流式响应形态保持一致
+      up = {
+        data: {
+          id: completionId,
+          object: 'chat.completion',
+          created: Math.floor(Date.now() / 1000),
+          model,
+          choices: [{
+            index: 0,
+            message: {
+              role: 'assistant',
+              content: agg.content,
+              ...(agg.toolCalls.length ? { tool_calls: agg.toolCalls } : {}),
+            },
+            finish_reason: agg.toolCalls.length
+              ? (isTruncatedFinish(agg.finishReason) ? agg.finishReason : 'tool_calls')
+              : (agg.finishReason || 'stop'),
+          }],
+          usage: agg.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        },
+      };
+      continueCount = agg.continues || 0;
+    }
+
     req.accountId = accountId || req.accountId;
     if (stickyKey && accountId) sticky.bind(stickyKey, accountId);
     if (model && model !== 'auto') availability.markUsable(model);
@@ -434,9 +553,11 @@ router.post('/v1/chat/completions', async (req, res) => {
       const msg = data.choices[0].message || {};
       if (Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
         toolCalls = msg.tool_calls.length;
-        // Agent 关键：有 tool_calls 时强制 tool_calls，避免上游误写 stop 导致客户端提前收工
-        data.choices[0].finish_reason = 'tool_calls';
+        // 截断优先于 tool_calls：参数可能半截，报 tool_calls 会让客户端执行残缺调用
+        const fr = data.choices[0].finish_reason;
+        if (!isTruncatedFinish(fr)) data.choices[0].finish_reason = 'tool_calls';
       }
+      finalFinishReason = data.choices[0].finish_reason || null;
       logRequest({
         endpoint: '/v1/chat/completions',
         method: 'POST',
@@ -447,10 +568,12 @@ router.post('/v1/chat/completions', async (req, res) => {
         toolsIn: tools ? tools.length : 0,
         durationMs: Date.now() - startedAt,
         ...usageFields(),
+        ...finishFields(),
       });
       return res.json(data);
     }
     const content = data.response || data.content || '';
+    finalFinishReason = 'stop';
     logRequest({
       endpoint: '/v1/chat/completions',
       method: 'POST',
@@ -461,6 +584,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       toolsIn: tools ? tools.length : 0,
       durationMs: Date.now() - startedAt,
       ...usageFields(),
+      ...finishFields(),
     });
     return res.json({
       id: completionId,
