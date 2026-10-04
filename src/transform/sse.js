@@ -17,6 +17,8 @@
  */
 function createStreamHandler(emit, opts = {}) {
   const userText = opts.userText || '';
+  // 是否在残缺参数里注入 __incomplete/__raw 诊断标记（默认关闭，见 config.markIncompleteToolArgs）
+  const markIncomplete = opts.markIncomplete === true;
   let currentEvent = '';
   let toolUseAccum = ''; // 跨 chunk 缓冲未闭合的 tool JSON 文本
   /**
@@ -26,6 +28,8 @@ function createStreamHandler(emit, opts = {}) {
    */
   const pendingNative = new Map();
   let lastToolIndex = -1;
+  /** 是否出现过参数被截断（半截 JSON）的工具调用；聚合层据其把末帧定为 length（B2）。 */
+  let sawIncompleteToolArgs = false;
 
   // 从用户文本提取路径/模式，用于缺参补偿
   function compensateToolArgs(toolName) {
@@ -52,28 +56,51 @@ function createStreamHandler(emit, opts = {}) {
   }
 
   /**
-   * 规范化工具参数。
-   * - 空参先补偿，仍无则返回 {}（不丢弃调用，避免 Agent 停住）
-   * - 但对 glob/read 等强依赖参数的工具，补偿失败时仍返回 {} 由客户端重试
+   * 判断 JSON 字符串是否为「被截断的半截对象」：有内容但解析不出合法对象，
+   * 且已出现键值骨架（含冒号）。区别于「上游本就发了空对象 `{}`」。
+   */
+  function looksIncomplete(raw) {
+    const s = String(raw || '').trim();
+    if (!s) return false;
+    if (s === '{}' || s === '[]') return false;
+    if (safeParse(s)) return false;
+    return s.includes('{') || s.includes(':');
+  }
+
+  /**
+   * 规范化工具参数。返回 { args, incomplete }：
+   * - args 为交给客户端的参数对象；incomplete 标记原始参数是否为「半截 JSON」。
+   * - 判定与服务解耦：无论是否注入 __incomplete 标记，incomplete 都会如实返回，
+   *   供聚合层把末帧定为 length（B2）。
+   * - markIncomplete 为 true 时才在 args 里注入 __incomplete/__raw，便于排查；
+   *   默认关闭，避免严格 schema 校验的客户端不认额外键。
    */
   function finalizeArgs(name, args) {
+    const plain = (v) => ({ args: v, incomplete: false });
     if (args == null || args === '') {
-      return compensateToolArgs(name) || {};
+      return plain(compensateToolArgs(name) || {});
     }
     if (typeof args === 'object' && !Array.isArray(args)) {
       const keys = Object.keys(args);
-      if (!keys.length) return compensateToolArgs(name) || {};
-      return args;
+      if (!keys.length) return plain(compensateToolArgs(name) || {});
+      return plain(args);
     }
     if (typeof args === 'string') {
       const parsed = safeParse(args.trim());
       if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        if (!Object.keys(parsed).length) return compensateToolArgs(name) || {};
-        return parsed;
+        if (!Object.keys(parsed).length) return plain(compensateToolArgs(name) || {});
+        return plain(parsed);
       }
-      return compensateToolArgs(name) || {};
+      const compensated = compensateToolArgs(name);
+      if (compensated) return plain(compensated);
+      if (looksIncomplete(args)) {
+        if (!markIncomplete) return { args: {}, incomplete: true };
+        // __raw 截断到 500 字符：够看出形态即可，避免半截大文件正文塞进 SSE 帧
+        return { args: { __incomplete: true, __raw: String(args).slice(0, 500) }, incomplete: true };
+      }
+      return plain({});
     }
-    return compensateToolArgs(name) || {};
+    return plain(compensateToolArgs(name) || {});
   }
 
   /** 优先完整 arguments，否则 partial_arguments。续传分片勿 trim，否则会丢掉空格。 */
@@ -91,8 +118,11 @@ function createStreamHandler(emit, opts = {}) {
   }
 
   function emitNativeTool(item) {
-    const args = finalizeArgs(item.name, item.raw);
+    const { args, incomplete } = finalizeArgs(item.name, item.raw);
     item.emitted = true;
+    // 参数残缺时置位，供聚合层把末帧 finish_reason 定为 length（B2）：
+    // 让客户端走「续写」而非执行一个参数不完整的工具。
+    if (incomplete) sawIncompleteToolArgs = true;
     emit({
       type: 'tool_call',
       call: {
@@ -252,7 +282,8 @@ function createStreamHandler(emit, opts = {}) {
       if (!hit) break;
       out += toolUseAccum.slice(idx, hit.start);
       const name = hit.obj.name;
-      const args = finalizeArgs(name, hit.obj.arguments);
+      const { args, incomplete } = finalizeArgs(name, hit.obj.arguments);
+      if (incomplete) sawIncompleteToolArgs = true;
       if (args) {
         emit({
           type: 'tool_call',
@@ -313,7 +344,13 @@ function createStreamHandler(emit, opts = {}) {
     }
   }
 
-  return { feedLine, ingest, flushToolAccum };
+  return {
+    feedLine,
+    ingest,
+    flushToolAccum,
+    /** 是否出现过参数残缺的工具调用（B2：据此把末帧 finish_reason 定为 length）。 */
+    sawIncompleteToolArgs: () => sawIncompleteToolArgs,
+  };
 }
 
 /** 解析 JSON 字符串，失败返回 null。 */

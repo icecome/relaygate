@@ -110,6 +110,13 @@ const config = {
   retryBaseDelay: parseInt(process.env.TRAE_RETRY_DELAY || '2000', 10),
   requestTimeoutMs: parseInt(process.env.TRAE_REQUEST_TIMEOUT_MS || '600000', 10),
 
+  // 截断自动续写：上游因输出上限中断（finish_reason=length）时，网关把已产出内容
+  // 拼回上下文继续请求，对客户端表现为一次完整回复。关闭则如实透传截断信号。
+  autoContinue: process.env.AUTO_CONTINUE === 'true',
+  maxContinues: Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0),
+  // 残缺工具参数是否注入 __incomplete 诊断标记（默认关闭，避免严格 schema 客户端不认）
+  markIncompleteToolArgs: process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true',
+
   // 工具调用协议：'native'(默认) / 'text'
   toolProtocol: process.env.TOOL_PROTOCOL || 'native',
 
@@ -184,6 +191,9 @@ config.reload = function reload() {
   config.maxRetries = parseInt(process.env.TRAE_MAX_RETRIES || '3', 10);
   config.retryBaseDelay = parseInt(process.env.TRAE_RETRY_DELAY || '2000', 10);
   config.requestTimeoutMs = parseInt(process.env.TRAE_REQUEST_TIMEOUT_MS || '600000', 10);
+  config.autoContinue = process.env.AUTO_CONTINUE === 'true';
+  config.maxContinues = Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0);
+  config.markIncompleteToolArgs = process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true';
   config.statusPublic = process.env.STATUS_PUBLIC === 'true';
   console.log(`[config] reloaded: ${Object.keys(freshModelConfig.models || {}).length} models, pool=${config.poolStrategy}`);
 };

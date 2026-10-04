@@ -18,6 +18,7 @@ const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
 const { createLineFeeder } = require('../lib/sse-lines');
+const config = require('../config');
 
 const router = Router();
 
@@ -127,7 +128,7 @@ router.post('/v1/responses', async (req, res) => {
           if (evt.code != null) e.upstreamCode = evt.code;
           throw e;
         }
-      });
+      }, { markIncomplete: config.markIncompleteToolArgs });
       // 保留跨块残行：上游 JSON 事件被 chunk 边界切开时，整行解析会失败并丢事件
       const feeder = createLineFeeder((line) => handler.feedLine(line));
       await consumeStream(up.body, (text) => feeder.feed(text));
