@@ -28,7 +28,7 @@ export default function SectionTabs() {
   };
 
   return (
-    <div className="sticky top-0 z-20 shrink-0 bg-surf border-b border-line">
+    <div className="sticky top-0 z-20 shrink-0 bg-surf border-b border-line-hairline">
       <div className="max-w-[1200px] mx-auto px-6 py-2.5">
         <div className="seg-track" role="tablist" aria-label={`${group.label}子栏目`}>
           {tabs.map((t, i) => (
