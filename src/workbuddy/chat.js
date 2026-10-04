@@ -10,6 +10,7 @@
  *   - model 剥离 'wb/' 前缀。
  */
 const wbAuth = require('./auth');
+const { isTruncatedFinish } = require('../transform/finish');
 const { createLineFeeder } = require('../lib/sse-lines');
 
 /** 请求体规范化（红线项）。 */
@@ -19,6 +20,18 @@ function normalizeBody(body) {
   out.stream = true; // 强制流式（非流式由本地聚合）
   if (out.tool_choice && typeof out.tool_choice === 'object') out.tool_choice = 'auto';
   return out;
+}
+
+/** 工具参数是否为「半截 JSON」：有内容但解析不出对象，且带键值骨架。 */
+function looksIncompleteArgs(raw) {
+  const s = String(raw || '').trim();
+  if (!s || s === '{}') return false;
+  try { JSON.parse(s); return false; } catch { return s.includes('{') || s.includes(':'); }
+}
+
+/** 是否任一工具调用的参数被截断。 */
+function hasIncompleteToolArgs(toolCalls) {
+  return (toolCalls || []).some((tc) => tc && tc.function && looksIncompleteArgs(tc.function.arguments));
 }
 
 /**
@@ -94,12 +107,16 @@ async function chatAggregate(acct, body) {
   const message = { role: 'assistant', content };
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCalls.length) message.tool_calls = toolCalls;
+  // B2：工具参数半截（非空但解析不出 JSON）而上游未标截断时，补上截断语义，
+  // 让客户端走「续写」而非执行参数残缺的工具调用。
+  if (!isTruncatedFinish(finish) && hasIncompleteToolArgs(toolCalls)) finish = 'length';
   return {
     id: 'chatcmpl-wb-' + Date.now().toString(36),
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: body.model,
-    choices: [{ index: 0, message, finish_reason: toolCalls.length ? 'tool_calls' : finish }],
+    // 截断优先于 tool_calls：截断时工具参数可能半截，报 tool_calls 会让客户端执行残缺调用
+    choices: [{ index: 0, message, finish_reason: isTruncatedFinish(finish) ? finish : (toolCalls.length ? 'tool_calls' : finish) }],
     usage: usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   };
 }

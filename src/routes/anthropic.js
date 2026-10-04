@@ -9,6 +9,8 @@ const { Router } = require('express');
 const { llmUtilsChat, consumeStream } = require('../upstream/client');
 const { isRateLimitCode } = require('../upstream/errors');
 const { createStreamHandler } = require('../transform/sse');
+const { isTruncatedFinish } = require('../transform/finish');
+const config = require('../config');
 const { exportAnthropic } = require('../transform/emitters');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
@@ -101,6 +103,7 @@ router.post('/v1/messages', async (req, res) => {
   let requestError = null;
   let requestStatus = 200;
   let toolCallCount = 0;
+  let finishReasonForLog = null; // 下发给客户端的 stop_reason（可观测性）
 
   const built = anthropicToOpenAI(messages);
   if (system) {
@@ -117,12 +120,14 @@ router.post('/v1/messages', async (req, res) => {
 
   const out = exportAnthropic();
   let hadToolCall = false;
+  let upstreamFinish = null; // 上游 done 事件的结束原因（截断判定依据）
   let streamAccountId = null; // 流式错误回灌账号池用（pool.run 成功后赋值）
   const handler = createStreamHandler((evt) => {
     let bytes = [];
     switch (evt.type) {
       case 'text': bytes = out.text(msgId, model, evt.content, evt.reasoning); break;
       case 'tool_call': hadToolCall = true; toolCallCount += 1; bytes = out.toolCall(msgId, model, evt.call); break;
+      case 'done': upstreamFinish = evt.finish_reason || 'stop'; return;
       case 'token_usage': lastUsage = evt.data || null; return;
       case 'error':
         requestError = evt.message;
@@ -132,7 +137,7 @@ router.post('/v1/messages', async (req, res) => {
       default: return;
     }
     bytes.forEach((d) => { if (!res.writableEnded) res.write(d); });
-  });
+  }, { markIncomplete: config.markIncompleteToolArgs });
 
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
@@ -143,11 +148,17 @@ router.post('/v1/messages', async (req, res) => {
     feeder.flush();
     handler.flushToolAccum();
     if (!res.writableEnded) {
+      // 结束原因：截断优先（避免客户端执行参数残缺的工具）。Anthropic 用
+      // max_tokens 表达截断，tool_use 表达工具请求，end_turn 表达正常结束。
+      const truncated = isTruncatedFinish(upstreamFinish)
+        || (handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs());
+      const stopReason = truncated ? 'max_tokens' : (hadToolCall ? 'tool_use' : 'end_turn');
+      finishReasonForLog = stopReason;
       if (hadToolCall) {
-        res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 0 } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
       } else {
         res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
-        res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } })}\n\n`);
+        res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
       }
       res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
       res.end();
@@ -175,6 +186,9 @@ router.post('/v1/messages', async (req, res) => {
       promptTokens: lastUsage ? lastUsage.prompt_tokens || 0 : 0,
       completionTokens: lastUsage ? lastUsage.completion_tokens || 0 : 0,
       totalTokens: lastUsage ? lastUsage.total_tokens || 0 : 0,
+      ...(finishReasonForLog
+        ? { finishReason: finishReasonForLog, truncated: finishReasonForLog === 'max_tokens' }
+        : {}),
     });
   }
 });

@@ -10,6 +10,7 @@ const libAuth = require('../lib/auth');
 const { v4: uuidv4 } = require('../lib/uuid');
 const { retryWithBackoff } = require('./errors');
 const { createStreamHandler } = require('../transform/sse');
+const { isTruncatedFinish } = require('../transform/finish');
 const fs = require('fs');
 const path = require('path');
 
@@ -329,7 +330,7 @@ async function aggregateSseToCompletion(rawText, { model, userText } = {}) {
       default:
         break;
     }
-  }, { userText });
+  }, { userText, markIncomplete: config.markIncompleteToolArgs });
 
   const lines = String(rawText || '').split('\n');
   for (const line of lines) handler.feedLine(line);
@@ -352,6 +353,12 @@ async function aggregateSseToCompletion(rawText, { model, userText } = {}) {
     }));
   }
 
+  // B2：工具参数被截断（半截 JSON）而上游未标 length 时，补上截断语义，
+  // 让客户端走「续写」而不是执行一个参数残缺的工具调用。
+  if (handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs()) {
+    finishReason = 'length';
+  }
+
   return {
     id: `chatcmpl-${Date.now().toString(36)}`,
     object: 'chat.completion',
@@ -360,7 +367,11 @@ async function aggregateSseToCompletion(rawText, { model, userText } = {}) {
     choices: [{
       index: 0,
       message,
-      finish_reason: toolCalls.length ? 'tool_calls' : finishReason,
+      // 截断（length/max_tokens/content_filter）优先于 tool_calls：截断时工具参数可能是
+      // 半截，报 tool_calls 会让客户端执行残缺调用。让客户端走续写/提示超长才安全。
+      finish_reason: isTruncatedFinish(finishReason)
+        ? finishReason
+        : (toolCalls.length ? 'tool_calls' : finishReason),
     }],
     usage: {
       prompt_tokens: (usage && usage.prompt_tokens) || 0,

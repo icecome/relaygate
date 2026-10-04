@@ -132,11 +132,16 @@ function sanitizeUsage(u) {
   };
 }
 
+/** 上游因输出上限/内容策略提前中断的结束原因；这些必须原样透传给客户端。 */
+const { isTruncatedFinish } = require('../transform/finish');
+
 /**
  * 流式末帧 finish_reason 决策。
- * Agent 关键：有 tool_calls 时必须是 tool_calls，否则客户端会在首段文本后自动停止。
+ * - 截断（length/max_tokens/content_filter）优先：让客户端走「续写/提示超长」而非「执行工具」
+ * - 未被截断且有 tool_calls：必须是 tool_calls，否则客户端会在首段文本后自动停止
  */
 function resolveStreamFinish({ sawToolCalls, lastFinish } = {}) {
+  if (isTruncatedFinish(lastFinish)) return lastFinish;
   if (sawToolCalls) return 'tool_calls';
   return lastFinish || 'stop';
 }
@@ -281,8 +286,8 @@ async function dispatchStream(provider, remoteModel, body, res, opts = {}) {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
   }
-  writeCompletionChunks(res, data, opts.echoModel || data.model || remoteModel);
-  return { streamed: true };
+  const written = writeCompletionChunks(res, data, opts.echoModel || data.model || remoteModel);
+  return { streamed: true, finishReason: written.finish };
 }
 
 /** WorkBuddy 流式：上游 OpenAI SSE 直通，必要时改写 model。 */
@@ -313,6 +318,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
     let sawDone = false;
     let sawToolCalls = false;
     let lastFinish = null;
+    let outFinish = null;
     const feeder = createLineFeeder(handleLine);
     for (;;) {
       const { done, value } = await reader.read();
@@ -351,11 +357,13 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
       }
       if (ev.choices && ev.choices[0] && ev.choices[0].finish_reason) {
         lastFinish = ev.choices[0].finish_reason;
-        if (sawToolCalls) ev.choices[0].finish_reason = 'tool_calls';
+        // 截断信号不覆盖：其余情况有 tool_calls 才改写成 tool_calls
+        if (sawToolCalls && !isTruncatedFinish(lastFinish)) ev.choices[0].finish_reason = 'tool_calls';
       }
       if (shownModel && ev.model) ev.model = shownModel;
       if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
+    const resolvedFinish = resolveStreamFinish({ sawToolCalls, lastFinish });
     if (usage && !res.writableEnded) {
       const id = 'chatcmpl-wb-' + Date.now().toString(36);
       const created = Math.floor(Date.now() / 1000);
@@ -364,15 +372,16 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
         object: 'chat.completion.chunk',
         created,
         model: shownModel,
-        choices: [{ index: 0, delta: {}, finish_reason: resolveStreamFinish({ sawToolCalls, lastFinish }) }],
+        choices: [{ index: 0, delta: {}, finish_reason: resolvedFinish }],
         usage,
       })}\n\n`);
     }
     if (!sawDone && !res.writableEnded) res.write('data: [DONE]\n\n');
     if (!res.writableEnded) res.end();
+    outFinish = resolvedFinish;
   }, { edition: 'workbuddy', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
 
-  return { streamed: true };
+  return { streamed: true, finishReason: outFinish };
 }
 
 module.exports = {
@@ -382,5 +391,6 @@ module.exports = {
   attachUpstreamCode,
   sanitizeUsage,
   resolveStreamFinish,
+  isTruncatedFinish,
   writeCompletionChunks,
 };
