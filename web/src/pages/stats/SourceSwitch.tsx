@@ -31,7 +31,7 @@ export default function SourceSwitch({
             aria-checked={on}
             onClick={() => onChange(o.id)}
             className={`text-left px-3.5 py-2 rounded-card border transition-colors min-w-[220px] ${
-              on ? 'border-acc bg-acc-soft' : 'border-line bg-surf hover:border-line-strong'
+              on ? 'border-acc bg-acc-soft' : 'border-line-hairline bg-surf hover:border-line-strong'
             }`}
           >
             <div className="flex items-center gap-2">

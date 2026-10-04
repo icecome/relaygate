@@ -273,7 +273,7 @@ export default function StatusPage() {
         )}
 
         {rotate?.accounts && rotate.accounts.length > 0 && (
-          <div className="border border-line rounded-lg overflow-x-auto">
+          <div className="border border-line-hairline rounded-card overflow-x-auto">
             <table className="w-full border-collapse text-[12px] min-w-[560px]">
               <thead>
                 <tr>

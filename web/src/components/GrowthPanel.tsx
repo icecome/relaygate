@@ -214,7 +214,7 @@ export default function GrowthPanel() {
           )}
           {!autoProgress.running && autoProgress.error && <div className="text-xs text-danger mb-3">{autoProgress.error}</div>}
           {!autoProgress.running && autoProgress.results.length > 0 && (
-            <div className="border border-line rounded-lg divide-y divide-line overflow-hidden">
+            <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden">
               {autoProgress.results.map((r) => (
                 <div key={r.accountId} className="px-4 py-2.5">
                   <div className="flex items-center justify-between gap-2">

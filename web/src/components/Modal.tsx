@@ -142,7 +142,7 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
         aria-modal="true"
         aria-labelledby={titleId}
       >
-        <div className="shrink-0 px-5 pt-4 pb-3 border-b border-line">
+        <div className="shrink-0 px-5 pt-4 pb-3 border-b border-line-hairline">
           <h2 className="text-sm font-semibold text-ink" id={titleId}>
             {title}
           </h2>
@@ -150,7 +150,7 @@ export default function Modal({ open, onClose, title, desc, size = 'md', childre
         </div>
         <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">{children}</div>
         {footer && (
-          <div className="shrink-0 flex justify-end gap-2 px-5 py-3.5 border-t border-line bg-surf-soft">{footer}</div>
+          <div className="shrink-0 flex justify-end gap-2 px-5 py-3.5 border-t border-line-hairline bg-surf-soft">{footer}</div>
         )}
       </div>
     </div>

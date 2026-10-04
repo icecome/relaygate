@@ -251,7 +251,7 @@ export default function AccessKeysPanel({ loginKey }: Props) {
       {loading && !rows.length ? (
         <div className="text-xs text-ink-soft py-4">加载中…</div>
       ) : !rows.length ? (
-        <div className="text-xs text-ink-soft py-6 text-center border border-dashed border-line-strong rounded-xl">
+        <div className="text-xs text-ink-soft py-6 text-center border border-dashed border-line-strong rounded-card">
           暂无访问密钥。选择平台后点击「创建访问密钥」。
         </div>
       ) : (
@@ -351,7 +351,7 @@ export default function AccessKeysPanel({ loginKey }: Props) {
         }
       >
         <div className="space-y-3">
-          <div className="rounded-md border border-line bg-surf-soft p-3">
+          <div className="rounded-md border border-line-hairline bg-surf-soft p-3">
             <div className="text-xs text-ink-soft mb-1.5">密钥明文（仅本次显示）</div>
             <div className="font-mono text-[13px] break-all select-all text-ink">{fresh?.key}</div>
           </div>

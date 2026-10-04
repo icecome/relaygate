@@ -103,7 +103,7 @@ export default function LogsSection() {
       return (
         <div
           key={rowKey(r, i)}
-          className="px-4 py-3 border-b border-line last:border-b-0 text-[13px] leading-6 bg-danger-soft/60 flex items-start gap-2.5"
+          className="px-4 py-3 border-b border-line-hairline last:border-b-0 text-[13px] leading-6 bg-danger-soft/60 flex items-start gap-2.5"
         >
           <span className="mt-1.5 w-2 h-2 rounded-full bg-danger shrink-0" aria-hidden />
           <span className="min-w-0">
@@ -121,7 +121,7 @@ export default function LogsSection() {
     return (
       <div
         key={rowKey(r, i)}
-        className="px-4 py-3 border-b border-line last:border-b-0 text-[13px] leading-6 flex items-start gap-2.5"
+        className="px-4 py-3 border-b border-line-hairline last:border-b-0 text-[13px] leading-6 flex items-start gap-2.5"
       >
         <span className="mt-1.5 w-2 h-2 rounded-full bg-acc shrink-0" aria-hidden />
         <span className="min-w-0">
@@ -198,7 +198,7 @@ export default function LogsSection() {
 
       {sseEnabled && sseExpanded === '__all__' && (
         <div className="panel">
-          <div className="px-4 py-2.5 bg-surf-soft text-[13px] border-b border-line font-medium">
+          <div className="px-4 py-2.5 bg-surf-soft text-[13px] border-b border-line-hairline font-medium">
             SSE 调试事件（近 1 天，共 {sseRows.length} 条）
           </div>
           {sseRows.length === 0 ? (
@@ -206,7 +206,7 @@ export default function LogsSection() {
           ) : (
             <div className="max-h-[400px] overflow-y-auto">
               {sseRows.slice(0, 50).map((r, i) => (
-                <div key={i} className="px-4 py-2 border-b border-line last:border-b-0 text-[12px] font-mono">
+                <div key={i} className="px-4 py-2 border-b border-line-hairline last:border-b-0 text-[12px] font-mono">
                   <span className="text-ink-faint tabular-nums mr-2">{(r.ts || '').slice(11, 19)}</span>
                   <span className="text-ink-faint mr-2">#{r.seq}</span>
                   <span className="text-ink mr-2">{r.model || '—'}</span>
