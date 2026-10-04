@@ -26,11 +26,11 @@ export default function StatCard({ label, value, hint, accent = 'default', click
             }
           : undefined
       }
-      className={`card px-4 py-3.5 ${clickable ? 'cursor-pointer transition-colors hover:border-line-strong' : ''}`}
+      className={`bg-surf border border-line-hairline rounded-card px-4 py-3.5 ${clickable ? 'cursor-pointer transition-colors hover:border-line-strong' : ''}`}
     >
-      <div className="text-xs font-medium text-ink-soft mb-1">{label}</div>
-      <div className={`text-[24px] font-semibold leading-[1.2] tabular-nums tracking-tight ${color}`}>{value}</div>
-      {hint != null && <div className="text-xs text-ink-faint mt-0.5">{hint}</div>}
+      <div className="text-aux font-medium text-ink-soft mb-1">{label}</div>
+      <div className={`text-read ${color}`}>{value}</div>
+      {hint != null && <div className="text-aux text-ink-faint mt-0.5">{hint}</div>}
     </div>
   );
 }
