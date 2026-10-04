@@ -70,7 +70,7 @@
     @apply bg-transparent border-line-strong text-ink-soft hover:bg-surf-soft hover:text-ink;
   }
   .btn-danger {
-    @apply bg-danger text-white border-transparent hover:bg-[#B91C1C];
+    @apply bg-danger text-white border-transparent hover:bg-[var(--danger)];
   }
   .btn-quiet {
     @apply h-7 px-2.5 bg-transparent border-none text-ink-soft text-xs font-medium cursor-pointer rounded hover:bg-surf-soft hover:text-ink;
@@ -109,7 +109,7 @@
     @apply pill bg-danger-soft text-danger;
   }
   .pill-muted {
-    @apply pill bg-[#F1F2F3] text-ink-soft;
+    @apply pill bg-surf-2 text-ink-soft;
   }
 
   /* ---- 表格列对齐见文件末尾：.cell-num / .cell-act 必须定义在 .th 之后 ---- */
@@ -165,7 +165,7 @@
     @apply w-[15px] h-[15px] shrink-0 mt-0.5;
   }
   .note-warn {
-    @apply border-warn-line bg-warn-soft text-[#78350F];
+    @apply border-warn-line bg-warn-soft text-[var(--warn-fg)];
   }
   .note-acc {
     @apply border-[#A7F3D0] bg-acc-soft text-acc-hover;
@@ -206,7 +206,7 @@
 
   /* ---- 覆盖率/用量条 ---- */
   .bar {
-    @apply h-1.5 rounded-full bg-[#EEF0F2] overflow-hidden;
+    @apply h-1.5 rounded-full bg-surf-2 overflow-hidden;
   }
   .bar > i {
     @apply block h-full rounded-full bg-acc transition-[width] duration-[450ms] ease-out;
