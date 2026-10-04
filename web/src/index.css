@@ -228,10 +228,14 @@
 
   /* ---- 表格 ---- */
   .th {
-    @apply text-left text-xs font-medium text-ink-soft px-4 py-2.5 border-b border-line whitespace-nowrap bg-surf-soft;
+    @apply text-left text-xs font-medium text-ink-soft px-4 py-2.5 border-b border-line-hairline whitespace-nowrap bg-surf-2;
   }
   .td {
-    @apply px-4 py-3 border-b border-line align-middle text-ink;
+    @apply px-4 py-3 border-b border-line-hairline align-middle text-ink;
+  }
+  /* 末行不画线：避免与面板底边形成双线 */
+  tbody tr:last-child > .td {
+    border-bottom: none;
   }
   tr.row-hover {
     @apply transition-colors;

@@ -104,6 +104,14 @@ export default function Overview() {
   const met14 = daily.reduce((s, d) => s + (d.metered ?? 0), 0);
   const cov14 = req14 ? (met14 / req14) * 100 : 0;
 
+  /** 异常优先：停用 > 冷却 > 有错误 > 正常，同级按错误数降序。
+   *  概览只列前 8 个，若不排序则会淹没在健康账号里、看不见需要处理的行。 */
+  const rankOf = (a: Account) => (accountState(a) === 'off' ? 0 : accountState(a) === 'cool' ? 1 : (a.errorCount || 0) > 0 ? 2 : 3);
+  const focusRows = [...all]
+    .sort((x, y) => rankOf(x) - rankOf(y) || (y.errorCount || 0) - (x.errorCount || 0))
+    .slice(0, 8);
+  const abnormalN = all.filter((a) => rankOf(a) < 3).length;
+
   /** 执行链：调度器按固定时刻推进的四个动作 */
   const chain = [
     {
@@ -262,9 +270,14 @@ export default function Overview() {
 
       <Panel
         title="账号池"
-        desc={`调度策略 ${strategyLabel(pool?.strategy)} · 按余额从低到高选取，避免单账号过快耗尽`}
+        desc={`调度策略 ${strategyLabel(pool?.strategy)} · 异常账号优先排列，便于先处理需要干预的行`}
         right={
-          <span className="text-xs text-ink-faint tabular-nums">{all.length} 个账号</span>
+          <span className="text-xs text-ink-faint tabular-nums">
+            {abnormalN > 0 ? (
+              <span className="text-warn font-medium">{abnormalN} 个需注意 · </span>
+            ) : null}
+            共 {all.length} 个
+          </span>
         }
       >
         <div className="overflow-x-auto">
@@ -280,7 +293,7 @@ export default function Overview() {
               </tr>
             </thead>
             <tbody>
-              {all.slice(0, 8).map((a: Account) => {
+              {focusRows.map((a: Account) => {
                 const isWb = String(a.edition ?? a.source ?? '').includes('workbuddy');
                 return (
                   <tr key={a.id} className="row-hover">
