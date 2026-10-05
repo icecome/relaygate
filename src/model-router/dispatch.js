@@ -297,6 +297,8 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
   const wbChat = require('../workbuddy/chat');
   const shownModel = opts.echoModel || remoteModel;
 
+  // outFinish 须存活到 pool.run 回调之外（流结束后返回），故声明在外层作用域
+  let outFinish = null;
   await pool.run(async (accountId) => {
     const acct = await auth.ensureAuth(accountId);
     const up = await wbChat.chatStream(acct, { ...body, model: remoteModel, stream: true });
@@ -318,7 +320,6 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
     let sawDone = false;
     let sawToolCalls = false;
     let lastFinish = null;
-    let outFinish = null;
     const feeder = createLineFeeder(handleLine);
     for (;;) {
       const { done, value } = await reader.read();
