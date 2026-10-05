@@ -4,8 +4,35 @@ import { Note, Panel, ICON } from '../components/ui';
 import { useAuth } from '../stores/useAuth';
 import { useToast } from '../components/Toast';
 import { usePrompt } from '../components/Prompt';
-import { getStatus, runScheduler, getRotateStatus, runRotateNow, seedRotateBackups, switchRotateAccount, saveRotateSettings, type RotateStatus } from '../api/admin';
+import {
+  getStatus,
+  runScheduler,
+  getRotateStatus,
+  runRotateNow,
+  seedRotateBackups,
+  switchRotateAccount,
+  saveRotateSettings,
+  getSchedulerSettings,
+  saveSchedulerSettings,
+  type RotateStatus,
+} from '../api/admin';
 import { relTime } from '../lib/format';
+
+const pad2 = (n: number) => String(n).padStart(2, '0');
+
+/** 调度配置返回值的兜底：请求失败时不能让轮换时刻回落到 00:00 造成误导 */
+const FALLBACK_ROTATE_TIME = '00:10';
+
+/** "HH:mm" → 时分；无法解析时返回 null，由调用方保留原值 */
+function parseHm(v: string): { hour: number; minute: number } | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(v.trim());
+  if (!m) return null;
+  const hour = parseInt(m[1], 10);
+  const minute = parseInt(m[2], 10);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) return null;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+  return { hour, minute };
+}
 
 export default function StatusPage() {
   const { key } = useAuth();
@@ -19,6 +46,7 @@ export default function StatusPage() {
   const [rotStay, setRotStay] = useState('60');
   const [rotExclude, setRotExclude] = useState('');
   const [rotBack, setRotBack] = useState(true);
+  const [rotTime, setRotTime] = useState(FALLBACK_ROTATE_TIME);
   const [rotStatus, setRotStatus] = useState<{ msg: string; kind: '' | 'ok' | 'err' }>({ msg: '', kind: '' });
   const [rotErr, setRotErr] = useState<string | null>(null);
 
@@ -54,6 +82,18 @@ export default function StatusPage() {
         setRotate(null);
         setRotErr(`读取轮换状态失败：${e.message}`);
       });
+    // 轮换定时时刻由调度配置承担（rotateHour / rotateMinute），单独取；
+    // 失败则明确提示，不用兜底值冒充真实配置
+    getSchedulerSettings(key)
+      .then((d) => {
+        if (typeof d.rotateHour === 'number' && typeof d.rotateMinute === 'number') {
+          setRotTime(`${pad2(d.rotateHour)}:${pad2(d.rotateMinute)}`);
+        }
+      })
+      .catch((e: Error) => {
+        setRotTime(FALLBACK_ROTATE_TIME);
+        setRotErr(`读取轮换定时时刻失败：${e.message}`);
+      });
   }, [key]);
 
   useEffect(() => {
@@ -85,18 +125,26 @@ export default function StatusPage() {
       setRotStatus({ msg: '请先保存访问密钥', kind: 'err' });
       return;
     }
+    // 时刻解析失败时中止保存：不能只写「停留时长」而让时刻静默回退成默认值
+    const hm = parseHm(rotTime);
+    if (!hm) {
+      setRotStatus({ msg: '定时时刻格式应为 HH:mm（如 00:10）', kind: 'err' });
+      return;
+    }
     try {
+      // 时刻属调度配置，先存后存轮换配置：后者会重排调度，保证「落盘值 = 生效值」
+      await saveSchedulerSettings({ rotateHour: hm.hour, rotateMinute: hm.minute }, key);
       const d = await saveRotateSettings(
         {
           enabled: rotOn,
-          intervalMinutes: 0,
           stayMs: (parseInt(rotStay, 10) || 60) * 1000,
           excludeUids: rotExclude,
           switchBack: rotBack,
         },
         key,
       );
-      setRotStatus({ msg: d.enabled ? '自动切换已启用（每日定时执行，时刻见「设置 · 定时任务」）' : '自动切换已关闭', kind: 'ok' });
+      setRotTime(`${pad2(hm.hour)}:${pad2(hm.minute)}`);
+      setRotStatus({ msg: d.enabled ? `自动切换已启用（每日 ${pad2(hm.hour)}:${pad2(hm.minute)} 执行）` : '自动切换已关闭', kind: 'ok' });
       toast('自动切换配置已保存并热重载', 'ok');
       load();
     } catch (e) {
@@ -199,12 +247,14 @@ export default function StatusPage() {
             <span className="who who-local">作用于本机凭据文件</span>
           </span>
         }
-        desc="每天在指定时刻把账号库中启用的 WorkBuddy 登录态写入客户端 auth 目录，逐个替换触发客户端热加载，让每个账号都产生当日活跃记录。与「访问密钥」页的密钥轮换对象完全不同。执行时刻在「设置 → 定时任务」里调整（rotateHour / rotateMinute）。重启服务不会额外触发轮换。"
+        desc="每天在指定时刻把账号库中启用的 WorkBuddy 登录态写入客户端 auth 目录，逐个替换触发客户端热加载，让每个账号都产生当日活跃记录。与「访问密钥」页的密钥轮换对象完全不同。定时时刻在本面板内调整，保存即重排调度。重启服务不会额外触发轮换。"
         right={
-          <span className={`${rotate?.scheduler?.enabled ? 'pill-ok' : 'pill-muted'}`}>
-            {rotate?.scheduler?.enabled
-              ? `每日 ${String(rotate?.scheduler?.rotateHour ?? 0).padStart(2, '0')}:${String(rotate?.scheduler?.rotateMinute ?? 0).padStart(2, '0')}`
-              : '调度未运行'}
+          <span className={`${rotate?.scheduler?.rotateEnabled && rotate?.scheduler?.enabled ? 'pill-ok' : 'pill-muted'}`}>
+            {!rotOn
+              ? '自动轮换已关闭'
+              : rotate?.scheduler?.enabled
+                ? `每日 ${pad2(Number(rotate?.scheduler?.rotateHour ?? 0))}:${pad2(Number(rotate?.scheduler?.rotateMinute ?? 0))}`
+                : '调度未运行'}
           </span>
         }
         bodyClass="px-5 pb-5"
@@ -216,6 +266,18 @@ export default function StatusPage() {
               启用自动轮换
             </label>
             <p className="text-[11px] text-ink-faint">关闭后仅保留手动「立即轮换一遍」</p>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="rot-time">每日轮换时刻</label>
+            <input
+              id="rot-time"
+              type="time"
+              className="field w-full"
+              value={rotTime}
+              onChange={(e) => setRotTime(e.target.value)}
+              disabled={!rotOn}
+            />
+            <p className="text-[11px] text-ink-faint">到达该时刻执行一轮，保存后立即重排调度</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="rot-stay">每账号停留（秒，10–3600）</label>
@@ -266,47 +328,49 @@ export default function StatusPage() {
         )}
 
         {rotate?.accounts && rotate.accounts.length > 0 && (
-          <div className="border border-line-hairline rounded-card overflow-x-auto">
-            <table className="w-full border-collapse text-[12px] min-w-[560px]">
-              <thead>
-                <tr>
-                  <th className="th">账号</th>
-                  <th className="th cell-num">今日活跃</th>
-                  <th className="th">活跃等级</th>
-                  <th className="th cell-act">操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {(rotate.accounts || []).map((a) => {
-                  const hm = (rotate.heatmap || []).find((h) => h.uid === a.uid);
-                  return (
-                    <tr key={a.uid} className="row-hover [&>td]:px-4 [&>td]:py-2.5 align-middle">
-                      <td>
-                        <div className="font-medium">{a.label}</div>
-                        <div className="font-mono text-[10px] text-ink-faint">{a.uid.slice(0, 12)}…</div>
-                      </td>
-                      <td className="cell-num">
-                        {hm ? (
-                          hm.error ? (
-                            <span className="text-warn">查询失败</span>
+          <div className="border border-line-hairline rounded-card overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full border-collapse text-[12px] min-w-[560px]">
+                <thead>
+                  <tr>
+                    <th className="th">账号</th>
+                    <th className="th cell-num">今日活跃</th>
+                    <th className="th">活跃等级</th>
+                    <th className="th cell-act">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(rotate.accounts || []).map((a) => {
+                    const hm = (rotate.heatmap || []).find((h) => h.uid === a.uid);
+                    return (
+                      <tr key={a.uid} className="row-hover [&>td]:px-4 [&>td]:py-2.5 align-middle [&>td]:border-b [&>td]:border-line-hairline">
+                        <td>
+                          <div className="font-medium">{a.label}</div>
+                          <div className="font-mono text-[10px] text-ink-faint">{a.uid.slice(0, 12)}…</div>
+                        </td>
+                        <td className="cell-num">
+                          {hm ? (
+                            hm.error ? (
+                              <span className="text-warn">查询失败</span>
+                            ) : (
+                              <span className={`${hm.isActive ? 'text-acc-hover font-medium' : 'text-ink-faint'}`}>{hm.score ?? 0} 分{hm.statusText ? `（${hm.statusText}）` : ''}</span>
+                            )
                           ) : (
-                            <span className={`${hm.isActive ? 'text-acc-hover font-medium' : 'text-ink-faint'}`}>{hm.score ?? 0} 分{hm.statusText ? `（${hm.statusText}）` : ''}</span>
-                          )
-                        ) : (
-                          <span className="text-ink-faint">—</span>
-                        )}
-                      </td>
-                      <td>{hm && !hm.error ? <span className={`${hm.isActive ? 'pill-ok' : 'pill-muted'}`}>{hm.level || '—'}</span> : <span className="text-ink-faint">—</span>}</td>
-                      <td className="cell-act">
-                        <button type="button" className="btn-quiet" onClick={() => switchRotate(a.uid, a.label)}>
-                          切换
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                            <span className="text-ink-faint">—</span>
+                          )}
+                        </td>
+                        <td>{hm && !hm.error ? <span className={`${hm.isActive ? 'pill-ok' : 'pill-muted'}`}>{hm.level || '—'}</span> : <span className="text-ink-faint">—</span>}</td>
+                        <td className="cell-act">
+                          <button type="button" className="btn-quiet" onClick={() => switchRotate(a.uid, a.label)}>
+                            切换
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
         {rotate && (!rotate.accounts || rotate.accounts.length === 0) && (
