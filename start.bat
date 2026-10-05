@@ -16,6 +16,10 @@ rem  mojibake in the console.
 rem =====================================================
 cd /d "%~dp0"
 
+rem Listen port must match src/index.js default (19900); override via .env PORT.
+set "PORT=19900"
+if defined PORT_ENV_OVERRIDE set "PORT=%PORT_ENV_OVERRIDE%"
+
 if not exist logs mkdir logs
 
 rem Rotate logs at startup once they exceed ~8MB (keep one previous generation).
@@ -35,10 +39,21 @@ if not exist node_modules\express (
 
 rem Kill orphaned relay-gate node from a previous service instance. srvany's
 rem stop only kills the cmd wrapper; the node child survives and keeps holding
-rem port 19900, so a fresh start would fail to bind or worse, two schedulers
-rem would run side by side. Script path matching avoids touching unrelated
-rem node processes. Log output goes through the main redirect below.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\kill-orphan-node.ps1" -Apply >> logs\relay.out.log 2>&1
+rem port %PORT%, so a fresh start would fail to bind or worse, two schedulers
+rem would run side by side. Pure cmd (netstat+tasklist): the former powershell
+rem helper took ~26s just for Get-NetTCPConnection, delaying every restart.
+rem Only kill when the port owner really is node.exe: tasklist CSV echoes
+rem "name","PID",... and for-variables keep the quotes, so compare with %%~
+rem (quote-stripped) on both sides.
+echo [relay-gate] killing orphaned node holding port %PORT% if any...
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr /C:":%PORT% " ^| findstr /C:"LISTENING"') do (
+  for /f "usebackq tokens=1,2 delims=," %%A in (`tasklist /FI "PID eq %%P" /FO CSV /NH`) do (
+    if /I "%%~A"=="node.exe" if "%%~B"=="%%~P" (
+      echo [relay-gate] killing orphaned node pid %%~B >> logs\relay.out.log
+      taskkill /F /PID %%~B >nul 2>&1
+    )
+  )
+)
 
 echo [relay-gate] starting %DATE% %TIME% >> logs\relay.out.log
 node src\index.js >> logs\relay.out.log 2>> logs\relay.err.log
