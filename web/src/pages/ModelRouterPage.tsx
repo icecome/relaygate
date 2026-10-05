@@ -315,7 +315,7 @@ export default function ModelRouterPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-ink">虚拟模型</div>
+        <div className="text-block-title font-semibold text-ink">虚拟模型</div>
         <div className="flex gap-2">
           <button type="button" className="btn btn-ghost" onClick={load}>刷新</button>
           <button type="button" className="btn btn-primary" onClick={openCreate}>新建虚拟模型</button>
@@ -337,11 +337,11 @@ export default function ModelRouterPage() {
 
       {/* 虚拟模型列表 */}
       <div className="panel">
-        <div className="px-4 py-3 border-b border-line text-sm font-medium text-ink">虚拟模型</div>
+        <div className="px-4 py-3 border-b border-line-hairline text-sm font-medium text-ink">虚拟模型</div>
         {!data?.virtualModels.length ? (
           <div className="py-10 text-center text-ink-soft text-sm">尚未创建虚拟模型</div>
         ) : (
-          <div className="divide-y divide-line">
+          <div className="divide-y divide-line-hairline">
             {data.virtualModels.map((vm) => (
               <div key={vm.id} className="p-4 space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -417,7 +417,7 @@ export default function ModelRouterPage() {
 
       {/* Providers */}
       <div className="panel">
-        <div className="px-4 py-3 border-b border-line text-sm font-medium text-ink">远端 Provider</div>
+        <div className="px-4 py-3 border-b border-line-hairline text-sm font-medium text-ink">远端 Provider</div>
         <div className="overflow-x-auto">
           <table className="w-full border-collapse text-[13px] min-w-[720px]">
             <thead>
@@ -571,8 +571,8 @@ export default function ModelRouterPage() {
                 </span>
               </div>
 
-              <div className="border border-line rounded-card overflow-hidden">
-                <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_78px_78px_96px_56px] gap-2 items-center px-3 py-2 bg-surf-soft border-b border-line text-[11.5px] font-medium text-ink-soft">
+              <div className="border border-line-hairline rounded-card overflow-hidden">
+                <div className="grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_78px_78px_96px_56px] gap-2 items-center px-3 py-2 bg-surf-soft border-b border-line-hairline text-[11.5px] font-medium text-ink-soft">
                   <span>Provider</span>
                   <span>远端模型</span>
                   <span className="text-right">优先级</span>
@@ -597,7 +597,7 @@ export default function ModelRouterPage() {
                         // 两者都不能标识「同一行」。uid 随数据移动，重排后 DOM 节点跟着走，
                         // 正在编辑的输入框（及其焦点）不会被顶到别的候选上。
                         key={c.uid}
-                        className={`grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_78px_78px_96px_56px] gap-2 items-center px-3 py-2.5 border-b border-line last:border-b-0 transition-colors duration-500 ${
+                        className={`grid grid-cols-[minmax(0,1.15fr)_minmax(0,1.35fr)_78px_78px_96px_56px] gap-2 items-center px-3 py-2.5 border-b border-line-hairline last:border-b-0 transition-colors duration-500 ${
                           moved.has(rowKey(c)) ? 'bg-acc-soft' : ''
                         }`}
                       >

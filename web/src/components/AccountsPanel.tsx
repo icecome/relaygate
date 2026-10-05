@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import StatCard from './StatCard';
 import AccountTable from './AccountTable';
+import AccountCards from './AccountCards';
 import AccountDetailModal from './AccountDetailModal';
 import ExpiryModal, { useExpiryMeta } from './ExpiryModal';
 import { Panel, ActionRow, WhoTag } from './ui';
@@ -53,10 +54,12 @@ export default function AccountsPanel({
   poolAccounts = [],
 }: Props) {
   const { key } = useAuth();
-  const { data, refresh, accountsOf } = useSummary();
+  const { data, loading, error, refresh, accountsOf } = useSummary();
   const toast = useToast();
   const prompt = usePrompt();
   const [detailAcct, setDetailAcct] = useState<Account | null>(null);
+  /** 视图偏好：只作用于当前会话，刷新回到表格（表格承载批量操作，是主视图） */
+  const [view, setView] = useState<'table' | 'card'>('table');
   const expiry = useExpiryMeta();
 
   const accts = accountsOf(platform);
@@ -182,20 +185,55 @@ export default function AccountsPanel({
         <button type="button" className="btn btn-ghost" onClick={refreshAll}>
           刷新余额
         </button>
-        <span className="ml-auto text-xs text-ink-faint tabular-nums">
-          {data ? `共 ${accts.length} 个` : '加载中…'}
-        </span>
+        <div className="ml-auto flex items-center gap-3">
+          {/* 视图切换：显示偏好而非分区，故用 aria-pressed 按钮组 */}
+          <div className="seg-track" role="group" aria-label="账号池视图">
+            <button
+              type="button"
+              className="seg-tab"
+              aria-pressed={view === 'table'}
+              onClick={() => setView('table')}
+            >
+              表格
+            </button>
+            <button
+              type="button"
+              className="seg-tab"
+              aria-pressed={view === 'card'}
+              onClick={() => setView('card')}
+            >
+              卡片
+            </button>
+          </div>
+          <span className="text-xs text-ink-faint tabular-nums">
+            {/* 三态分开：加载中 / 读取失败 / 实际条数。此前把 error 也归入
+                「加载中」，无密钥时会永远停在假加载态。 */}
+            {loading ? '加载中…' : error ? <span className="text-danger">读取失败</span> : `共 ${accts.length} 个`}
+          </span>
+        </div>
       </div>
 
-      <AccountTable
-        accounts={accts}
-        onAction={onAction}
-        onOpenExpiry={(a) => openExpiry([a], `积分明细 · ${a.label || a.id}`)}
-        emptyTitle={meta.emptyTitle}
-        emptyDesc={meta.emptyDesc}
-        extra={meta.renderImport()}
-        poolAccounts={poolAccounts}
-      />
+      {view === 'table' ? (
+        <AccountTable
+          accounts={accts}
+          onAction={onAction}
+          onOpenExpiry={(a) => openExpiry([a], `积分明细 · ${a.label || a.id}`)}
+          emptyTitle={meta.emptyTitle}
+          emptyDesc={meta.emptyDesc}
+          extra={meta.renderImport()}
+          poolAccounts={poolAccounts}
+        />
+      ) : (
+        <AccountCards
+          accounts={accts}
+          onOpen={(a) => setDetailAcct(a)}
+          onOpenExpiry={(a) => openExpiry([a], `积分明细 · ${a.label || a.id}`)}
+          emptyTitle={meta.emptyTitle}
+          emptyDesc={meta.emptyDesc}
+          extra={meta.renderImport()}
+          poolAccounts={poolAccounts}
+        />
+      )}
 
       {extraContent}
 

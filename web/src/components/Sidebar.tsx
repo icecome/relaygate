@@ -16,7 +16,7 @@ export default function Sidebar() {
   const current = groupOf(pathname);
 
   return (
-    <aside className="w-52 shrink-0 bg-surf border-r border-line flex flex-col">
+    <aside className="w-52 shrink-0 bg-surf border-r border-line-hairline flex flex-col">
       {/* 品牌区：克制，仅一个深绿方块 logo */}
       <div className="flex items-center gap-2.5 px-3 pt-5 pb-4">
         <div className="w-7 h-7 shrink-0 rounded-md bg-acc flex items-center justify-center">
@@ -24,7 +24,7 @@ export default function Sidebar() {
         </div>
         <div className="min-w-0">
           <div className="text-[14px] font-semibold tracking-tight text-ink leading-none">RelayGate</div>
-          <div className="text-[11px] text-ink-faint mt-0.5">多平台账号池</div>
+          <div className="text-aux text-ink-faint mt-0.5">多平台账号池</div>
         </div>
       </div>
 
@@ -46,7 +46,7 @@ export default function Sidebar() {
         </div>
       </nav>
 
-      <div className="px-5 py-3 border-t border-line text-[11px] text-ink-faint">v3.0</div>
+      <div className="px-5 py-3 border-t border-line-hairline text-aux text-ink-faint">v3.0</div>
     </aside>
   );
 }

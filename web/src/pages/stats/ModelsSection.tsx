@@ -11,7 +11,7 @@ export default function ModelsSection() {
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center gap-1 border-b border-line">
+      <div className="flex items-center gap-1 border-b border-line-hairline">
         {(
           [
             ['catalog', '模型目录'],

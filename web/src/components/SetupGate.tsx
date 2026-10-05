@@ -127,7 +127,7 @@ export default function SetupGate({ onReady }: Props) {
             <p className="text-[13px] text-ink-soft mb-4">
               请立即复制并妥善保存。关闭后无法再次查看完整明文。
             </p>
-            <div className="rounded-md border border-line bg-surf-soft p-3 mb-3">
+            <div className="rounded-md border border-line-hairline bg-surf-soft p-3 mb-3">
               <div className="font-mono text-[13px] break-all select-all text-ink">{fresh.key}</div>
             </div>
             <div className="flex gap-2">

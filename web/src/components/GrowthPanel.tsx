@@ -190,7 +190,7 @@ export default function GrowthPanel() {
       {autoProgress && (
         <div className="panel px-5 py-4">
           <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-            <div className="text-sm font-semibold text-ink">
+            <div className="text-block-title font-semibold text-ink">
               成长中心自动化进度
               {autoProgress.running && (
                 <span className="ml-2 inline-flex items-center gap-1.5 text-xs text-acc-hover font-medium">
@@ -214,7 +214,7 @@ export default function GrowthPanel() {
           )}
           {!autoProgress.running && autoProgress.error && <div className="text-xs text-danger mb-3">{autoProgress.error}</div>}
           {!autoProgress.running && autoProgress.results.length > 0 && (
-            <div className="border border-line rounded-lg divide-y divide-line overflow-hidden">
+            <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden">
               {autoProgress.results.map((r) => (
                 <div key={r.accountId} className="px-4 py-2.5">
                   <div className="flex items-center justify-between gap-2">
@@ -254,7 +254,7 @@ export default function GrowthPanel() {
         <div className="px-5 py-4">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <div className="text-sm font-semibold text-ink">WorkBuddy 成长旅行</div>
+              <div className="text-block-title font-semibold text-ink">WorkBuddy 成长旅行</div>
               <div className="text-xs text-ink-faint mt-0.5">
                 读取上游旅行状态（只读）；可单账号领奖/出发，或一键「成长中心自动化」。
               </div>
@@ -365,7 +365,7 @@ export default function GrowthPanel() {
         <div className="px-5 py-4">
           <div className="flex items-center justify-between mb-3">
             <div>
-              <div className="text-sm font-semibold text-ink">成长中心总览</div>
+              <div className="text-block-title font-semibold text-ink">成长中心总览</div>
               <div className="text-xs text-ink-faint mt-0.5">
                 Buddy 身份 · 能量（满 10 开盲盒）· 连登天数 · 补登卡 · 抽奖次数。
               </div>

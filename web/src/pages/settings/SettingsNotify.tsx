@@ -275,10 +275,10 @@ export default function SettingsNotify() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">通知渠道</h2>
+        <h2 className="text-block-title font-semibold mb-1">通知渠道</h2>
         <p className="text-xs text-ink-soft mb-4">点击渠道展开配置，保存后立即生效；留空的渠道回退读取 .env 同名配置。下方可按事件类型开关推送。</p>
 
-        <div className="border border-line rounded-lg divide-y divide-line overflow-hidden">
+        <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden">
           {CHANNEL_META.map((ch) => {
             const configured = isChannelConfigured(ch.id);
             const expanded = expandedChannel === ch.id;
@@ -313,7 +313,7 @@ export default function SettingsNotify() {
                 </button>
 
                 {expanded && (
-                  <div className="px-4 pb-4 pt-1 border-t border-line bg-surf-soft/40">
+                  <div className="px-4 pb-4 pt-1 border-t border-line-hairline bg-surf-soft/40">
                     {ch.id === 'webhook' && (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-3">
                         <div className="col-span-2">
@@ -386,7 +386,7 @@ export default function SettingsNotify() {
             <h3 className="text-xs font-semibold text-ink-soft">提醒事件</h3>
             <span className="text-[11px] text-ink-faint">关闭后该类事件不再推送（渠道需已配置）</span>
           </div>
-          <div className="border border-line rounded-lg divide-y divide-line overflow-hidden">
+          <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden">
             {EVENT_META.map((ev) => {
               const on = notify.events?.[ev.id] !== false;
               return (
@@ -428,7 +428,7 @@ export default function SettingsNotify() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">全量备份</h2>
+        <h2 className="text-block-title font-semibold mb-1">全量备份</h2>
         <p className="text-xs text-ink-soft mb-4">
           备份内容：账号凭据（AES 加密密文）、API 密钥、积分历史、调度/通知/模型配置。备份文件单文件 JSON（含校验和），
           绝不含明文凭据。密钥来自 TRAE_BACKUP_PASSPHRASE 或 .trae-api/backup.key（自动生成）。完成自动推送「系统备份完成」通知。
@@ -472,10 +472,10 @@ export default function SettingsNotify() {
               </div>
             </div>
             {backup?.list && backup.list.length > 0 && (
-              <div className="mt-3 border border-line rounded-lg overflow-hidden">
+              <div className="mt-3 border border-line-hairline rounded-card overflow-hidden">
                 <table className="w-full border-collapse text-[12px]">
                   <thead>
-                    <tr className="text-left text-[11px] font-medium text-ink-soft [&>th]:px-3 [&>th]:py-2 [&>th]:border-b [&>th]:border-line">
+                    <tr className="text-left text-[11px] font-medium text-ink-soft [&>th]:px-3 [&>th]:py-2 [&>th]:border-b [&>th]:border-line-hairline">
                       <th className="th">备份文件</th>
                       <th className="th cell-num">大小</th>
                       <th className="th">校验和</th>
@@ -517,7 +517,7 @@ export default function SettingsNotify() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">通知事件（增 / 删）</h2>
+        <h2 className="text-block-title font-semibold mb-1">通知事件（增 / 删）</h2>
         <p className="text-xs text-ink-soft mb-4">
           内置事件可在上方「提醒事件」开关；此处可新增自定义事件名（推送时按该事件名发送、可在此开关），或删除已添加的自定义事件。内置事件不可删除、只能关闭。
         </p>
@@ -537,7 +537,7 @@ export default function SettingsNotify() {
               </button>
             </div>
             {customEventIds.length > 0 && (
-              <div className="border border-line rounded-lg divide-y divide-line overflow-hidden mb-3">
+              <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden mb-3">
                 {customEventIds.map((id) => (
                   <div key={id} className="flex items-center justify-between gap-3 px-4 py-2.5">
                     <div className="flex items-center gap-3 min-w-0">

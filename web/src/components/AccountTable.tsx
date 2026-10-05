@@ -1,6 +1,9 @@
-import type { Account, AccountState, PoolAccount } from '../api/types';
-import { statePill, fmtBalance, fmtCool } from '../lib/format';
-import { WhoTag } from './ui';
+import type { Account, PoolAccount } from '../api/types';
+import { accountState } from '../api/types';
+import { fmtBalance, fmtCool } from '../lib/format';
+import { WhoTag, EmptyState } from './ui';
+import StatusDot from './StatusDot';
+import RowMenu from './RowMenu';
 
 export interface AccountRowAction {
   act: string;
@@ -34,26 +37,19 @@ export default function AccountTable({
 }: AccountTableProps) {
   if (!accounts.length) {
     return (
-      <div className="panel">
-        <div className="text-center py-14 px-6">
-          <div className="text-sm font-medium text-ink mb-1.5">{emptyTitle}</div>
-          <div className="text-[13px] text-ink-soft mb-5 max-w-[380px] mx-auto leading-relaxed">{emptyDesc}</div>
-          {extra}
-        </div>
-      </div>
+      <EmptyState title={emptyTitle} desc={emptyDesc}>
+        {extra}
+      </EmptyState>
     );
   }
 
   const inFlightOf = new Map<string, number>();
   for (const p of poolAccounts) if (p.inFlight) inFlightOf.set(p.id, p.inFlight);
 
-  const stateOf = (a: Account): AccountState =>
-    !a.enabled ? 'off' : a.coolUntil && new Date(a.coolUntil).getTime() > Date.now() ? 'cool' : 'ok';
-
   return (
     <div className="panel">
       <div className="overflow-x-auto">
-        <table className="w-full border-collapse text-[12.5px] min-w-[880px]">
+        <table className="w-full border-collapse text-[12.5px] min-w-[720px]">
           <thead>
             <tr>
               <th className="th">平台</th>
@@ -67,7 +63,7 @@ export default function AccountTable({
           </thead>
           <tbody>
             {accounts.map((a) => {
-              const st = stateOf(a);
+              const st = accountState(a);
               const err = a.errorCount || 0;
               const isWb = String(a.edition ?? a.source ?? '').includes('workbuddy');
               const hasPacks = Array.isArray(a.packs) && a.packs.length > 0;
@@ -90,10 +86,7 @@ export default function AccountTable({
                     <div className="acct-id">{a.id}</div>
                   </td>
                   <td className="td">
-                    {statePill(st)}
-                    {st === 'cool' && (
-                      <div className="text-[11px] text-ink-faint mt-0.5">{fmtCool(a.coolUntil)}</div>
-                    )}
+                    <StatusDot state={st} hint={st === 'cool' ? fmtCool(a.coolUntil) : undefined} />
                   </td>
                   <td className="td cell-num">
                     {hasPacks || exp3 > 0 || exp7 > 0 ? (
@@ -125,56 +118,65 @@ export default function AccountTable({
                     {inFlightOf.get(a.id) ?? 0}
                   </td>
                   <td className="td text-right whitespace-nowrap">
-                    <button type="button" className="btn-quiet text-xs" onClick={() => onAction({ act: 'detail', id: a.id })}>
-                      详情
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs ml-1"
-                      onClick={() => onAction({ act: 'balance', id: a.id })}
-                    >
-                      刷余额
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs ml-1"
-                      title={a.enabled ? '禁用该账号' : '启用该账号'}
-                      onClick={() => onAction({ act: 'toggle', id: a.id, enabled: a.enabled })}
-                    >
-                      {a.enabled ? '禁用' : '启用'}
-                    </button>
-                    <span className="text-line-strong mx-1">·</span>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs"
-                      title="清除账号冷却时间，使其立即重新参与调度"
-                      onClick={() => onAction({ act: 'cool', id: a.id })}
-                    >
-                      清冷却
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs ml-1"
-                      onClick={() => onAction({ act: 'checkin', id: a.id })}
-                    >
-                      签到
-                    </button>
-                    <span className="text-line-strong mx-1">·</span>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs"
-                      title="生成新的 deviceGen 与 machineId，使上游视其为新设备"
-                      onClick={() => onAction({ act: 'devreset', id: a.id })}
-                    >
-                      重置指纹
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-quiet text-xs ml-1 text-danger"
-                      onClick={() => onAction({ act: 'delete', id: a.id, label: a.label || a.id })}
-                    >
-                      删除
-                    </button>
+                    {/* 主操作按当前状态推导：正常→签到（最常用），冷却→清冷却，停用→启用。
+                        其余操作收进「更多」，避免一屏十几行都是并列按钮。 */}
+                    {st === 'cool' ? (
+                      <button
+                        type="button"
+                        className="btn-quiet text-xs"
+                        title="清除账号冷却时间，使其立即重新参与调度"
+                        onClick={() => onAction({ act: 'cool', id: a.id })}
+                      >
+                        清冷却
+                      </button>
+                    ) : st === 'off' ? (
+                      <button
+                        type="button"
+                        className="btn-quiet text-xs"
+                        title="重新启用该账号"
+                        onClick={() => onAction({ act: 'toggle', id: a.id, enabled: a.enabled })}
+                      >
+                        启用
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn-quiet text-xs"
+                        onClick={() => onAction({ act: 'checkin', id: a.id })}
+                      >
+                        签到
+                      </button>
+                    )}
+                    <span className="ml-1">
+                      <RowMenu
+                        items={[
+                          { key: 'detail', label: '详情', onSelect: () => onAction({ act: 'detail', id: a.id }) },
+                          { key: 'balance', label: '刷余额', onSelect: () => onAction({ act: 'balance', id: a.id }) },
+                          {
+                            key: 'toggle',
+                            label: a.enabled ? '禁用' : '启用',
+                            onSelect: () => onAction({ act: 'toggle', id: a.id, enabled: a.enabled }),
+                          },
+                          {
+                            key: 'cool',
+                            label: '清冷却',
+                            onSelect: () => onAction({ act: 'cool', id: a.id }),
+                          },
+                          { key: 'checkin', label: '签到', onSelect: () => onAction({ act: 'checkin', id: a.id }) },
+                          {
+                            key: 'devreset',
+                            label: '重置指纹',
+                            onSelect: () => onAction({ act: 'devreset', id: a.id }),
+                          },
+                          {
+                            key: 'delete',
+                            label: '删除',
+                            danger: true,
+                            onSelect: () => onAction({ act: 'delete', id: a.id, label: a.label || a.id }),
+                          },
+                        ]}
+                      />
+                    </span>
                   </td>
                 </tr>
               );
@@ -182,8 +184,8 @@ export default function AccountTable({
           </tbody>
         </table>
       </div>
-      <div className="px-5 py-2.5 border-t border-line text-[11.5px] text-ink-faint">
-        来源、区域、最近调度与冷却时间等字段见各行「详情」。
+      <div className="px-5 py-2.5 border-t border-line-hairline text-[11.5px] text-ink-faint">
+        操作列的首个按钮随账号状态变化（正常→签到，冷却→清冷却，停用→启用），其余操作在「更多」中。
       </div>
     </div>
   );

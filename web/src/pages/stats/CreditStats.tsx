@@ -202,7 +202,7 @@ export default function CreditStats() {
               </div>
             )}
             {sorted.length > 0 && (
-              <div className="px-5 py-2.5 border-t border-line text-[11.5px] text-ink-faint">
+              <div className="px-5 py-2.5 border-t border-line-hairline text-[11.5px] text-ink-faint">
                 合计 {fmtBalance(total)} · 覆盖 {rows.length} 个账号 · {fmtInt(activeN)} 个有消耗
               </div>
             )}
@@ -283,7 +283,7 @@ export default function CreditStats() {
                     ))}
                   </tbody>
                 </table>
-                <div className="px-5 py-2.5 border-t border-line text-[11.5px] text-ink-faint">
+                <div className="px-5 py-2.5 border-t border-line-hairline text-[11.5px] text-ink-faint">
                   合计精确消耗 {fmtBalance(offTotal)} · 单日最多扫描 30 天，结果本地缓存
                 </div>
               </Panel>

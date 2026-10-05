@@ -237,7 +237,7 @@ export default function TokenStats() {
                 </tbody>
               </table>
             </div>
-            <div className="px-5 py-2.5 border-t border-line text-[11.5px] text-ink-faint">
+            <div className="px-5 py-2.5 border-t border-line-hairline text-[11.5px] text-ink-faint">
               未计量合计 {fmtInt(unmeteredReq)} 次请求 · {unmeteredModels.length} 个模型无 token 数据
             </div>
           </Panel>
@@ -346,7 +346,7 @@ export default function TokenStats() {
                     </tbody>
                   </table>
                 </div>
-                <div className="px-5 py-2.5 border-t border-line text-[11.5px] text-ink-faint">
+                <div className="px-5 py-2.5 border-t border-line-hairline text-[11.5px] text-ink-faint">
                   扫描 {client?.files ?? 0} 个文件 · 本次复用缓存 {client?.cachedFiles ?? 0} 个、新解析 {client?.parsedFiles ?? 0} 个
                 </div>
               </Panel>

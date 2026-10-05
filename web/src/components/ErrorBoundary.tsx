@@ -35,7 +35,7 @@ export default class ErrorBoundary extends Component<Props, State> {
           <p className="text-[13px] text-ink-soft mb-4 leading-relaxed">
             页面组件抛出异常，界面已停止渲染。可以先重新加载；若反复出现，请把下面的错误摘要一并反馈。
           </p>
-          <pre className="rounded-md border border-line bg-surf-soft p-3 mb-4 font-mono text-[12px] text-danger whitespace-pre-wrap break-all">
+          <pre className="rounded-md border border-line-hairline bg-surf-soft p-3 mb-4 font-mono text-[12px] text-danger whitespace-pre-wrap break-all">
             {error.message || String(error)}
           </pre>
           <div className="flex gap-2">

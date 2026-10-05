@@ -202,7 +202,7 @@ export default function SettingsTasks() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">定时任务</h2>
+        {/* 「定时任务」标题由页面标题栏承担，此处不重复 */}
         <p className="text-xs text-ink-soft mb-4">
           签到 / 保活 / Token 扫描 / 模型探活时刻。保存后写入本机配置并立即重排调度（无需重启服务）。
           默认值来自 .env，此处保存会覆盖 env。
@@ -309,7 +309,7 @@ export default function SettingsTasks() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">余额自动刷新</h2>
+        <h2 className="text-block-title font-semibold mb-1">余额自动刷新</h2>
         <p className="text-xs text-ink-soft mb-4">
           按设定间隔自动查询全部启用账号余额并写入账号库；刷新过程不占用账号池租约、不影响转发请求。刷新后自动检测临期积分与低余额提醒。
         </p>
@@ -361,7 +361,7 @@ export default function SettingsTasks() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">任务执行日志</h2>
+        <h2 className="text-block-title font-semibold mb-1">任务执行日志</h2>
         <p className="text-xs text-ink-soft mb-4">定时任务与手动触发的执行记录（余额刷新 / 备份 / 成长中心轮询 / 签到等），新→旧展示，最多保留 500 条。</p>
         {!key ? (
           <div className="text-xs text-ink-soft">保存访问密钥后可查看任务日志</div>
@@ -382,7 +382,7 @@ export default function SettingsTasks() {
               </button>
             </div>
             {taskLog.length ? (
-              <div className="border border-line rounded-lg overflow-x-auto">
+              <div className="border border-line-hairline rounded-card overflow-x-auto">
                 <table className="w-full border-collapse text-[12px] min-w-[560px]">
                   <thead>
                     <tr>
