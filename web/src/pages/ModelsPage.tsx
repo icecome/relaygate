@@ -110,8 +110,8 @@ export default function ModelsPage() {
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
-        <StatCard label="调度策略" value={strategyLabel(data?.strategy)} hint="账号池调度策略" />
-        <StatCard label="上游函数" value={functionLabel(data?.upstreamFunction)} hint="使用模型配置映射" />
+        <StatCard label="调度策略" value={strategyLabel(data?.strategy)} hint="账号池调度策略" kind="text" />
+        <StatCard label="上游函数" value={functionLabel(data?.upstreamFunction)} hint="使用模型配置映射" kind="text" />
         <StatCard
           label="不可用模型"
           value={unavail}

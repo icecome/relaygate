@@ -202,7 +202,7 @@ export default function SettingsTasks() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h2 className="text-block-title font-semibold mb-1">定时任务</h2>
+        {/* 「定时任务」标题由页面标题栏承担，此处不重复 */}
         <p className="text-xs text-ink-soft mb-4">
           签到 / 保活 / Token 扫描 / 模型探活时刻。保存后写入本机配置并立即重排调度（无需重启服务）。
           默认值来自 .env，此处保存会覆盖 env。

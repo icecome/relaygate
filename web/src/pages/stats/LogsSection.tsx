@@ -148,7 +148,7 @@ export default function LogsSection() {
       <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-3">
         <StatCard label="扫描条数" value={totalScan} hint="近 1 天" />
         <StatCard label="错误" value={stats?.byStatus?.error || 0} hint="含 status≥400" accent="warn" />
-        <StatCard label="token 消耗" value={fmtTokens(stats?.tokens)} hint="近 1 天已计量合计" />
+        <StatCard label="Token 消耗" value={fmtTokens(stats?.tokens)} hint="近 1 天已计量合计" />
         <StatCard
           label="模型分布"
           value={<span className="text-sm font-medium leading-6">{modelTop || '—'}</span>}

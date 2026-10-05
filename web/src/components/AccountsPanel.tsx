@@ -54,7 +54,7 @@ export default function AccountsPanel({
   poolAccounts = [],
 }: Props) {
   const { key } = useAuth();
-  const { data, refresh, accountsOf } = useSummary();
+  const { data, loading, error, refresh, accountsOf } = useSummary();
   const toast = useToast();
   const prompt = usePrompt();
   const [detailAcct, setDetailAcct] = useState<Account | null>(null);
@@ -206,7 +206,9 @@ export default function AccountsPanel({
             </button>
           </div>
           <span className="text-xs text-ink-faint tabular-nums">
-            {data ? `共 ${accts.length} 个` : '加载中…'}
+            {/* 三态分开：加载中 / 读取失败 / 实际条数。此前把 error 也归入
+                「加载中」，无密钥时会永远停在假加载态。 */}
+            {loading ? '加载中…' : error ? <span className="text-danger">读取失败</span> : `共 ${accts.length} 个`}
           </span>
         </div>
       </div>

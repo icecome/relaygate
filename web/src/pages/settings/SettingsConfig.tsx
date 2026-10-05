@@ -175,8 +175,8 @@ export default function SettingsConfig() {
         <div className="grid gap-2.5">
           <div className="kv-row"><span className="kv-k">站点</span><span className="kv-v">{typeof location !== 'undefined' ? location.origin : '—'}</span></div>
           <div className="kv-row"><span className="kv-k">摘要接口</span><span className="kv-v">/v1/credentials/summary</span></div>
-          <div className="kv-row"><span className="kv-k">登录密钥存储</span><span className="kv-v">localStorage · trae_key</span></div>
-          <div className="kv-row"><span className="kv-k">访问密钥</span><span className="kv-v">概览页管理 · 按平台绑定</span></div>
+          <div className="kv-row"><span className="kv-k">登录密钥存储</span><span className="kv-v">sessionStorage · trae_key</span></div>
+          <div className="kv-row"><span className="kv-k">访问密钥</span><span className="kv-v">账号 › 访问密钥 · 按平台绑定</span></div>
           <div className="kv-row"><span className="kv-k">通知</span><span className="kv-v">{key ? '已配置' : '—'}</span></div>
         </div>
       </div>
