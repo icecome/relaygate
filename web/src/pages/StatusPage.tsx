@@ -16,7 +16,6 @@ export default function StatusPage() {
   const [rotate, setRotate] = useState<RotateStatus | null>(null);
   const [rotBusy, setRotBusy] = useState(false);
   const [rotOn, setRotOn] = useState(true);
-  const [rotMinutes, setRotMinutes] = useState('240');
   const [rotStay, setRotStay] = useState('60');
   const [rotExclude, setRotExclude] = useState('');
   const [rotBack, setRotBack] = useState(true);
@@ -45,7 +44,6 @@ export default function StatusPage() {
         const s = d.settings;
         if (s) {
           setRotOn(s.enabled);
-          setRotMinutes(String(s.intervalMinutes));
           setRotStay(String(Math.round(s.stayMs / 1000)));
           setRotExclude(s.excludeUids || '');
           setRotBack(s.switchBack);
@@ -91,14 +89,14 @@ export default function StatusPage() {
       const d = await saveRotateSettings(
         {
           enabled: rotOn,
-          intervalMinutes: parseInt(rotMinutes, 10) || 240,
+          intervalMinutes: 0,
           stayMs: (parseInt(rotStay, 10) || 60) * 1000,
           excludeUids: rotExclude,
           switchBack: rotBack,
         },
         key,
       );
-      setRotStatus({ msg: d.enabled ? `自动切换已启用（每 ${d.intervalMinutes} 分钟轮换一遍，已热重载）` : '自动切换已关闭', kind: 'ok' });
+      setRotStatus({ msg: d.enabled ? '自动切换已启用（每日定时执行，时刻见「设置 · 定时任务」）' : '自动切换已关闭', kind: 'ok' });
       toast('自动切换配置已保存并热重载', 'ok');
       load();
     } catch (e) {
@@ -201,11 +199,11 @@ export default function StatusPage() {
             <span className="who who-local">作用于本机凭据文件</span>
           </span>
         }
-        desc="定时把账号库中启用的 WorkBuddy 登录态写入客户端 auth 目录，逐个替换触发客户端热加载，让每个账号都产生当日活跃记录。与「访问密钥」页的密钥轮换对象完全不同。"
+        desc="每天在指定时刻把账号库中启用的 WorkBuddy 登录态写入客户端 auth 目录，逐个替换触发客户端热加载，让每个账号都产生当日活跃记录。与「访问密钥」页的密钥轮换对象完全不同。执行时刻在「设置 → 定时任务」里调整（rotateHour / rotateMinute）。重启服务不会额外触发轮换。"
         right={
           <span className={`${rotate?.scheduler?.enabled ? 'pill-ok' : 'pill-muted'}`}>
             {rotate?.scheduler?.enabled
-              ? `定时 ${rotate?.scheduler?.rotateSettings?.intervalMinutes ?? '—'} 分钟`
+              ? `每日 ${String(rotate?.scheduler?.rotateHour ?? 0).padStart(2, '0')}:${String(rotate?.scheduler?.rotateMinute ?? 0).padStart(2, '0')}`
               : '调度未运行'}
           </span>
         }
@@ -218,11 +216,6 @@ export default function StatusPage() {
               启用自动轮换
             </label>
             <p className="text-[11px] text-ink-faint">关闭后仅保留手动「立即轮换一遍」</p>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="rot-min">轮换间隔（分钟，30–10080）</label>
-            <input id="rot-min" type="number" min={30} max={10080} className="field w-full" value={rotMinutes} onChange={(e) => setRotMinutes(e.target.value)} />
-            <p className="text-[11px] text-ink-faint">每隔多久把 auth 文件换成一个新账号</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-ink-soft mb-1.5" htmlFor="rot-stay">每账号停留（秒，10–3600）</label>

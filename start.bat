@@ -33,6 +33,13 @@ if not exist node_modules\express (
   call npm install
 )
 
+rem Kill orphaned relay-gate node from a previous service instance. srvany's
+rem stop only kills the cmd wrapper; the node child survives and keeps holding
+rem port 19900, so a fresh start would fail to bind or worse, two schedulers
+rem would run side by side. Script path matching avoids touching unrelated
+rem node processes. Log output goes through the main redirect below.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\kill-orphan-node.ps1" -Apply >> logs\relay.out.log 2>&1
+
 echo [relay-gate] starting %DATE% %TIME% >> logs\relay.out.log
 node src\index.js >> logs\relay.out.log 2>> logs\relay.err.log
 echo [relay-gate] node exited with errorlevel %ERRORLEVEL% at %DATE% %TIME% >> logs\relay.err.log

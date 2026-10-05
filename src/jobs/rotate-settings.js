@@ -4,8 +4,8 @@
  *
  * 存储：.trae-api/rotate-settings.json（文件值优先于 env）。
  * 字段：
- *   enabled             是否启用自动切换
- *   intervalMinutes     自动切换间隔（默认 240 分钟，min 30）
+ *   enabled             是否启用自动切换（每日 rotateHour:rotateMinute 定时执行）
+ *   intervalMinutes     已废弃：间隔轮换链已移除，字段保留仅为兼容旧配置文件读取
  *   stayMs              每个账号停留时长（默认 60s，min 10s）—— 轮换单遍时账号停留
  *   authDir             客户端 auth 目录（空 = 默认 LOCALAPPDATA 探测）
  *   excludeUids         不参与轮换的 uid 列表（逗号分隔）

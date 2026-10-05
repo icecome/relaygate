@@ -262,8 +262,12 @@ async function runKeepalive() {
   }
 }
 
-/** 多账号活跃度维护：轮换 auth 文件触发热加载。
- *  由 rotate-settings.json 热重载控制启停与间隔；intervalMinutes 间隔轮询占位。 */
+/**
+ * 账号轮换仅按每日定时（scheduleOnce 的 rotate 时刻）触发；
+ * 此前的 intervalMinutes 间隔链与「启动 2 分钟首轮」已移除——持续后台
+ * 轮换会在用户使用中途反复杀/启客户端，且重启必跑一轮令人困惑。
+ * rotate-settings.enabled 仍作为总开关（false 时每日定时也跳过执行）。
+ */
 let rotateTimer = null;
 async function runRotateAccounts() {
   const rs = require('./rotate-settings').getEffective();
@@ -293,27 +297,10 @@ async function runRotateAccounts() {
   }
 }
 
-/** 周期自动切换调度：按 rotate-settings 的 intervalMinutes 触发一整遍轮换，支持热重载。 */
+/** 兼容保留的空实现：旧调用点（restartRotate / 设置保存后的重排）不再需要
+ *  重排间隔链，轮换唯一入口是每日 scheduleOnce('rotate')，由 restart() 统一重排。 */
 function scheduleRotatePoll() {
   if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
-  const rs = require('./rotate-settings').getEffective();
-  if (!rs.enabled) {
-    console.log('[scheduler] account rotate auto disabled');
-    return;
-  }
-  const ms = Math.max(30, rs.intervalMinutes) * 60 * 1000;
-  const firstDelay = 2 * 60 * 1000; // 启动后 2 分钟首圈，避开冷启动
-  const first = setTimeout(async () => {
-    await runRotateAccounts().catch(() => {});
-    if (started && require('./rotate-settings').getEffective().enabled) {
-      rotateTimer = setInterval(() => runRotateAccounts().catch(() => {}), ms);
-      rotateTimer.unref?.();
-    }
-  }, firstDelay);
-  first.unref?.();
-  timers.push(first);
-  state.nextRotateAt = new Date(Date.now() + firstDelay).toISOString();
-  console.log(`[scheduler] account rotate auto every ${rs.intervalMinutes}min (first in ${firstDelay / 1000}s)`);
 }
 
 /**
@@ -521,12 +508,13 @@ function start() {
   scheduleOnce(eff.keepaliveHour, eff.keepaliveMinute, 'keepalive', runKeepalive);
   if (eff.rotateEnabled) {
     scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', runRotateAccounts);
+  } else {
+    console.log('[scheduler] account rotate daily schedule disabled');
   }
   scheduleModelProbe(eff);
   scheduleGrowthPoll(eff);
-  scheduleRotatePoll();
 
-  console.log('[scheduler] started (checkin + keepalive + token sweep + model probe + rotate + growth poll + account rotate auto)');
+  console.log('[scheduler] started (checkin + keepalive + token sweep + model probe + rotate + growth poll)');
 }
 
 function stop() {
@@ -554,13 +542,10 @@ function restart() {
   return snapshot();
 }
 
-/** 账号轮换配置热重载：仅重排轮换定时器（保留其它调度）。 */
+/** 账号轮换配置热重载：间隔链已移除，轮换时刻变更需 restart() 整体重排每日定时。 */
 function restartRotate() {
-  if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
-  const eff = scheduleSettings.getEffective();
-  // 每日时刻任务仍在（若启用），立即重排
   if (started && config.schedulerEnabled) {
-    scheduleRotatePoll();
+    return restart();
   }
   return snapshot();
 }

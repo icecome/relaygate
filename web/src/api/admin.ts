@@ -467,7 +467,7 @@ export interface RotateStatus {
   lastRotateOk?: number | null;
   lastRotateFailed?: number | null;
   settings: RotateSettings;
-  scheduler: { enabled?: boolean; nextRotateAt?: string | null; rotateSettings?: RotateSettings };
+  scheduler: { enabled?: boolean; nextRotateAt?: string | null; rotateSettings?: RotateSettings; rotateHour?: number; rotateMinute?: number };
 }
 
 export const getRotateStatus = (key: string) => api<RotateStatus>('/v1/admin/rotate/status', {}, key);
