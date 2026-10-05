@@ -198,7 +198,7 @@ export default function AccessKeysPanel({ loginKey }: Props) {
   if (!loginKey) {
     return (
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">访问密钥</h2>
+        <h2 className="text-block-title font-semibold mb-1">访问密钥</h2>
         <p className="text-xs text-ink-soft">请先创建并保存登录密钥后再管理访问密钥。</p>
       </div>
     );
@@ -216,7 +216,7 @@ export default function AccessKeysPanel({ loginKey }: Props) {
       <div className="card p-5">
       <div className="flex flex-wrap items-start justify-between gap-3 mb-3">
         <div>
-          <h2 className="text-sm font-semibold mb-1">访问密钥</h2>
+          <h2 className="text-block-title font-semibold mb-1">访问密钥</h2>
           <p className="text-xs text-ink-soft">
             供 IDE / Agent 客户端调用转发接口。平台密钥仅调本平台模型；通用密钥（all）可调虚拟模型与全部渠道。列表不展示明文；点击「复制」写入剪贴板。
           </p>

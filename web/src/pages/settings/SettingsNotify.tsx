@@ -275,7 +275,7 @@ export default function SettingsNotify() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">通知渠道</h2>
+        <h2 className="text-block-title font-semibold mb-1">通知渠道</h2>
         <p className="text-xs text-ink-soft mb-4">点击渠道展开配置，保存后立即生效；留空的渠道回退读取 .env 同名配置。下方可按事件类型开关推送。</p>
 
         <div className="border border-line-hairline rounded-card divide-y divide-line-hairline overflow-hidden">
@@ -428,7 +428,7 @@ export default function SettingsNotify() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">全量备份</h2>
+        <h2 className="text-block-title font-semibold mb-1">全量备份</h2>
         <p className="text-xs text-ink-soft mb-4">
           备份内容：账号凭据（AES 加密密文）、API 密钥、积分历史、调度/通知/模型配置。备份文件单文件 JSON（含校验和），
           绝不含明文凭据。密钥来自 TRAE_BACKUP_PASSPHRASE 或 .trae-api/backup.key（自动生成）。完成自动推送「系统备份完成」通知。
@@ -517,7 +517,7 @@ export default function SettingsNotify() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">通知事件（增 / 删）</h2>
+        <h2 className="text-block-title font-semibold mb-1">通知事件（增 / 删）</h2>
         <p className="text-xs text-ink-soft mb-4">
           内置事件可在上方「提醒事件」开关；此处可新增自定义事件名（推送时按该事件名发送、可在此开关），或删除已添加的自定义事件。内置事件不可删除、只能关闭。
         </p>

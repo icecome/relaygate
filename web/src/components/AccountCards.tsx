@@ -1,7 +1,7 @@
 import type { Account, PoolAccount } from '../api/types';
 import { accountState } from '../api/types';
 import { fmtBalance, fmtCool, relTime } from '../lib/format';
-import { WhoTag } from './ui';
+import { WhoTag, EmptyState } from './ui';
 import StatusDot from './StatusDot';
 
 export interface AccountCardsProps {
@@ -35,13 +35,9 @@ export default function AccountCards({
 }: AccountCardsProps) {
   if (!accounts.length) {
     return (
-      <div className="panel">
-        <div className="text-center py-14 px-6">
-          <div className="text-sm font-medium text-ink mb-1.5">{emptyTitle}</div>
-          <div className="text-[13px] text-ink-soft mb-5 max-w-[380px] mx-auto leading-relaxed">{emptyDesc}</div>
-          {extra}
-        </div>
-      </div>
+      <EmptyState title={emptyTitle} desc={emptyDesc}>
+        {extra}
+      </EmptyState>
     );
   }
 

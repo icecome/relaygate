@@ -105,7 +105,7 @@ export default function SettingsConfig() {
   return (
     <div className="space-y-4">
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">登录密钥</h2>
+        <h2 className="text-block-title font-semibold mb-1">登录密钥</h2>
         <p className="text-xs text-ink-soft mb-4">
           用于本管理面板登录（Authorization: Bearer）。与「访问密钥」分离：访问密钥在概览页管理，供 IDE 调用转发接口。密钥仅保存在本机浏览器。
         </p>
@@ -145,7 +145,7 @@ export default function SettingsConfig() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">客户端配置</h2>
+        <h2 className="text-block-title font-semibold mb-1">客户端配置</h2>
         <p className="text-xs text-ink-soft mb-4">转发接口的接入地址与协议端点（只读）。转发面使用「访问密钥」，管理面板使用「登录密钥」。</p>
         {!key ? (
           <div className="text-xs text-ink-soft">保存登录密钥后展示接入信息</div>
@@ -170,7 +170,7 @@ export default function SettingsConfig() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">服务信息</h2>
+        <h2 className="text-block-title font-semibold mb-1">服务信息</h2>
         <p className="text-xs text-ink-soft mb-4">当前页面可推断的连接信息（只读）。</p>
         <div className="grid gap-2.5">
           <div className="kv-row"><span className="kv-k">站点</span><span className="kv-v">{typeof location !== 'undefined' ? location.origin : '—'}</span></div>
@@ -182,7 +182,7 @@ export default function SettingsConfig() {
       </div>
 
       <div className="card p-5">
-        <h2 className="text-sm font-semibold mb-1">运行时配置</h2>
+        <h2 className="text-block-title font-semibold mb-1">运行时配置</h2>
         <p className="text-xs text-ink-soft mb-4">当前生效的关键配置（只读）。「重新加载」会重读 model-config.json 与 .env 可热更项，无需重启服务。端口/密钥等监听级配置需重启生效。</p>
         {!key ? (
           <div className="text-xs text-ink-soft">保存访问密钥后展示运行时配置</div>

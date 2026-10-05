@@ -84,6 +84,28 @@ export function ActionRow({
   );
 }
 
+/** 空态：列表/表格无数据时的统一呈现。标题 + 说明 + 可选操作（如导入入口）。
+ *  三处列表（账号表、账号卡、访问密钥）共用，避免各写一套样式。 */
+export function EmptyState({
+  title,
+  desc,
+  children,
+}: {
+  title: string;
+  desc: string;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="panel">
+      <div className="text-center py-14 px-6">
+        <div className="text-[13px] font-semibold text-ink mb-1.5">{title}</div>
+        <div className="text-[12px] text-ink-soft mb-5 max-w-[380px] mx-auto leading-relaxed">{desc}</div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 export const ICON = {
   alert: (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true">

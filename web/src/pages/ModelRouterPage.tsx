@@ -315,7 +315,7 @@ export default function ModelRouterPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-ink">虚拟模型</div>
+        <div className="text-block-title font-semibold text-ink">虚拟模型</div>
         <div className="flex gap-2">
           <button type="button" className="btn btn-ghost" onClick={load}>刷新</button>
           <button type="button" className="btn btn-primary" onClick={openCreate}>新建虚拟模型</button>

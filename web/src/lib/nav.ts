@@ -85,3 +85,26 @@ export function childOf(pathname: string, group: NavGroup): string | null {
 export function tabPath(group: NavGroup, seg: string): string {
   return group.children.length ? `${group.path}/${seg}` : group.path;
 }
+
+/**
+ * 当前路径对应的页面元信息，供页面标题栏使用。
+ * 三级信息各司其职：
+ *   group  一级栏目名（「账号」）——回答"我在哪一区"
+ *   label  子栏名（「全部账号」）——回答"我在看什么"
+ *   sub    该栏目的一句话职责说明——回答"这一区是干什么的"
+ * 与侧栏 / SectionTabs 同源，避免标题与导航文案漂移。
+ */
+export interface PageMeta {
+  group: NavGroup;
+  /** 子栏名；无子栏（概览）时与 group.label 相同 */
+  label: string;
+  /** 子栏路径片段；无子栏时为 null */
+  seg: string | null;
+}
+
+export function pageMeta(pathname: string): PageMeta {
+  const group = groupOf(pathname);
+  const seg = childOf(pathname, group);
+  const child = group.children.find((c) => c.seg === seg);
+  return { group, label: child?.label ?? group.label, seg };
+}

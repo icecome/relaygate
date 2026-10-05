@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Header from './Header';
 import SectionTabs from './SectionTabs';
+import PageHeading from './PageHeading';
 
 export default function Layout() {
   return (
@@ -12,6 +13,7 @@ export default function Layout() {
         <SectionTabs />
         <main className="flex-1 overflow-y-auto bg-bg">
           <div className="max-w-[1200px] mx-auto p-6 pb-14">
+            <PageHeading />
             <Outlet />
           </div>
         </main>
