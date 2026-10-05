@@ -54,7 +54,7 @@ export default function AccountCards({
         return (
           <div
             key={a.id}
-            className="bg-surf border border-line-hairline rounded-card p-4 flex flex-col gap-3 transition-colors hover:border-line-strong"
+            className="bg-surf border border-line-hairline rounded-card p-4 flex flex-col gap-3 h-full transition-colors hover:border-line-strong"
           >
             <div className="flex items-start justify-between gap-2">
               <button
@@ -96,7 +96,7 @@ export default function AccountCards({
               </div>
             </div>
 
-            <div className="text-[11px] text-ink-faint">最近调度 {relTime(a.lastPickedAt ?? null)}</div>
+            <div className="text-[11px] text-ink-faint mt-auto">最近调度 {relTime(a.lastPickedAt ?? null)}</div>
           </div>
         );
       })}
