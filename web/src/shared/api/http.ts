@@ -65,7 +65,20 @@ const inflight = new Map<string, Promise<unknown>>();
  * 由 http 层在收到 401 时触发，页面无需各自处理。
  * 统一走 auth.clearKey()：同时清 AUTH_STORE 与 sessionStorage，
  * 否则 store 里残留的 key 会继续被拼进 Authorization 头反复触发 401。
+ *
+ * 只在响应确实是「登录密钥无效」时才退出登录。
+ * 转发面用的是另一类密钥（access key），管理面路由未命中时会落到转发面
+ * 鉴权并返回 `Invalid access key. 请使用管理面创建的访问密钥…`——
+ * 那是路由/凭据类型问题，不是登录过期。若一律退出登录，用户会被反复踢出，
+ * 且真实原因（路径写错、用了转发密钥访问管理面）被掩盖成「登录失效」。
  */
+function isLoginKeyRejection(status: number, type?: string, message?: string): boolean {
+  if (status !== 401) return false;
+  if (type === 'auth_error' && /invalid login key|missing login key/i.test(message || '')) return true;
+  // 其余 401（转发面 access key 报错等）一律不退出登录
+  return false;
+}
+
 function handleAuthLost(): void {
   const had = !!getKey();
   clearKey();
@@ -153,7 +166,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions, key: string): P
       } catch {
         // 响应体非 JSON，保留 HTTP 状态码作为信息
       }
-      if (r.status === 401) handleAuthLost();
+      if (isLoginKeyRejection(r.status, type, msg)) handleAuthLost();
       throw new ApiError(r.status, msg, type, details);
     }
 

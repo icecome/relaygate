@@ -27,6 +27,19 @@ const { createLineFeeder } = require('../lib/sse-lines');
 
 const router = Router();
 
+/**
+ * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
+ * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
+ */
+function usageToLogFields(u) {
+  if (!u || typeof u !== 'object') return {};
+  const pt = Number(u.prompt_tokens ?? u.inputTokens) || 0;
+  const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
+  const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
+  if (!pt && !ct && !tt) return {};
+  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
+}
+
 /** 兼容 tools 与旧版 functions 字段。 */
 function extractTools(body) {
   if (Array.isArray(body.tools) && body.tools.length) return body.tools;
@@ -243,6 +256,9 @@ router.post('/v1/chat/completions', async (req, res) => {
     const wbStickyKey = sticky.stickyKeyFromRequest(req);
     const wbStickyAcct = sticky.lookup(wbStickyKey);
     const wbRunOpts = { stickyKey: wbStickyKey, stickyAccountId: wbStickyAcct, edition: 'workbuddy', model: wbModel };
+    // 直连 WB 路径的 usage：非流式取聚合结果，流式需从 SSE 中旁路提取。
+    // 原实现两条路径都不落日志，导致 WB 直连请求的 token 恒为 0。
+    let wbUsage = null;
     try {
       if (stream !== false) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -264,8 +280,27 @@ router.post('/v1/chat/completions', async (req, res) => {
             throw e;
           }
           if (wbStickyKey && accountId) sticky.bind(wbStickyKey, accountId);
-          // SSE 直通（上游即 OpenAI 格式）
-          await consumeStream(up.body, (text) => { if (!res.writableEnded) res.write(text); });
+          // SSE 直通（上游即 OpenAI 格式）；旁路窥探 usage，不影响转发字节
+          const reader = up.body.getReader();
+          const dec = new TextDecoder();
+          const feeder = createLineFeeder((line) => {
+            const t = line.trim();
+            if (!t.startsWith('data:')) return;
+            const payload = t.slice(5).trim();
+            if (!payload || payload === '[DONE]') return;
+            try {
+              const ev = JSON.parse(payload);
+              if (ev && ev.usage) wbUsage = ev.usage;
+            } catch { /* 非 JSON 帧忽略 */ }
+          });
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = dec.decode(value, { stream: true });
+            feeder.feed(text);
+            if (text && !res.writableEnded) res.write(text);
+          }
+          feeder.flush();
           if (!res.writableEnded) res.end();
         }, wbRunOpts);
       } else {
@@ -275,6 +310,7 @@ router.post('/v1/chat/completions', async (req, res) => {
           if (wbStickyKey && accountId) sticky.bind(wbStickyKey, accountId);
           return wbChat.chatAggregate(acct, Object.assign({}, wbBody, { stream: true }));
         }, wbRunOpts);
+        wbUsage = result && result.usage;
         return res.json(result);
       }
     } catch (err) {
@@ -292,6 +328,11 @@ router.post('/v1/chat/completions', async (req, res) => {
         }
       }
     } finally {
+      // 费率按真实模型 wbModel 计（model 可能是 WB 别名，费率表里没有条目）
+      const wbUsageFields = usageToLogFields(wbUsage);
+      const wbCost = wbUsageFields.totalTokens
+        ? estimateCost(wbModel, wbUsageFields.promptTokens, wbUsageFields.completionTokens)
+        : null;
       logRequest({
         endpoint: '/v1/chat/completions', method: 'POST', model,
         account: req.accountId || null,
@@ -301,6 +342,9 @@ router.post('/v1/chat/completions', async (req, res) => {
         error: requestError,
         platform: 'workbuddy',
         wbModel,
+        routedTo: `workbuddy/${wbModel}`,
+        ...wbUsageFields,
+        ...(wbCost != null ? { estimatedCost: wbCost } : {}),
       });
     }
     return;

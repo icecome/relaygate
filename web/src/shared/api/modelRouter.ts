@@ -28,6 +28,8 @@ export interface RouterCandidate {
   weight: number;
   maxRpm?: number | null;
   enabled: boolean;
+  /** 置顶：无视成本排名强制进入轮转池。 */
+  pinned?: boolean;
   contextWindow?: number | null;
   promptMaxTokens?: number | null;
   maxOutputTokens?: number | null;
@@ -46,6 +48,8 @@ export interface VirtualModel {
   strategy: 'priority' | 'weighted';
   auto?: boolean;
   sort?: 'rate' | 'window' | null;
+  /** 轮转池大小：取成本序前 N 个候选做加权轮转；0 表示关闭轮转，固定取首选。 */
+  rotateTopN?: number;
   contextWindow?: number | null;
   candidates: RouterCandidate[];
   failover: { maxAttempts: number; switchOn: string[]; cooldownMs: number };
@@ -97,6 +101,26 @@ export const upsertVirtual = (id: string, body: Partial<VirtualModel>, key: stri
 
 export const deleteVirtual = (id: string, key: string) =>
   api<unknown>(`/v1/admin/model-router/virtual/${encodeURIComponent(id)}`, { method: 'DELETE' }, key);
+
+/**
+ * 定点修改单个候选的开关，不整体回写候选列表。
+ * 面板上的候选表是展开时的快照，整体 PUT 会用旧值覆盖并发改动。
+ *
+ * candidateId 走查询参数：候选 id 形如 `workbuddy/wb/hy3` 含斜杠，
+ * 放进路径段即便 encodeURIComponent 也会被 Express 解码后重新切分，
+ * 导致路由落到转发面鉴权、返回 401 并把面板误判为登录失效。
+ */
+export const patchCandidate = (
+  virtualId: string,
+  candidateId: string,
+  body: { enabled?: boolean; pinned?: boolean },
+  key: string,
+) =>
+  api<{ data: RouterCandidate }>(
+    `/v1/admin/model-router/virtual/${encodeURIComponent(virtualId)}/candidate?candidateId=${encodeURIComponent(candidateId)}`,
+    { method: 'PATCH', body },
+    key,
+  );
 
 export const unfreezeVirtual = (id: string, key: string) =>
   api<unknown>(

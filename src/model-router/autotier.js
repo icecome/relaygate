@@ -31,6 +31,10 @@ const TIERS = [
 const DEFAULTS = () => ({
   enabled: true,
   strategy: 'priority',
+  // 轮转池大小：取倍率升序前 N 个候选做加权轮转。
+  // 取 4 是「常见的低成本模型都有机会被选中、同时不把请求摊到高倍率模型上」的折中；
+  // 置 1 即退化为固定命中倍率最低者，置 0 或不声明则完全关闭轮转。
+  rotateTopN: 4,
   failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'other'], cooldownMs: 20000 },
 });
 
@@ -146,6 +150,41 @@ function sortCandidates(list, sort) {
 }
 
 /**
+ * 按倍率反推候选权重（输入需为 sortCandidates 排序后的顺序：倍率升序）。
+ *
+ * 轮转池内靠权重表达「便宜的模型多承担一些、更贵的少承担一些」，
+ * 权重取倍率区间的反比并夹在 [MIN, MAX]，避免倍率 0（免费）产生无穷大权重，
+ * 也避免倍率很高时权重被压到 0 而彻底退出轮转。
+ * 未知倍率（null）按最贵处理，给出基础权重 1。
+ */
+const WEIGHT_MIN = 1;
+const WEIGHT_MAX = 8;
+
+/**
+ * 解析候选倍率。`Number(null) === 0`，直接 Number() 会把「未知倍率」误判为
+ * 「免费」，故先按原始值判空。返回 null 表示倍率未知。
+ */
+function rateOf(model) {
+  const raw = model && model.rate;
+  if (raw == null || raw === '') return null;
+  const r = Number(raw);
+  return Number.isFinite(r) && r >= 0 ? r : null;
+}
+
+function deriveWeights(sortedModels) {
+  const known = sortedModels.map(rateOf);
+  const maxRate = known.reduce((m, r) => (r != null && r > m ? r : m), 0);
+  return known.map((r) => {
+    if (r == null) return WEIGHT_MIN;
+    // 全部候选倍率均为 0（全免费）时统一给最高权重；
+    // 仅当存在正倍率时才在其区间内插值。
+    if (maxRate <= 0) return WEIGHT_MAX;
+    const w = Math.round(WEIGHT_MAX - (r / maxRate) * (WEIGHT_MAX - WEIGHT_MIN));
+    return Math.min(WEIGHT_MAX, Math.max(WEIGHT_MIN, w));
+  });
+}
+
+/**
  * 重算全部自动分层虚拟模型（幂等）。
  * @param {{force?:boolean}} opts
  * @returns {Promise<{ok:boolean, tiers:Array<{id, candidates:number, declaredWindow:number}>, errors:string[]}>}
@@ -160,12 +199,16 @@ async function syncAutoTiers(opts = {}) {
     return { ok: false, tiers: [], errors: errors.length ? errors : ['no models fetched from any platform'] };
   }
 
-  // 既有候选的禁用状态跨重同步保留（键 = provider/model）
+  // 既有候选的手工调整跨重同步保留（键 = provider/model）：
+  // enabled=是否参与调度、pinned=是否强制入池。
+  // 缺此保留则定时任务会把用户在面板上的禁用/置顶操作整体抹掉。
   const keepEnabled = new Map();
+  const keepPinned = new Map();
   for (const tier of TIERS) {
     const prev = store.getVirtual(tier.id);
     for (const c of (prev && prev.candidates) || []) {
       keepEnabled.set(c.provider + '/' + c.model, c.enabled !== false);
+      keepPinned.set(c.provider + '/' + c.model, c.pinned === true);
     }
   }
 
@@ -173,16 +216,21 @@ async function syncAutoTiers(opts = {}) {
   const summary = [];
   for (const tier of TIERS) {
     const list = sortCandidates(grouped.get(tier.id) || [], 'rate');
+    // 权重按倍率反推：低成本候选在轮转池内承担更多份额。
+    // 置顶候选按用户意图给最高权重，不受倍率影响。
+    const weights = deriveWeights(list);
     const candidates = list.map((m, i) => {
       const key = m.provider + '/' + m.model;
+      const pinned = keepPinned.get(key) === true;
       return {
         id: key,
         provider: m.provider,
         model: m.model,
         priority: i + 1,
-        weight: 1,
+        weight: pinned ? WEIGHT_MAX : weights[i],
         maxRpm: null,
         enabled: keepEnabled.get(key) !== false,
+        pinned,
         contextWindow: m.window,
         promptMaxTokens: m.promptMax,
         maxOutputTokens: m.maxOut,
@@ -194,11 +242,15 @@ async function syncAutoTiers(opts = {}) {
       summary.push({ id: tier.id, candidates: 0, declaredWindow: tier.minWindow, skipped: 'empty' });
       continue;
     }
+    const prev = store.getVirtual(tier.id);
     const r = store.upsertVirtual(tier.id, {
       ...DEFAULTS(),
       auto: true,
       sort: 'rate',
       description: tier.description,
+      // 轮转池大小沿用用户已保存的值；首次分层（prev 为空）才用默认档。
+      // 否则每次定时同步都会把面板上的调整重置回默认。
+      rotateTopN: Number(prev && prev.rotateTopN) > 0 ? Number(prev.rotateTopN) : DEFAULTS().rotateTopN,
       // 对外声明窗口 = 层窗口；网关按此守门（输入 ≤ 75% 窗口）
       contextWindow: tier.minWindow,
       candidates,
@@ -244,10 +296,12 @@ function isAutoVm(vm) {
 
 module.exports = {
   TIERS,
+  DEFAULTS,
   setCatalogProvider,
   fetchAllModels,
   assignTiers,
   sortCandidates,
+  deriveWeights,
   syncAutoTiers,
   filterCandidatesByInput,
   clampMaxTokens,

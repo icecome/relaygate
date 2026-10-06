@@ -2,13 +2,14 @@
  * 总览页：凭据池健康度 + 运行时状态。
  * 数据源为SummaryProvider（单一 /summary）与 /v1/admin/runtime。
  */
-import { useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
 import { useAuth } from '../../shared/api/auth';
 import { getRuntime } from '../../shared/api/admin';
 import { getCreditHistory } from '../../shared/api/stats';
 import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import { creditTotals } from '../accounts/accountPacks';
 import {
   accountState,
@@ -47,6 +48,15 @@ export default function OverviewPage() {
     [key],
     { enabled: !!key },
   );
+
+  // 页面可见时每60 秒触发一次真实余额查询，刷新后重读汇总与消耗统计。
+  // reload 均为 useCallback 稳定引用，因此本回调只随它们变化。
+  const { reload: reloadCredits } = credits;
+  const refreshAll = useCallback(() => {
+    reload();
+    reloadCredits();
+  }, [reload, reloadCredits]);
+  useBalanceAutoRefresh(key, refreshAll);
 
   // 派生值不落state，随 summary 变化即时算出
   const accounts = useMemo<Account[]>(() => summary?.accounts ?? [], [summary]);
@@ -87,16 +97,18 @@ export default function OverviewPage() {
           title="积分额度"
           description="来自各账号权益包快照，已用尽与已过期的包不计入"
           actions={
-            <Button
-              size="sm"
-              onClick={() => {
-                reload();
-                credits.reload();
-              }}
-              disabled={credits.loading}
-            >
-              {credits.loading ? '刷新中…' : '刷新额度'}
-            </Button>
+            <>
+              <Chip tone="brand" dot="dot-ok">
+                每 60 秒自动刷新
+              </Chip>
+              <Button
+                size="sm"
+                onClick={refreshAll}
+                disabled={credits.loading}
+              >
+                {credits.loading ? '刷新中…' : '立即刷新'}
+              </Button>
+            </>
           }
         >
           <div className="flex flex-col gap-4">

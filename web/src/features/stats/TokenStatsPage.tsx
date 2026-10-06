@@ -1,10 +1,11 @@
 /**
  * 用量与成本页。
  *
- * 关键语义：metered / unmetered 是真实字段。部分上游不回传 usage，
- * 此时requests 有值而 tokens 恒为 0，不能读作「消耗 0 token」。
- * 页面显式给出已计量覆盖率，避免误读。
- * estimatedCost 为估算值，不是账单精确值。
+ * 两套口径分开呈现，不混算：
+ * - Token：上游真实 usage（优先）+ tiktoken 补算（usage 缺失时）。
+ *   metered / unmetered 仍是真实字段，用于说明有多少请求拿到了上游真值。
+ * - 积分：WorkBuddy 官方账单的逐请求 credit 为主口径（精确值）；
+ *   Trae 侧无对等接口，只能用本地费率表估算，故两者分行展示。
  */
 import { useMemo, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
@@ -19,7 +20,7 @@ import {
 } from '../../shared/api/stats';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
-import { formatCost, formatNumber, percent } from '../../shared/lib/format';
+import { formatCost, formatNumber } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -67,15 +68,30 @@ export default function TokenStatsPage() {
     return sum;
   }, [daily.data]);
 
+  // 积分主口径：WorkBuddy 官方账单的逐请求精确 credit（仅 WB 账号可用）。
+  // Trae 侧无对等接口，只能以本地费率估算，因此在卡片上明确分开两种口径。
+  const officialTotals = useMemo(() => {
+    const list = official.data?.accounts ?? [];
+    const ok = list.filter((a) => a.available);
+    return {
+      credit: ok.reduce((s, a) => s + a.credit, 0),
+      requests: ok.reduce((s, a) => s + a.requests, 0),
+      accounts: ok.length,
+      total: list.length,
+    };
+  }, [official.data]);
+
   const metrics = [
     { key: '总请求', value: formatNumber(totals.requests), delta: `错误 ${formatNumber(totals.errors)}` },
-    { key: '总 Token', value: formatNumber(totals.tokens), delta: '仅统计已计量请求' },
-    { key: '估算成本', value: formatCost(totals.cost), delta: '估算值，非账单' },
+    { key: '总 Token', value: formatNumber(totals.tokens), delta: '真实 usage + 补算' },
     {
-      key: '已计量占比',
-      value: `${percent(totals.metered, totals.metered + totals.unmetered).toFixed(1)}%`,
-      delta: `未计量 ${formatNumber(totals.unmetered)}`,
+      key: '官方账单积分',
+      value: formatNumber(officialTotals.credit),
+      delta: officialTotals.accounts > 0
+        ? `WorkBuddy ${officialTotals.accounts}/${officialTotals.total} 账号精确值`
+        : '无可用 WB 账号',
     },
+    { key: '本地估算成本', value: formatCost(totals.cost), delta: '费率表推算，含未计费平台' },
   ];
 
   async function clearCache() {
@@ -116,7 +132,7 @@ export default function TokenStatsPage() {
         <Panel
           title="每日趋势"
           description="请求量、错误数与 Token 走势"
-          footer="未计量请求不计入 Token：部分上游不回传 usage，此时请求数有值而 Token 为 0。"
+          footer="Token = 上游真实 usage（优先）+ tiktoken 补算（usage 缺失时）；补算值与上游分词器存在偏差，仅供趋势参考。"
         >
           {daily.loading && !daily.data ? (
             <LoadingBlock />
@@ -258,7 +274,7 @@ export default function TokenStatsPage() {
 
         <Panel
           title="官方账单"
-          description="逐请求 credit 精确值，仅部分账号可用"
+          description="逐请求 credit 精确值（积分主口径），仅 WorkBuddy 账号可用；Trae 侧无对等接口"
           flush
         >
           {official.loading && !official.data ? (
@@ -317,7 +333,8 @@ export default function TokenStatsPage() {
         </Panel>
 
         <Note>
-          估算成本由本地单价表推算，与官方账单可能存在偏差；需要精确值请以官方账单页为准。
+          积分以官方账单为主口径（WorkBuddy 精确值）；本地估算成本由费率表推算，
+          Trae 侧无逐请求账单接口，只能以估算值参考。两者口径不同，不建议直接相加。
         </Note>
       </Stack>
     </PageShell>

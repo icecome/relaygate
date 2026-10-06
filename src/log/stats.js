@@ -39,6 +39,14 @@ function isMetered(r) {
   return r.totalTokens != null || r.promptTokens != null || r.completionTokens != null;
 }
 
+/**
+ * 该行的 token 是补算值（上游未回传 usage，由 tiktoken 估算）。
+ * 日志侧只在确实缺失 usage 时才写 tokensEstimated，故无需再判 metered。
+ */
+function isEstimated(r) {
+  return r.tokensEstimated === true;
+}
+
 /** 该行的 token 数。未计量记 0，同时由调用方单独累计 metered 计数以便区分。 */
 function tokensOf(r) {
   return Number(r.totalTokens) || (Number(r.promptTokens) || 0) + (Number(r.completionTokens) || 0);

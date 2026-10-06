@@ -85,7 +85,90 @@ export function FieldRow({ label, children }: { label: string; children: ReactNo
   );
 }
 
-/* ------------------------------------------------------------------ Panel */
+/* ---------------------------------------------------------------- Stepper */
+
+/**
+ * 紧凑整数步进器。用于表格单元格等空间受限处：
+ * - 高度 h-6，比 .field（h-8）小一号，嵌入表格不突兀
+ * - 两侧 ± 微调，中间可直接键入目标值
+ * - 隐藏 number input 的原生 spinners（见 global.css 的 .stepper-input），
+ *   否则会与两侧按钮重复且撑高行高
+ */
+export interface StepperProps {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  disabled?: boolean;
+  /** 无障碍标签（该控件无可见文字时必须提供） */
+  label: string;
+  onChange: (next: number) => void;
+}
+
+export function Stepper({
+  value,
+  min = 0,
+  max = 99,
+  step = 1,
+  disabled,
+  label,
+  onChange,
+}: StepperProps) {
+  const clamp = (n: number) => Math.max(min, Math.min(max, Math.round(n)));
+  const nudge = (delta: number) => {
+    if (disabled) return;
+    const next = clamp(value + delta);
+    if (next !== value) onChange(next);
+  };
+  return (
+    <div
+      className="stepper inline-flex items-stretch h-6 rounded-md border overflow-hidden"
+      style={{ borderColor: 'var(--rg-border-stronger)', background: 'var(--rg-bg-primary)' }}
+      role="group"
+      aria-label={label}
+    >
+      <button
+        type="button"
+        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40"
+        style={{ color: 'var(--rg-text-secondary)' }}
+        disabled={disabled || value <= min}
+        aria-label={`${label}：减少`}
+        onClick={() => nudge(-step)}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        value={value}
+        min={min}
+        max={max}
+        step={step}
+        disabled={disabled}
+        aria-label={label}
+        onChange={(e) => {
+          const raw = Number.parseInt(e.target.value, 10);
+          if (!Number.isFinite(raw)) return;
+          const next = clamp(raw);
+          if (next !== value) onChange(next);
+        }}
+        className="stepper-input w-[34px] border-0 text-center text-[12px] font-mono p-0"
+        style={{ color: 'var(--rg-text-primary)', background: 'transparent' }}
+      />
+      <button
+        type="button"
+        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40"
+        style={{ color: 'var(--rg-text-secondary)' }}
+        disabled={disabled || value >= max}
+        aria-label={`${label}：增加`}
+        onClick={() => nudge(step)}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------- Panel */
 
 export interface PanelProps {
   title?: ReactNode;

@@ -108,6 +108,9 @@ function normalizeVirtual(id, vm) {
       weight: Number.isFinite(Number(c.weight)) && Number(c.weight) > 0 ? Number(c.weight) : 1,
       maxRpm: Number.isFinite(Number(c.maxRpm)) && Number(c.maxRpm) > 0 ? Number(c.maxRpm) : null,
       enabled: c.enabled !== false,
+      // 置顶：无视成本排名强制进入轮转池，用于「只要高性能模型」的场景。
+      // 与 enabled 正交：置顶的候选仍可被单独禁用。
+      pinned: c.pinned === true,
       // —— 自动分层字段（autotier 写入；手动 VM 亦可声明）——
       // 候选侧真实窗口/输出上限：声明后路由按「请求输入 ≤ 该候选窗口」择优，不依赖虚拟级单一声明
       contextWindow: Number.isFinite(Number(c.contextWindow)) && Number(c.contextWindow) > 0 ? Number(c.contextWindow) : null,
@@ -120,15 +123,19 @@ function normalizeVirtual(id, vm) {
   // 自动分层虚拟模型：候选由 autotier 按平台目录窗口层生成，面板只读候选、
   // 仅保留候选级禁用开关；contextWindow 声明值 = 分层窗口（硬约束）。
   // sort：候选自动排序策略 rate=倍率低优先 | window=窗口大优先 | null=按 priority
+  // rotateTopN：轮转池大小（取排序后前 N 个候选做加权轮转）。缺省 0 表示不轮转，
+  // 沿用「固定取第一个候选」的优先级语义；手动 VM 未声明时同样不轮转。
   const auto = vm.auto === true;
   const sort = vm.sort === 'rate' ? 'rate' : (vm.sort === 'window' ? 'window' : null);
   const failover = vm.failover || {};
+  const rotateTopN = Number(vm.rotateTopN);
   return {
     enabled: vm.enabled !== false,
     description: String(vm.description || ''),
     strategy: vm.strategy === 'weighted' ? 'weighted' : 'priority',
     auto,
     sort,
+    rotateTopN: Number.isFinite(rotateTopN) && rotateTopN > 0 ? Math.floor(rotateTopN) : 0,
     // 对外声明的上下文窗口（token）。应取候选模型真实窗口的最小值：
     // 客户端按该值规划历史长度，超限由网关显式拦截，而非上游静默截断。
     // 仅接受 number 类型（字符串数字由前端保存前归一，避免 true→1 这类误归一）。

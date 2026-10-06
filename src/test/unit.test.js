@@ -1839,6 +1839,233 @@ t('store：候选扩展字段持久化（contextWindow/maxOutputTokens/rate）',
   assert.strictEqual(c.rate, 0.11);
   store.removeVirtual('vm/cand-fields');
 });
+t('orderCandidates：同层加权轮转不再恒定命中首个候选', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/rotate', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 4,
+    candidates: [
+      { id: 'free', provider: 'trae', model: 'm0', priority: 1, weight: 3, rate: 0, enabled: true },
+      { id: 'cheap', provider: 'trae', model: 'm1', priority: 2, weight: 2, rate: 0.1, enabled: true },
+      { id: 'mid', provider: 'trae', model: 'm2', priority: 3, weight: 1, rate: 0.5, enabled: true },
+      { id: 'exp', provider: 'trae', model: 'm3', priority: 4, weight: 1, rate: 1.5, enabled: true },
+      { id: 'dear', provider: 'trae', model: 'm4', priority: 5, weight: 1, rate: 3, enabled: true },
+    ],
+  });
+  const vm = store.getVirtual('vm/rotate');
+  // 轮转池只取倍率升序前 N 个：末尾最贵的候选不应被选中
+  assert.strictEqual(vm.candidates.length, 5, '候选全量保留，池大小由 rotateTopN 控制');
+  const firsts = new Set();
+  for (let i = 0; i < 400; i++) firsts.add(mr.orderCandidates('vm/rotate', vm)[0].id);
+  assert.ok(firsts.has('cheap') && firsts.has('mid'), '低成本候选都应有机会被选中');
+  assert.ok(!firsts.has('dear'), '池外最贵候选不应被选中');
+  assert.ok(firsts.size >= 2, '不应恒定命中同一候选');
+  store.removeVirtual('vm/rotate');
+});
+t('orderCandidates：轮转池在候选冷却/禁用后自动收缩', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  const health = require('../model-router/health');
+  store.upsertVirtual('vm/rotate-cool', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 3,
+    candidates: [
+      { id: 'a', provider: 'trae', model: 'm0', priority: 1, weight: 1, rate: 0, enabled: true },
+      { id: 'b', provider: 'trae', model: 'm1', priority: 2, weight: 1, rate: 0.2, enabled: true },
+      { id: 'c', provider: 'trae', model: 'm2', priority: 3, weight: 1, rate: 1.2, enabled: true },
+      { id: 'd', provider: 'trae', model: 'm3', priority: 4, weight: 1, rate: 2.4, enabled: true },
+    ],
+  });
+  const vm = store.getVirtual('vm/rotate-cool');
+  const err = new Error('rate limited');
+  err.status = 429;
+  health.markFail('vm/rotate-cool', 'a', 'rate_limit', err, 60000);
+  const ordered = mr.orderCandidates('vm/rotate-cool', vm);
+  // 池 = 可用候选里 rate 升序前 3 个。a 冷却后不再是可用候选，
+  // 其名额由后面的 d 递补（池始终按「可用模型里轮转 N 个」理解）。
+  assert.ok(!ordered.some((c) => c.id === 'a'), '冷却中的候选不进轮转池');
+  assert.deepStrictEqual(
+    ordered.map((c) => c.id).sort(),
+    ['b', 'c', 'd'],
+    '冷却候选被剔除，其余候选仍全部可见',
+  );
+  // b/c/d 均为池内候选，d 应在 a 冷却后获得被选为首位的机会
+  const poolFirsts = new Set();
+  for (let i = 0; i < 400; i++) {
+    poolFirsts.add(mr.orderCandidates('vm/rotate-cool', vm)[0].id);
+  }
+  assert.ok(poolFirsts.has('b') && poolFirsts.has('d'), '冷却后递补的候选应参与轮转');
+  health.clearCooldown('vm/rotate-cool', 'a');
+  store.removeVirtual('vm/rotate-cool');
+});
+t('orderCandidates：已禁用候选不占轮转池名额，由启用候选递补', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/rotate-disabled', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 2,
+    candidates: [
+      { id: 'a', provider: 'trae', model: 'm0', priority: 1, weight: 1, rate: 0, enabled: false },
+      { id: 'b', provider: 'trae', model: 'm1', priority: 2, weight: 1, rate: 0.1, enabled: false },
+      { id: 'c', provider: 'trae', model: 'm2', priority: 3, weight: 1, rate: 0.3, enabled: true },
+      { id: 'd', provider: 'trae', model: 'm3', priority: 4, weight: 1, rate: 0.5, enabled: true },
+      { id: 'e', provider: 'trae', model: 'm4', priority: 5, weight: 1, rate: 0.9, enabled: true },
+    ],
+  });
+  const vm = store.getVirtual('vm/rotate-disabled');
+  // 最便宜的两个（a/b）被禁用，池应由启用的 c/d 填满，而不是只剩空池
+  const ordered = mr.orderCandidates('vm/rotate-disabled', vm);
+  assert.ok(!ordered.some((c) => c.id === 'a' || c.id === 'b'), '已禁用候选不参与调度');
+  const firsts = new Set();
+  for (let i = 0; i < 400; i++) {
+    firsts.add(mr.orderCandidates('vm/rotate-disabled', vm)[0].id);
+  }
+  assert.ok(firsts.has('c') && firsts.has('d'), '配额应由启用候选 c/d 填满并轮转');
+  assert.ok(!firsts.has('e'), '超出 rotateTopN 的候选仍在池外');
+  // 全部禁用时不应崩溃，返回空序列（由上层给出 no-candidate 错误）
+  store.upsertVirtual('vm/rotate-alloff', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 3,
+    candidates: [
+      { id: 'x', provider: 'trae', model: 'm0', priority: 1, rate: 0, enabled: false },
+      { id: 'y', provider: 'trae', model: 'm1', priority: 2, rate: 0.4, enabled: false },
+    ],
+  });
+  assert.deepStrictEqual(
+    mr.orderCandidates('vm/rotate-alloff', store.getVirtual('vm/rotate-alloff')),
+    [],
+    '全部禁用时返回空序列',
+  );
+  store.removeVirtual('vm/rotate-disabled');
+  store.removeVirtual('vm/rotate-alloff');
+});
+t('orderCandidates：strategy=weighted 不再被 auto/sort 早返回屏蔽', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/rotate-weighted', {
+    auto: true,
+    sort: 'rate',
+    strategy: 'weighted',
+    rotateTopN: 2,
+    candidates: [
+      { id: 'a', provider: 'trae', model: 'm0', priority: 1, weight: 1, rate: 0, enabled: true },
+      { id: 'b', provider: 'trae', model: 'm2', priority: 2, weight: 9, enabled: true },
+    ],
+  });
+  const hits = {};
+  for (let i = 0; i < 300; i++) {
+    const pick = mr.orderCandidates('vm/rotate-weighted', store.getVirtual('vm/rotate-weighted'))[0];
+    hits[pick.id] = (hits[pick.id] || 0) + 1;
+  }
+  assert.ok(hits.b > hits.a, '高权重候选应获得更多份额');
+  store.removeVirtual('vm/rotate-weighted');
+});
+t('autotier：候选权重按倍率反推（倍率低者权重高）', () => {
+  const autotier = require('../model-router/autotier');
+  const store = require('../model-router/store');
+  const weights = autotier.deriveWeights([
+    { rate: 0 },
+    { rate: 0.5 },
+    { rate: 1.5 },
+  ]);
+  assert.strictEqual(weights.length, 3);
+  assert.ok(weights[0] > weights[1] && weights[1] > weights[2], '倍率升序对应权重递减');
+  assert.ok(weights.every((w) => w >= 1), '权重不低于 1');
+  assert.deepStrictEqual(autotier.deriveWeights([]), []);
+  assert.deepStrictEqual(autotier.deriveWeights([{ rate: null }]), [1], '未知倍率给基础权重 1');
+  // 写回配置后仍按倍率排序，排序结果与权重顺序一致
+  store.upsertVirtual('vm/auto-weight', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 2,
+    candidates: [
+      { id: 'a', provider: 'trae', model: 'm0', priority: 1, weight: 3, rate: 0 },
+      { id: 'b', provider: 'trae', model: 'm2', priority: 2, weight: 1, rate: 1.5 },
+    ],
+  });
+  const vm = store.getVirtual('vm/auto-weight');
+  assert.strictEqual(vm.rotateTopN, 2, 'rotateTopN 应被归一化并持久化');
+  store.removeVirtual('vm/auto-weight');
+});
+t('orderCandidates：置顶候选强制进池，不因倍率排名靠后被挤出', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/pin', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 2,
+    candidates: [
+      { id: 'cheap', provider: 'trae', model: 'm0', priority: 1, weight: 8, rate: 0, enabled: true },
+      { id: 'cheap2', provider: 'trae', model: 'm1', priority: 2, weight: 5, rate: 0.2, enabled: true },
+      { id: 'mid', provider: 'trae', model: 'm2', priority: 3, weight: 3, rate: 0.6, enabled: true },
+      { id: 'pinned', provider: 'trae', model: 'm3', priority: 4, weight: 8, rate: 1.8, pinned: true, enabled: true },
+    ],
+  });
+  const vm = store.getVirtual('vm/pin');
+  assert.strictEqual(vm.candidates.find((c) => c.id === 'pinned').pinned, true, 'pinned 应被归一化并持久化');
+  const firsts = new Set();
+  for (let i = 0; i < 400; i++) firsts.add(mr.orderCandidates('vm/pin', vm)[0].id);
+  assert.ok(firsts.has('pinned'), '置顶候选必须参与首选轮转');
+  assert.ok(firsts.has('cheap'), '低成本候选不应被置顶挤掉');
+  // 池 = 置顶候选 + 成本序前 N 个
+  const ordered = mr.orderCandidates('vm/pin', vm);
+  const poolIds = ordered.slice(0, 3).map((c) => c.id);
+  assert.ok(poolIds.includes('pinned'), '置顶候选应在池内');
+  store.removeVirtual('vm/pin');
+});
+t('orderCandidates：置顶候选被禁用后退出轮转池', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/pin-off', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 1,
+    candidates: [
+      { id: 'a', provider: 'trae', model: 'm0', priority: 1, weight: 8, rate: 0, enabled: true },
+      { id: 'p', provider: 'trae', model: 'm1', priority: 2, weight: 8, rate: 2, pinned: true, enabled: false },
+    ],
+  });
+  const firsts = new Set();
+  for (let i = 0; i < 200; i++) {
+    firsts.add(mr.orderCandidates('vm/pin-off', store.getVirtual('vm/pin-off'))[0].id);
+  }
+  assert.ok(!firsts.has('p'), '已禁用的置顶候选不应参与调度');
+  assert.ok(firsts.has('a'), '剩余候选仍应可被选中');
+  store.removeVirtual('vm/pin-off');
+});
+console.log('usage 计量与 token 补算');
+t('usageToLogFields：蛇形/驼峰键名，全 0 视为未计量', () => {
+  const mr = require('../model-router');
+  const f1 = mr.usageToLogFields({ prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 });
+  assert.deepStrictEqual(f1, { promptTokens: 10, completionTokens: 5, totalTokens: 15 });
+  const f2 = mr.usageToLogFields({ inputTokens: 7, outputTokens: 3 });
+  assert.strictEqual(f2.totalTokens, 10, '缺 total 时应按 pt+ct 合成');
+  assert.deepStrictEqual(mr.usageToLogFields(null), {});
+  assert.deepStrictEqual(mr.usageToLogFields({ prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }), {}, '全 0 应视为未计量');
+});
+t('estimateTokensOfText：tiktoken 补算返回 prompt/completion/total', () => {
+  const { estimateTokensOfText } = require('../lib/token-precise');
+  const msgs = [{ role: 'user', content: '请把这段话原样复述一遍，不要增删内容。' }];
+  const r = estimateTokensOfText(msgs, '好的，我将原样复述这段话。');
+  assert.ok(r.promptTokens > 0 && r.completionTokens > 0, '两侧均应大于 0');
+  assert.strictEqual(r.totalTokens, r.promptTokens + r.completionTokens);
+  // 空输入
+  const empty = estimateTokensOfText([], '');
+  assert.ok(empty.totalTokens >= 0);
+});
+t('estimateCost：按真实候选模型匹配费率（虚拟 ID 不在费率表时不误配）', () => {
+  const rates = require('../models/rates');
+  // glm-5.2 在动态目录中 rate=0.78
+  const c = rates.estimateCost('glm-5.2', 10000, 0);
+  assert.ok(c != null && c > 0, '真实模型应有费率');
+  // 虚拟 ID 无费率 → null，调用方应跳过而不是错误计 0
+  assert.strictEqual(rates.estimateCost('vm/unified-chat', 10000, 0), null);
+});
 console.log('log.client-logs');
 t('extractUsage 解析驼峰 usage 与 credit', () => {
   const { extractUsage } = require('../log/client-logs');

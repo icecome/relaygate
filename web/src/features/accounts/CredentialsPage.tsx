@@ -2,9 +2,10 @@
  * 凭据池页：账号凭据的启用、签到、余额与设备重置。
  * 所有操作均对应 /v1/credentials 真实接口，无虚构能力。
  */
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { Account } from '../../shared/api/types';
 import { useAuth } from '../../shared/api/auth';
+import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import {
   checkinAll,
   checkinOne,
@@ -16,6 +17,7 @@ import {
 } from '../../shared/api/credentials';
 import { ApiError, isBusinessFailure } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import {
   accountState,
   coolRemaining,
@@ -68,6 +70,16 @@ export default function CredentialsPage() {
     [key],
     { enabled: !!key },
   );
+
+  // 页面可见时每60 秒触发一次真实余额查询。
+  // 刷新后同时重读列表与全局汇总，使侧栏可用数与列表保持一致。
+  const { reload: reloadList } = list;
+  const { reload: reloadSummary } = useSummaryStore();
+  const reloadAfterBalance = useCallback(() => {
+    reloadList();
+    reloadSummary();
+  }, [reloadList, reloadSummary]);
+  useBalanceAutoRefresh(key, reloadAfterBalance);
 
   // 过滤与排序都是派生值，不落state
   const rows = useMemo(() => {
@@ -182,6 +194,9 @@ export default function CredentialsPage() {
       description="账号凭据的启用、签到、余额与设备标识管理"
       actions={
         <>
+          <Chip tone="brand" dot="dot-ok">
+            每 60 秒自动刷新
+          </Chip>
           <Button onClick={checkinEveryOne} disabled={busyId === '__all__'}>
             {busyId === '__all__' ? '执行中…' : '全部签到'}
           </Button>

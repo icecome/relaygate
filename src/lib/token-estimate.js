@@ -20,6 +20,29 @@ const PER_MESSAGE_OVERHEAD = 8;
 const CJK_TOKEN_PER_CHAR = 0.7;
 const CHARS_PER_TOKEN = 4;
 
+/**
+ * 精确模式的字符上限。js-tiktoken 为同步 BPE，40K 字符约 150ms，
+ * 超限输入（如 1M 窗口装满的会话）会阻塞事件循环数百毫秒——
+ * 估算口径下这个代价不值，超过上限直接回退启发式。
+ */
+const PRECISE_CHAR_LIMIT = 60_000;
+
+let _encoder = null;
+let _encoderFailed = false;
+
+/** 懒加载 tiktoken 编码器（首次调用约 100-300ms，之后复用）。失败则永久回退启发式。 */
+function getEncoder() {
+  if (_encoder) return _encoder;
+  if (_encoderFailed) return null;
+  try {
+    _encoder = require('js-tiktoken').getEncoding('cl100k_base');
+  } catch {
+    _encoderFailed = true;
+    _encoder = null;
+  }
+  return _encoder;
+}
+
 function textTokens(text) {
   const s = String(text == null ? '' : text);
   if (!s) return 0;
@@ -28,34 +51,72 @@ function textTokens(text) {
   return Math.ceil(cjk * CJK_TOKEN_PER_CHAR + other / CHARS_PER_TOKEN);
 }
 
-function contentTokens(content) {
+/**
+ * 真实分词器计数（cl100k_base）。上游未回传 usage 时的补算口径。
+ * 已知偏差：Trae/WorkBuddy 侧模型（Doubao/GLM/Kimi/DeepSeek 等）并非
+ * OpenAI 分词器，cl100k 对 CJK 约 1 token/字，与上述模型普遍接近但非一致；
+ * 结果仍标注 estimated，不当作账单精确值。
+ */
+function textTokensPrecise(text) {
+  const s = String(text == null ? '' : text);
+  if (!s) return 0;
+  if (s.length > PRECISE_CHAR_LIMIT) return textTokens(s);
+  const enc = getEncoder();
+  if (!enc) return textTokens(s);
+  try {
+    return enc.encode(s).length;
+  } catch {
+    return textTokens(s);
+  }
+}
+
+function contentTokens(content, precise) {
+  const tokOf = precise ? textTokensPrecise : textTokens;
   if (content == null) return 0;
-  if (typeof content === 'string') return textTokens(content);
-  if (!Array.isArray(content)) return textTokens(JSON.stringify(content));
+  if (typeof content === 'string') return tokOf(content);
+  if (!Array.isArray(content)) return tokOf(JSON.stringify(content));
   let sum = 0;
   for (const part of content) {
     if (!part || typeof part !== 'object') continue;
-    if (typeof part.text === 'string') sum += textTokens(part.text);
+    if (typeof part.text === 'string') sum += tokOf(part.text);
     else if (/image/i.test(String(part.type || ''))) sum += IMAGE_TOKENS;
-    else sum += textTokens(JSON.stringify(part));
+    else sum += tokOf(JSON.stringify(part));
   }
   return sum;
 }
 
-function estimatePromptTokens(messages) {
+function estimateTokensOf(messages, precise) {
+  const tokOf = precise ? textTokensPrecise : textTokens;
   let total = 0;
   for (const m of messages || []) {
     if (!m || typeof m !== 'object') continue;
     total += PER_MESSAGE_OVERHEAD;
-    total += contentTokens(m.content);
+    total += contentTokens(m.content, precise);
     if (Array.isArray(m.tool_calls)) {
       for (const tc of m.tool_calls) {
         const fn = (tc && (tc.function || tc.function_call)) || {};
-        total += textTokens(fn.name) + textTokens(fn.arguments);
+        total += tokOf(fn.name) + tokOf(fn.arguments);
       }
     }
   }
   return total;
 }
 
-module.exports = { estimatePromptTokens, textTokens, IMAGE_TOKENS, PER_MESSAGE_OVERHEAD };
+function estimatePromptTokens(messages) {
+  return estimateTokensOf(messages, false);
+}
+
+/** 与 estimatePromptTokens 同口径，但用真实分词器（超限自动回退启发式）。 */
+function estimatePromptTokensPrecise(messages) {
+  return estimateTokensOf(messages, true);
+}
+
+module.exports = {
+  estimatePromptTokens,
+  estimatePromptTokensPrecise,
+  textTokens,
+  textTokensPrecise,
+  IMAGE_TOKENS,
+  PER_MESSAGE_OVERHEAD,
+  PRECISE_CHAR_LIMIT,
+};

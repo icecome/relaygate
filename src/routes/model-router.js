@@ -69,6 +69,56 @@ router.delete('/virtual/:id', admin, (req, res) => {
   ok(res, { object: 'deleted', id: req.params.id });
 });
 
+/**
+ * 改单个候选的开关（enabled / pinned）。
+ *
+ * 与 PUT /virtual/:id 分开的原因：面板上的候选表是展开时读到的快照，
+ * 整体回写会把其他候选的旧值一并覆盖（并发改动、后台同步都可能撞车）。
+ * 这里按候选 id 定点改，只接受布尔开关，不接受模型名等结构性字段。
+ *
+ * candidateId 走查询参数而非路径段：候选 id 形如 `workbuddy/wb/hy3`，含斜杠。
+ * 即使前端 encodeURIComponent 编成 %2F，Express 解码后仍按路径分隔符切分，
+ * 路由匹配失败会落到转发面鉴权中间件，返回 401「Invalid access key」——
+ * 症状是面板误判为登录失效。查询参数不做路径切分，可彻底避开。
+ */
+router.patch('/virtual/:id/candidate', admin, (req, res) => {
+  const id = String(req.params.id || '');
+  const candidateId = String((req.query && req.query.candidateId) || '');
+  if (!candidateId) {
+    return res.status(400).json({ error: { message: 'candidateId is required', type: 'invalid_request_error' } });
+  }
+  const vm = mr.store.getVirtual(id);
+  if (!vm) return res.status(404).json({ error: { message: 'virtual model not found', type: 'invalid_request_error' } });
+  const idx = vm.candidates.findIndex((c) => c.id === candidateId);
+  if (idx < 0) {
+    return res.status(404).json({ error: { message: `candidate not found: ${candidateId}`, type: 'invalid_request_error' } });
+  }
+  const body = req.body || {};
+  const patch = {};
+  if (typeof body.enabled === 'boolean') patch.enabled = body.enabled;
+  if (typeof body.pinned === 'boolean') patch.pinned = body.pinned;
+  if (!Object.keys(patch).length) {
+    return res.status(400).json({ error: { message: 'enabled / pinned 至少提供一个布尔值', type: 'invalid_request_error' } });
+  }
+  const candidates = vm.candidates.map((c, i) => (i === idx ? { ...c, ...patch } : c));
+  const r = mr.store.setVirtualCandidates(id, candidates);
+  if (!r.ok) return res.status(400).json({ error: { message: r.message, type: 'invalid_request_error' } });
+  ok(res, { object: 'candidate', data: r.data.candidates[idx] });
+});
+
+/**
+ * 兜底：旧路径形态（候选 id 落在路径段）仍可能被旧版前端调用。
+ * 未命中任何管理面路由时不该掉进转发面鉴权，故显式声明并返回可读错误。
+ */
+router.all('/virtual/:id/candidates/*', admin, (req, res) => {
+  res.status(404).json({
+    error: {
+      message: 'endpoint moved: use PATCH /v1/admin/model-router/virtual/:id/candidate?candidateId=...',
+      type: 'invalid_request_error',
+    },
+  });
+});
+
 /** 解除限流冷却（虚拟模型级；id 缺省清全部）。 */
 router.post('/virtual/:id/unfreeze', admin, (req, res) => {
   const id = req.params.id === '*' ? null : String(req.params.id || '');

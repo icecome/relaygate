@@ -102,17 +102,35 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
 
   const reader = resp.body.getReader();
   const dec = new TextDecoder();
+  let usage = null;
   try {
+    // 旁路窥探 usage（转发字节原样写出，不经解析改写，保持透传语义）
+    const feeder = createLineFeeder((line) => {
+      const t = line.trim();
+      if (!t.startsWith('data:')) return;
+      const payload = t.slice(5).trim();
+      if (!payload || payload === '[DONE]') return;
+      try {
+        const ev = JSON.parse(payload);
+        if (ev && ev.usage) usage = ev.usage;
+      } catch { /* 非 JSON 帧忽略 */ }
+    });
     for (;;) {
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = dec.decode(value, { stream: true });
+      feeder.feed(chunk);
       if (chunk && !res.writableEnded) res.write(chunk);
     }
+    feeder.flush();
   } finally {
     if (!res.writableEnded) res.end();
   }
-  return { streamed: true, durationMs: Date.now() - (opts.startedAt || Date.now()) };
+  return {
+    streamed: true,
+    durationMs: Date.now() - (opts.startedAt || Date.now()),
+    usage: sanitizeUsage(usage),
+  };
 }
 
 function attachUpstreamCode(err, text) {
@@ -250,13 +268,16 @@ async function dispatchTraeNonStream(provider, remoteModel, body, opts = {}) {
   const data = (up && up.data) || {};
   if (data.choices) return data;
   const content = data.response || data.content || '';
+  // 上游 usage 优先保留：原实现无条件填 {0,0,0}，把上游真实用量抹成 0，
+  // 导致日志与统计层既拿不到 token、也无法区分「未计量」与「真为 0」。
+  const rawUsage = data.usage || (up && up.usage) || null;
   return {
     id: `chatcmpl-${Date.now().toString(36)}`,
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: remoteModel,
     choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }],
-    usage: data.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    usage: sanitizeUsage(rawUsage) || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
   };
 }
 
@@ -309,6 +330,8 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   };
 
   let outFinish = null;
+  let outUsage = null;
+  let outText = '';
   let lastUsage = null;
   let started = false;
   const ensureStart = () => {
@@ -332,6 +355,8 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
       switch (evt.type) {
         case 'text':
           if (evt.content || evt.reasoning) {
+            // 输出侧 token 补算的原料（usage 缺失时由 handleChat 使用）
+            if (evt.content) outText += evt.content;
             ensureStart();
             for (const s of out.text(completionId, shownModel, evt.content, evt.reasoning)) {
               if (!res.writableEnded) res.write(s);
@@ -379,6 +404,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
     ensureStart();
     // usage 合并进末帧（官方三字段），与 WB 直通路径同形
     const usage = sanitizeUsage(lastUsage);
+    outUsage = usage;
     const finalChunk = {
       id: completionId,
       object: 'chat.completion.chunk',
@@ -393,7 +419,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
     outFinish = resolvedFinish;
   }, { edition: 'trae', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
 
-  return { streamed: true, finishReason: outFinish };
+  return { streamed: true, finishReason: outFinish, usage: outUsage, outputText: outText, messages: body.messages };
 }
 
 /** WorkBuddy 流式：上游 OpenAI SSE 直通，必要时改写 model。 */
@@ -405,6 +431,8 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
 
   // outFinish 须存活到 pool.run 回调之外（流结束后返回），故声明在外层作用域
   let outFinish = null;
+  let outUsage = null;
+  let outText = '';
   await pool.run(async (accountId) => {
     const acct = await auth.ensureAuth(accountId);
     const up = await wbChat.chatStream(acct, { ...body, model: remoteModel, stream: true });
@@ -457,8 +485,10 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
         delete ev.usage;
       }
       // 去掉可能触发客户端校验的非标字段；并记录 tool_calls / finish_reason
-      if (ev.choices && ev.choices[0] && ev.choices[0].delta) {
-        const d = ev.choices[0].delta;
+      const d = ev.choices && ev.choices[0] && ev.choices[0].delta;
+      if (d) {
+        // 输出侧 token 补算的原料（usage 缺失时由 handleChat 使用）
+        if (d.content) outText += d.content;
         if (d.reasoning_content) delete d.reasoning_content;
         if (Array.isArray(d.tool_calls) && d.tool_calls.length) sawToolCalls = true;
       }
@@ -486,9 +516,10 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
     if (!sawDone && !res.writableEnded) res.write('data: [DONE]\n\n');
     if (!res.writableEnded) res.end();
     outFinish = resolvedFinish;
+    outUsage = usage;
   }, { edition: 'workbuddy', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
 
-  return { streamed: true, finishReason: outFinish };
+  return { streamed: true, finishReason: outFinish, usage: outUsage, outputText: outText, messages: body.messages };
 }
 
 module.exports = {

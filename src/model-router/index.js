@@ -19,6 +19,9 @@ const health = require('./health');
 const dispatch = require('./dispatch');
 const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
+const { estimateCost } = require('../models/rates');
+const { estimateTokensOfText } = require('../lib/token-precise');
+const config = require('../config');
 const { providerAllowedForKey } = require('../middleware/model-access');
 const { estimatePromptTokens } = require('../lib/token-estimate');
 const autotier = require('./autotier');
@@ -36,8 +39,59 @@ function isVirtualId(id) {
 }
 
 /**
+ * 加权随机抽序：按 weight 抽签决定先后，抽样过程用累减而非每次重算总和，
+ * 保证「抽到的排在前面」这一分布与 pool 顺序无关（避免首个候选天然占优）。
+ */
+function weightedShuffle(list) {
+  const pool = list.map((c) => ({ c, w: Math.max(1, Number(c.weight) || 1) }));
+  const ordered = [];
+  while (pool.length) {
+    const total = pool.reduce((s, x) => s + x.w, 0);
+    let r = Math.random() * total;
+    let idx = 0;
+    for (let i = 0; i < pool.length; i++) {
+      r -= pool[i].w;
+      if (r <= 0) { idx = i; break; }
+    }
+    ordered.push(pool[idx].c);
+    pool.splice(idx, 1);
+  }
+  return ordered;
+}
+
+/** 候选倍率：未知/非法倍率排到成本序末尾（Infinity）。 */
+function candRate(c) {
+  return (Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : Infinity);
+}
+
+/** 候选上下文窗口：未声明按 0 计（sort=window 时排后）。 */
+function candWindow(c) {
+  return (Number.isFinite(Number(c.contextWindow)) ? Number(c.contextWindow) : 0);
+}
+
+/**
+ * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
+ * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
+ * 兼容 OpenAI 蛇形与 Trae 驼峰两种键名。
+ */
+function usageToLogFields(u) {
+  if (!u || typeof u !== 'object') return {};
+  const pt = Number(u.prompt_tokens ?? u.inputTokens) || 0;
+  const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
+  const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
+  if (!pt && !ct && !tt) return {};
+  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
+}
+
+/**
  * 候选排序：priority 策略按 priority 升序；weighted 按权重随机加权。
  * 过滤：Provider 启用、候选启用、密钥平台允许、非冷却、本地 maxRpm。
+ *
+ * 自动分层 VM（auto + sort）先按 sort 确定成本序，再取前 rotateTopN 个构成
+ * 「轮转池」做加权轮转：既保留低成本优先的意图，又不会恒定命中同一个模型。
+ * rotateTopN 未声明或池内只剩一个候选时退化为原有优先级语义。
+ * 池外候选仍保留在序列尾部，失败重试（failover）时可继续向下切换。
+ *
  * @param {string} keyPlatform trae|workbuddy|all
  */
 function orderCandidates(virtualId, vm, keyPlatform = 'all') {
@@ -54,37 +108,39 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
   // 自动分层 VM：sort=rate 按倍率升序（未知倍率排后），sort=window 按窗口大优先；
   // 平局回退 priority。手动 VM（sort=null）维持 priority 排序不变。
   if (vm.auto && vm.sort) {
-    const rateOf = (c) => (Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : Infinity);
-    const winOf = (c) => (Number.isFinite(Number(c.contextWindow)) ? Number(c.contextWindow) : 0);
-    list.sort((a, b) => {
+    // 成本序基于「当前可用」候选（已过滤禁用/停用/冷却/超限频）：
+    // rotateTopN 表示「从可用模型里轮转 N 个」，已禁用的模型不占名额，
+    // 应由其后的候选递补。否则用户禁用几个低价模型后，轮转池会缩水甚至空转。
+    const ranked = list.slice().sort((a, b) => {
       if (vm.sort === 'window') {
-        const dw = winOf(b) - winOf(a);
+        const dw = candWindow(b) - candWindow(a);
         if (dw) return dw;
       } else {
-        const dr = rateOf(a) - rateOf(b);
+        const dr = candRate(a) - candRate(b);
         if (dr) return dr;
       }
       return (a.priority - b.priority) || String(a.id).localeCompare(String(b.id));
     });
-    return list;
+    const topN = Number(vm.rotateTopN);
+    const poolSize = Number.isFinite(topN) && topN > 0 ? Math.floor(topN) : 0;
+    // 置顶候选额外强制入池，且不占用 rotateTopN 的名额——
+    // 否则「置顶一个高性能模型」会把等量的低成本候选挤出池，
+    // 反而抬高整体成本，与置顶意图相反。
+    const pinned = ranked.filter((c) => c.pinned);
+    const pinnedIds = new Set(pinned.map((c) => c.id));
+    const byRank = ranked.filter((c) => !pinnedIds.has(c.id)).slice(0, poolSize);
+    const pool = pinned.concat(byRank);
+    // 不轮转（poolSize=0）且无置顶：退化为固定取成本序首选
+    if (poolSize === 0 && pinned.length === 0) return ranked;
+    const poolKeyed = new Set(pool.map((c) => c.id));
+    const rest = ranked.filter((c) => !poolKeyed.has(c.id));
+    // 池内 ≥2 个才需要轮转；仅 1 个时固定用它，池外仍作 failover 兜底
+    if (pool.length >= 2) return weightedShuffle(pool).concat(rest);
+    return pool.concat(rest);
   }
 
   if (vm.strategy === 'weighted') {
-    // 加权随机：先按 weight 抽序，再按 priority 稳定排序作为平局裁决
-    const pool = list.map((c) => ({ c, w: Math.max(1, c.weight || 1) }));
-    const ordered = [];
-    while (pool.length) {
-      const total = pool.reduce((s, x) => s + x.w, 0);
-      let r = Math.random() * total;
-      let idx = 0;
-      for (let i = 0; i < pool.length; i++) {
-        r -= pool[i].w;
-        if (r <= 0) { idx = i; break; }
-      }
-      ordered.push(pool[idx].c);
-      pool.splice(idx, 1);
-    }
-    return ordered;
+    return weightedShuffle(list);
   }
 
   return list.slice().sort((a, b) => (a.priority - b.priority) || String(a.id).localeCompare(String(b.id)));
@@ -234,6 +290,29 @@ async function handleChat(req, res, ctx) {
       const fr = (result && result.finishReason)
         || (result && result.choices && result.choices[0] && result.choices[0].finish_reason)
         || null;
+      // usage 提取：流式来自 dispatch 返回值（末帧合并前已捕获），
+      // 非流式来自 completion 对象的 usage 字段（上面已 sanitizeUsage）。
+      // 无 usage 时不写字段，统计层据此区分「未计量」与「消耗 0」。
+      let usageFields = usageToLogFields(result && result.usage);
+      // 上游未回传 usage 时用真实分词器补算（结果仍属估算，日志标 tokensEstimated）。
+      // 补算口径见 lib/token-precise.js：分词器与上游不完全一致，只作趋势参考。
+      let tokensEstimated = false;
+      if (!usageFields.totalTokens && config.estimateMissingTokens) {
+        const outText = (result && result.outputText)
+          || (result && result.choices && result.choices[0]
+            && result.choices[0].message && result.choices[0].message.content)
+          || '';
+        const est = estimateTokensOfText(ctx.messages, outText);
+        if (est.totalTokens > 0) {
+          usageFields = est;
+          tokensEstimated = true;
+        }
+      }
+      // 费率按真实命中的上游模型（cand.model）计，而不是虚拟 ID——
+      // 虚拟 ID 在费率表里没有条目，曾导致估算恒为 null。
+      const estCost = usageFields.totalTokens
+        ? estimateCost(cand.model, usageFields.promptTokens, usageFields.completionTokens)
+        : null;
       logRequest({
         endpoint: '/v1/chat/completions',
         method: 'POST',
@@ -247,6 +326,9 @@ async function handleChat(req, res, ctx) {
         platform: provider.type === 'openai' ? `openai:${cand.provider}` : provider.builtin,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
+        ...usageFields,
+        ...(tokensEstimated ? { tokensEstimated: true } : {}),
+        ...(estCost != null ? { estimatedCost: estCost } : {}),
         ...(fr ? { finishReason: fr, truncated: dispatch.isTruncatedFinish(fr) } : {}),
       });
       return { ok: true, candidate: cand, attempts };
@@ -300,6 +382,7 @@ module.exports = {
   explainCandidates,
   handleChat,
   checkContextLimit,
+  usageToLogFields,
   store,
   health,
   dispatch,

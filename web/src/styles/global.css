@@ -201,6 +201,24 @@
     box-shadow: 0 0 0 2px var(--rg-brand-100);
   }
 
+  /* ---- 步进器：表格内嵌的紧凑数值控件 ---- */
+  .stepper-input {
+    appearance: textfield;
+    -moz-appearance: textfield;
+  }
+  .stepper-input::-webkit-outer-spin-button,
+  .stepper-input::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  .stepper-btn:not(:disabled):hover {
+    background: var(--rg-bg-secondary);
+  }
+  .stepper .stepper-input:focus {
+    outline: none;
+    box-shadow: inset 0 0 0 1.5px var(--rg-brand-600);
+  }
+
   /* ---- 面板：一级表面，靠描边与页面底分层 ---- */
   .panel {
     @apply rounded-lg border overflow-hidden;

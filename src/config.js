@@ -123,8 +123,13 @@ const config = {
   // 残缺工具参数是否注入 __incomplete 诊断标记（默认关闭，避免严格 schema 客户端不认）
   markIncompleteToolArgs: process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true',
 
-  // 工具调用协议：'native'(默认) / 'text'
+  // 工具调用协议：'native'(默认) | 'text'
   toolProtocol: process.env.TOOL_PROTOCOL || 'native',
+
+  // 上游未回传 usage 时，是否用 tiktoken（cl100k_base）补算 token 写入日志。
+  // 关闭则这些请求记为「未计量」，token 与费用均为 0（口径更保守）。
+  // 注意：补算值与上游模型的分词器不完全一致，仅供趋势参考，非账单精确值。
+  estimateMissingTokens: process.env.ESTIMATE_MISSING_TOKENS !== 'false',
 
   // 上游通道（多模式，对齐社区 trae 网关）
   // function 覆盖：chat_v3 | solo_work_lite | inline_chat | …；空=用 model-config
@@ -197,6 +202,7 @@ config.reload = function reload() {
   config.upstreamChatPath = process.env.TRAE_UPSTREAM_CHAT_PATH || '/api/agent/v3/llm_utils_chat';
   config.traeWorkIdentity = process.env.TRAE_WORK_IDENTITY === 'on';
   config.toolProtocol = process.env.TOOL_PROTOCOL || 'native';
+  config.estimateMissingTokens = process.env.ESTIMATE_MISSING_TOKENS !== 'false';
   config.maxRetries = parseInt(process.env.TRAE_MAX_RETRIES || '3', 10);
   config.retryBaseDelay = parseInt(process.env.TRAE_RETRY_DELAY || '2000', 10);
   config.requestTimeoutMs = parseInt(process.env.TRAE_REQUEST_TIMEOUT_MS || '600000', 10);

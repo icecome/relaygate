@@ -201,6 +201,43 @@ async function run() {
   check('E1 守门超限返回 400', r.status === 400, `-> ${r.status} ${r.body.slice(0, 90)}`);
   check('E1 守门 400 带 error.code=context_length_exceeded', guardCode === 'context_length_exceeded', `-> ${guardCode}`);
   mrStore.removeVirtual('vm/sec-guard');
+
+  // ---- E3：候选开关端点不得因候选 id 含斜杠而落到转发面鉴权 ----
+  // 候选 id 形如 `workbuddy/wb/hy3`。若放进路径段，即便 encodeURIComponent 编成
+  // %2F，Express 解码后仍按分隔符切分 → 管理面路由未命中 → 落到转发面
+  // authenticate → 401「Invalid access key」→ 面板误判为登录失效并退出登录。
+  // 这里锁定：走查询参数的端点对含斜杠 id 返回 2xx，旧形态返回可读 404（非 401）。
+  // 复用本文件已注入的 env ADMIN_KEY（等同管理面登录密钥）。
+  const adminToken = process.env.ADMIN_KEY;
+  mrStore.upsertVirtual('vm/sec-slash', {
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 2,
+    candidates: [
+      { id: 'workbuddy/wb/hy3', provider: 'workbuddy', model: 'wb/hy3', priority: 1, rate: 0 },
+      { id: 'trae/glm-5.3', provider: 'trae', model: 'glm-5.3', priority: 2, rate: 0.78 },
+    ],
+  });
+  const vmSeg = encodeURIComponent('vm/sec-slash');
+  const candQ = encodeURIComponent('workbuddy/wb/hy3');
+  r = await req('PATCH', `/v1/admin/model-router/virtual/${vmSeg}/candidate?candidateId=${candQ}`, {
+    token: adminToken,
+    ctype: 'application/json',
+    body: { enabled: false },
+  });
+  check('E3 含斜杠候选 id 的开关请求不返回 401', r.status !== 401, `-> ${r.status} ${r.body.slice(0, 90)}`);
+  check('E3 含斜杠候选 id 的开关请求成功', r.status === 200, `-> ${r.status} ${r.body.slice(0, 90)}`);
+  const afterSlash = mrStore.getVirtual('vm/sec-slash').candidates[0];
+  check('E3 候选 enabled 已真实落库', afterSlash.enabled === false, `-> enabled=${afterSlash.enabled}`);
+
+  // 旧路径形态：必须返回可读的 404，而不是掉进转发面变成 401
+  r = await req('PATCH', `/v1/admin/model-router/virtual/${vmSeg}/candidates/${candQ}`, {
+    token: adminToken,
+    ctype: 'application/json',
+    body: { enabled: true },
+  });
+  check('E3 旧候选路径返回 404 而非 401', r.status === 404, `-> ${r.status} ${r.body.slice(0, 90)}`);
+  mrStore.removeVirtual('vm/sec-slash');
 }
 
 // app.listen 在 require 时已发起，等端口就绪后再断言
