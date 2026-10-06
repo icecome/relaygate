@@ -15,6 +15,9 @@ const { exportAnthropic } = require('../transform/emitters');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
+// 模型 ACL 在模块加载期解析：包在请求路径的 try/catch 里会把 require 失败
+// 变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
+const { canUseModel, isVirtualModel } = require('../middleware/model-access');
 
 const router = Router();
 
@@ -78,21 +81,18 @@ router.post('/v1/messages', async (req, res) => {
     });
   }
   const { model = 'glm-5', messages, system, max_tokens, tools, stream = true } = req.body || {};
-  try {
-    const { canUseModel, isVirtualModel } = require('../middleware/model-access');
-    const acc = canUseModel(req.platform, model, req.authKey || null);
-    if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
-      return res.status(403).json({
-        error: {
-          message: acc.ok
-            ? `/v1/messages currently supports Trae models only (got "${model}").`
-            : acc.message,
-          type: 'auth_error',
-          code: 'MODEL_ACCESS_DENIED',
-        },
-      });
-    }
-  } catch { /* model-access 加载失败不阻断主路径 */ }
+  const acc = canUseModel(req.platform, model, req.authKey || null);
+  if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
+    return res.status(403).json({
+      error: {
+        message: acc.ok
+          ? `/v1/messages currently supports Trae models only (got "${model}").`
+          : acc.message,
+        type: 'auth_error',
+        code: 'MODEL_ACCESS_DENIED',
+      },
+    });
+  }
   if (!Array.isArray(messages) || !messages.length) {
     return res.status(400).json({ error: { type: 'invalid_request_error', message: 'messages is required' } });
   }

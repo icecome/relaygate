@@ -9,9 +9,10 @@
 const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
 const { createLineFeeder } = require('../lib/sse-lines');
+const { exportOpenAI } = require('../transform/emitters');
 
 function resolveApiKey(p) {
-  if (p.apiKey) return p.apiKey;
+  // M-S6：明文 apiKey 已从存储剥离，密钥统一经环境变量注入（apiKeyEnv）
   if (p.apiKeyEnv && process.env[p.apiKeyEnv]) return process.env[p.apiKeyEnv];
   return null;
 }
@@ -270,7 +271,10 @@ async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
  * 流式统一入口：
  * - openai：SSE 直通
  * - workbuddy：上游 SSE 直通（改写 model 字段可选）
- * - trae：聚合后按标准 chunk 写出
+ * - trae：真流式（M-P1 根因修复）——llmUtilsChat(stream=true) 逐事件下发，
+ *   出口统一走 exportOpenAI 规范化；usage 合并进末帧、finish_reason 语义
+ *   （tool_calls / 截断优先）与聚合出口 writeCompletionChunks 保持等价。
+ *   上游失败时抛错，交由 handleChat 切换候选或补错误帧（与旧聚合行为一致）。
  */
 async function dispatchStream(provider, remoteModel, body, res, opts = {}) {
   if (provider.type === 'openai') {
@@ -279,15 +283,117 @@ async function dispatchStream(provider, remoteModel, body, res, opts = {}) {
   if (provider.builtin === 'workbuddy') {
     return dispatchWorkBuddyStream(provider, remoteModel, body, res, opts);
   }
-  const data = await dispatchNonStream(provider, remoteModel, body, opts);
-  if (!res.headersSent) {
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.flushHeaders();
-  }
-  const written = writeCompletionChunks(res, data, opts.echoModel || data.model || remoteModel);
-  return { streamed: true, finishReason: written.finish };
+  return dispatchTraeStream(provider, remoteModel, body, res, opts);
+}
+
+/**
+ * 内置 Trae 真流式：pool.run 租约 + llmUtilsChat(stream=true) + createStreamHandler。
+ * 事件边界（text/tool_call/done/token_usage/error）与 routes/openai.js 同一套解析层，
+ * 差异仅在出口：这里直接写 SSE 字节（echoModel 改写 model 字段），无续写聚合。
+ */
+async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
+  const pool = require('../credentials/pool');
+  const { llmUtilsChat, consumeStream } = require('../upstream/client');
+  const { normalizeTraeMessages } = require('../transform/request');
+  const { createStreamHandler } = require('../transform/sse');
+  const out = exportOpenAI();
+  const shownModel = opts.echoModel || remoteModel;
+  const completionId = `chatcmpl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+
+  const callOpts = {
+    tools: body.tools || undefined,
+    tool_choice: body.tool_choice || undefined,
+    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    top_p: typeof body.top_p === 'number' ? body.top_p : undefined,
+    max_tokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
+  };
+
+  let outFinish = null;
+  let lastUsage = null;
+  let started = false;
+  const ensureStart = () => {
+    if (started) return;
+    started = true;
+    if (!res.headersSent) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.flushHeaders();
+    }
+    for (const s of out.start(completionId, shownModel)) {
+      if (!res.writableEnded) res.write(s);
+    }
+  };
+
+  await pool.run(async (accountId) => {
+    let roundFinish = null;
+    let sawToolCalls = false;
+    const handler = createStreamHandler((evt) => {
+      switch (evt.type) {
+        case 'text':
+          if (evt.content || evt.reasoning) {
+            ensureStart();
+            for (const s of out.text(completionId, shownModel, evt.content, evt.reasoning)) {
+              if (!res.writableEnded) res.write(s);
+            }
+          }
+          break;
+        case 'tool_call':
+          sawToolCalls = true;
+          ensureStart();
+          for (const s of out.toolCall(completionId, shownModel, evt.call)) {
+            if (!res.writableEnded) res.write(s);
+          }
+          break;
+        case 'done':
+          roundFinish = evt.finish_reason || 'stop';
+          break;
+        case 'error': {
+          // 抛错交还上层：未写头 → handleChat 切换候选；已写头 → 补错误帧路径收尾。
+          const e = new Error(evt.message || 'upstream stream error');
+          e.code = 'UPSTREAM_STREAM_ERROR';
+          if (evt.code != null) e.upstreamCode = evt.code;
+          throw e;
+        }
+        case 'token_usage':
+          lastUsage = evt.data || null;
+          return;
+        default:
+          return;
+      }
+    }, { markIncomplete: false });
+
+    const up = await llmUtilsChat(normalizeTraeMessages(body.messages), remoteModel, true, { ...callOpts, accountId });
+    const feeder = createLineFeeder((line) => handler.feedLine(line));
+    await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model: remoteModel });
+    feeder.flush();
+    handler.flushToolAccum();
+
+    // B2 口径：参数残缺的工具调用按截断收尾（与聚合出口一致）
+    const incomplete = handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs();
+    const resolvedFinish = resolveStreamFinish({
+      sawToolCalls: sawToolCalls && !incomplete,
+      lastFinish: incomplete ? 'length' : roundFinish,
+    });
+
+    ensureStart();
+    // usage 合并进末帧（官方三字段），与 WB 直通路径同形
+    const usage = sanitizeUsage(lastUsage);
+    const finalChunk = {
+      id: completionId,
+      object: 'chat.completion.chunk',
+      created: Math.floor(Date.now() / 1000),
+      model: shownModel,
+      choices: [{ index: 0, delta: {}, finish_reason: resolvedFinish }],
+      ...(usage ? { usage } : {}),
+    };
+    if (!res.writableEnded) res.write(`data: ${JSON.stringify(finalChunk)}\n\n`);
+    if (!res.writableEnded) res.write('data: [DONE]\n\n');
+    if (!res.writableEnded) res.end();
+    outFinish = resolvedFinish;
+  }, { edition: 'trae', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
+
+  return { streamed: true, finishReason: outFinish };
 }
 
 /** WorkBuddy 流式：上游 OpenAI SSE 直通，必要时改写 model。 */

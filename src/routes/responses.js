@@ -19,6 +19,9 @@ const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
 const { createLineFeeder } = require('../lib/sse-lines');
 const config = require('../config');
+// 模型 ACL 在模块加载期解析：包在请求路径的 try/catch 里会把 require 失败
+// 变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
+const { canUseModel, isVirtualModel } = require('../middleware/model-access');
 
 const router = Router();
 
@@ -65,21 +68,30 @@ router.post('/v1/responses', async (req, res) => {
   }
   const body = req.body || {};
   const model = body.model || 'auto';
-  try {
-    const { canUseModel, isVirtualModel } = require('../middleware/model-access');
-    const acc = canUseModel(req.platform, model, req.authKey || null);
-    if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
-      return res.status(403).json({
-        error: {
-          message: acc.ok
-            ? `/v1/responses currently supports Trae models only (got "${model}").`
-            : acc.message,
-          type: 'auth_error',
-          code: 'MODEL_ACCESS_DENIED',
-        },
-      });
-    }
-  } catch { /* ignore */ }
+  const acc = canUseModel(req.platform, model, req.authKey || null);
+  if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
+    return res.status(403).json({
+      error: {
+        message: acc.ok
+          ? `/v1/responses currently supports Trae models only (got "${model}").`
+          : acc.message,
+        type: 'auth_error',
+        code: 'MODEL_ACCESS_DENIED',
+      },
+    });
+  }
+  // Responses 协议尚未实现工具调用事件族（m-39）：此前携带 tools 的 agentic
+  // 请求会得到「成功但工具调用被静默丢弃」的响应，客户端无从感知能力缺失。
+  // 改为 fail-closed 显式拒绝，待事件族补全（Q-08）后移除本闸门。
+  if (Array.isArray(body.tools) && body.tools.length > 0) {
+    return res.status(400).json({
+      error: {
+        message: 'The Responses endpoint does not support tool calls yet. Use /v1/chat/completions or /v1/messages for tool-enabled agents.',
+        type: 'invalid_request_error',
+        code: 'TOOLS_UNSUPPORTED',
+      },
+    });
+  }
   const stream = body.stream !== false;
   const startedAt = Date.now();
 

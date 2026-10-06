@@ -120,6 +120,27 @@ async function run() {
   r = await req('POST', '/v1/responses', { token: restrictedKey.key, ctype: 'application/json', body: { model: 'deepseek-v4-pro', input: 'hi', stream: false } });
   check('M-S4 /v1/responses 受限模型被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 90)}`);
 
+  // ---- M-S5：平台密钥 resources ACL（此前 trae/workbuddy 分支不校验 resources） ----
+  // 纯函数层：trae 密钥 + 受限 resources，命中放行 / 越界拒绝
+  // 选型说明：拒绝用例必须用 Trae 专属模型（model-config.json 内、且不在 WB_MODELS
+  // 中），否则先被 isWorkBuddyOnlyModel 的 platform_mismatch 拒绝，测不到资源 ACL。
+  const traeRestricted = { platform: 'trae', scopes: ['models:invoke'], resources: ['model:trae/glm-*'] };
+  check('M-S5 trae 密钥 resources 命中', canUseModel('trae', 'glm-5', traeRestricted).ok === true, JSON.stringify(canUseModel('trae', 'glm-5', traeRestricted)));
+  check('M-S5 trae 密钥 resources 拒绝（doubao-1-6 非 WB 专属）', canUseModel('trae', 'doubao-1-6', traeRestricted).ok === false, JSON.stringify(canUseModel('trae', 'doubao-1-6', traeRestricted)));
+  // workbuddy 密钥调裸模型 ID：资源路径必须映射为 model:workbuddy/<id>（而非 model:trae/<id>）
+  const wbRestricted = { platform: 'workbuddy', scopes: ['models:invoke'], resources: ['model:workbuddy/glm-5.3'] };
+  check('M-S5 wb 密钥 resources 命中（裸 ID 映射 workbuddy 平台）', canUseModel('workbuddy', 'glm-5.3', wbRestricted).ok === true, JSON.stringify(canUseModel('workbuddy', 'glm-5.3', wbRestricted)));
+  check('M-S5 wb 密钥 resources 拒绝', canUseModel('workbuddy', 'other-wb-model', wbRestricted).ok === false, JSON.stringify(canUseModel('workbuddy', 'other-wb-model', wbRestricted)));
+  // 默认 resources（平台通配）不受影响：存量密钥行为不变
+  const traeDefault = { platform: 'trae', scopes: ['models:invoke'], resources: ['model:trae/*'] };
+  check('M-S5 trae 默认通配 resources 放行', canUseModel('trae', 'doubao-1-6', traeDefault).ok === true, JSON.stringify(canUseModel('trae', 'doubao-1-6', traeDefault)));
+  // HTTP 层：创建受限 trae 密钥走真实端点验证 403（模型选型同上）
+  const traeRestrictedKey = apiKeys.createKey({ label: 'sec-trae-restricted', kind: 'access', platform: 'trae', resources: ['model:trae/glm-*'], scopes: ['models:invoke'] });
+  r = await req('POST', '/v1/chat/completions', { token: traeRestrictedKey.key, ctype: 'application/json', body: { model: 'doubao-1-6', messages: [{ role: 'user', content: 'hi' }] } });
+  check('M-S5 /v1/chat/completions trae 受限模型被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 90)}`);
+  // 不传 authKey 的对照：说明 ACL 依赖路由层补参（与 M-S4 对照用例同口径）
+  check('M-S5 不传 authKey 时平台 ACL 被跳过（对照）', canUseModel('trae', 'doubao-1-6').ok === true, '');
+
   // ---- E1：虚拟模型守门 400 透传 error.code=context_length_exceeded ----
   // E2E 验证客户端可按 .env.example 承诺的结构化 code 识别超限，
   // 而非匹配错误文案（后端改文案即失效的脆弱契约）。

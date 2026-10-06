@@ -86,9 +86,10 @@ function normalizeProvider(id, p) {
     label: p.label || id,
     enabled: p.enabled !== false,
     baseUrl: type === 'openai' ? String(p.baseUrl || '').replace(/\/+$/, '') : null,
-    // 敏感项只存环境变量名；可选 apiKey 仅本地文件场景使用
+    // 敏感项只存环境变量名（M-S6 根因修复）：明文 apiKey 曾被原样持久化到
+    // model-router.json，与账号 token 的 AES-256-GCM 口径不一致。
+    // 现统一为 apiKeyEnv 单源，normalize 时一律剥离明文字段（含存量文件）。
     apiKeyEnv: p.apiKeyEnv ? String(p.apiKeyEnv) : null,
-    apiKey: p.apiKey ? String(p.apiKey) : null,
     models: Array.isArray(p.models) ? p.models.map(String) : null,
     timeoutMs: Number(p.timeoutMs) > 0 ? Number(p.timeoutMs) : 600000,
   };
@@ -146,7 +147,9 @@ function listProviders() {
     enabled: p.enabled,
     baseUrl: p.baseUrl,
     apiKeyEnv: p.apiKeyEnv,
-    hasApiKey: !!(p.apiKey || p.apiKeyEnv),
+    // M-S6：明文字段已剥离，hasApiKey 仅依据 env 名；实际可解析性由
+    // dispatch.resolveApiKey 在运行时校验（env 可能未注入）
+    hasApiKey: !!p.apiKeyEnv,
     models: p.models,
     timeoutMs: p.timeoutMs,
   }));

@@ -36,6 +36,29 @@ function isWorkBuddyOnlyModel(model) {
 }
 
 /**
+ * 平台密钥的资源 ACL 关卡（M-S5 根因修复）。
+ *
+ * 此前 resources 校验只散布在「虚拟模型分支」与「all 分支」，trae/workbuddy
+ * 分支直接放行——按分支散布的 if 式校验，新增分支必漏。现收口为统一关卡：
+ * 平台过滤通过后一律经 canInvokeModel 校验 authKey.resources。
+ * - authKey 为空（内部调用/旧路径）：保持原有放行语义，避免回归；
+ * - resources 为空数组：与既有分支口径一致，跳过校验（normalizeResources
+ *   实际不会产出空数组，此处仅为防御）。
+ * meta 透传给 scope.modelResourcePath：workbuddy 平台密钥调裸模型 ID 时必须
+ * 传 { platform: 'workbuddy' }，否则会被映射成 model:trae/<id> 造成误拒。
+ */
+function platformResourceGate(authKey, model, meta = {}) {
+  if (!authKey) return { ok: true };
+  if (!Array.isArray(authKey.resources) || !authKey.resources.length) return { ok: true };
+  const { canInvokeModel } = require('../auth/scope');
+  const chk = canInvokeModel(authKey, model, meta);
+  if (!chk.ok) {
+    return { ok: false, message: `access denied: ${chk.reason || 'resource_denied'}`, reason: chk.reason };
+  }
+  return { ok: true };
+}
+
+/**
  * 判断密钥能否调用该模型（平台规则 + scope/资源 ACL）。
  *
  * 虚拟模型不在这里整单拒绝：平台密钥只调度本平台候选，通用密钥走全部候选
@@ -71,7 +94,7 @@ function canUseModel(keyPlatform, model, authKey = null) {
   }
 
   if (platform === 'workbuddy') {
-    return { ok: true };
+    return platformResourceGate(authKey, raw, { platform: 'workbuddy' });
   }
 
   // trae 平台密钥
@@ -89,7 +112,7 @@ function canUseModel(keyPlatform, model, authKey = null) {
       reason: 'platform_mismatch',
     };
   }
-  return { ok: true };
+  return platformResourceGate(authKey, raw);
 }
 
 /** Provider 是否允许在该密钥平台下被虚拟路由选中。 */
