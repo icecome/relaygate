@@ -43,14 +43,20 @@ function withExpiry(account) {
   };
 }
 
-// 启动加载路由时，为历史 devices=null 账号回填独立指纹
-try {
-  const backfilled = ensureAllMissingDevices();
-  if (backfilled.filled) {
-    console.log(`[credentials] backfilled devices for ${backfilled.filled}/${backfilled.total} accounts`);
+/**
+ * 启动初始化（m-38 根因修复）：此前 devices 回填在模块 require 期执行，
+ * 带来两个问题——启动时序与 DB 就绪隐式耦合；单测加载本模块即触发写库。
+ * 现改为显式 initCredentials()，由 index.js 启动流程调用。
+ */
+function initCredentials() {
+  try {
+    const backfilled = ensureAllMissingDevices();
+    if (backfilled.filled) {
+      console.log(`[credentials] backfilled devices for ${backfilled.filled}/${backfilled.total} accounts`);
+    }
+  } catch (e) {
+    console.error(`[credentials] backfill devices failed: ${e.message}`);
   }
-} catch (e) {
-  console.error(`[credentials] backfill devices failed: ${e.message}`);
 }
 
 // 列出账号（已脱敏）
@@ -331,3 +337,4 @@ router.post('/oauth/callback', admin, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.initCredentials = initCredentials;

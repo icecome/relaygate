@@ -479,7 +479,7 @@ export interface RotateStatus {
 
 export const getRotateStatus = (key: string) => api<RotateStatus>('/v1/admin/rotate/status', {}, key);
 export const runRotateNow = (key: string) =>
-  api<{ ok: number; failed: number; results?: { label?: string; ok?: boolean; msg?: string }[]; seeded?: { ok?: { uid?: string; file?: string; label?: string }[]; skipped?: unknown[]; failed?: unknown[]; total?: number } }>('/v1/admin/rotate/run', { method: 'POST' }, key);
+  api<{ ok: number; failed: number; skipped?: number; reason?: string; busy?: boolean; results?: { label?: string; ok?: boolean; msg?: string }[]; seeded?: { ok?: { uid?: string; file?: string; label?: string }[]; skipped?: unknown[]; failed?: unknown[]; total?: number } }>('/v1/admin/rotate/run', { method: 'POST' }, key);
 export const seedRotateBackups = (key: string) =>
   api<{ object: string; ok?: { uid?: string; file?: string; label?: string }[]; skipped?: { accountId?: string; reason?: string }[]; failed?: { accountId?: string; reason?: string }[]; total?: number }>('/v1/admin/rotate/seed', { method: 'POST' }, key);
 export const switchRotateAccount = (uid: string, key: string) =>

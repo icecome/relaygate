@@ -13,7 +13,8 @@ function extractToken(req) {
   const auth = req.headers['authorization'];
   if (auth && auth.startsWith('Bearer ')) return auth.slice(7);
   if (req.headers['x-api-key']) return req.headers['x-api-key'];
-  if (req.query && req.query.key) return req.query.key;
+  // n-13：不再接受 ?key= 查询参数——URL 会进入反代/访问日志，密钥落日志面
+  // 过大。grep 确认前端与文档均未使用该形态，仅保留 Authorization / x-api-key。
   return null;
 }
 

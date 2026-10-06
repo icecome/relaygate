@@ -7,6 +7,7 @@
 const config = require('../config');
 const auth = require('../auth');
 const libAuth = require('../lib/auth');
+const headersLib = require('../lib/headers');
 const { v4: uuidv4 } = require('../lib/uuid');
 const { retryWithBackoff } = require('./errors');
 const { createStreamHandler } = require('../transform/sse');
@@ -152,8 +153,8 @@ function buildBody(messages, model, stream, options, authInfo) {
       body.project_id = uuidv4();
       body.prompt_max_tokens = 168000;
       body.mode = 'FunctionCall';
-      body.ide_version = libAuth.getIdeVersion();
-      body.ide_version_code = libAuth.getIdeVersionCode();
+      body.ide_version = headersLib.getIdeVersion();
+      body.ide_version_code = headersLib.getIdeVersionCode();
       body.app_id = process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8';
       body.package_type = 'stable_cn';
       if (authInfo) {
@@ -195,16 +196,21 @@ async function llmUtilsChat(messages, model, stream, options = {}) {
     const body = buildBody(messages, model, stream, options, authInfo);
     const endpoint = `${auth.getApiHost(authInfo)}${config.upstreamChatPath}`;
 
-    console.log(JSON.stringify({
-      ts: new Date().toISOString(),
-      tag: 'upstream',
-      path: config.upstreamChatPath,
-      function: body.function,
-      model: body.model || null,
-      stream: stream !== false,
-      tools: Array.isArray(body.tools) ? body.tools.length : 0,
-      account: options.accountId || null,
-    }));
+    // 与 traffic.js 同口径（m-34）：服务形态下 stdout 经 start.bat 重定向进
+    // relay.out.log，每请求一行会使日志持续增长；traffic.jsonl 已完整留档，
+    // 故仅 debug 级输出。
+    if (config.logLevel === 'debug') {
+      console.log(JSON.stringify({
+        ts: new Date().toISOString(),
+        tag: 'upstream',
+        path: config.upstreamChatPath,
+        function: body.function,
+        model: body.model || null,
+        stream: stream !== false,
+        tools: Array.isArray(body.tools) ? body.tools.length : 0,
+        account: options.accountId || null,
+      }));
+    }
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), config.requestTimeoutMs);

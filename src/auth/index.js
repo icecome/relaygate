@@ -11,6 +11,7 @@
  */
 const credStore = require('../credentials/store');
 const legacy = require('../lib/auth.js');
+const headersLib = require('../lib/headers.js');
 const config = require('../config');
 
 const REFRESH_MARGIN_MS = 30 * 60 * 1000; // 提前 30 分钟刷新
@@ -106,8 +107,8 @@ function headersFor(authInfo, requestId, lastEventId) {
     _edition: authInfo._edition || authInfo.edition || 'cn',
   };
   const headers = requestId
-    ? legacy.buildStreamHeaders(like, legacy.getDeviceIds(), requestId, lastEventId)
-    : legacy.buildCommonHeaders(like, legacy.getDeviceIds());
+    ? headersLib.buildStreamHeaders(like, legacy.getDeviceIds(), requestId, lastEventId)
+    : headersLib.buildCommonHeaders(like, legacy.getDeviceIds());
   // TraeWork 身份：补齐真机 Work 线的功能头（值与 solo_work_lite 对齐）
   if (process.env.TRAE_WORK_IDENTITY === 'on') {
     headers['X-App-Function'] = 'solo_work_lite';

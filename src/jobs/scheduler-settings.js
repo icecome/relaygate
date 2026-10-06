@@ -15,7 +15,9 @@ const SPECS = {
   tokenSweepMinutes: { env: 'TOKEN_SWEEP_MINUTES', default: 15, min: 1, max: 1440 },
   modelProbeIntervalHours: { env: 'MODEL_PROBE_INTERVAL_HOURS', default: 6, min: 0, max: 168 },
   modelProbeMaxPerRun: { env: 'MODEL_PROBE_MAX_PER_RUN', default: 8, min: 0, max: 100 },
-  rotateEnabled: { env: 'ROTATE_ENABLED', default: 1, min: 0, max: 1 },
+  // rotateEnabled 已移除（m-32 根因修复）：账号轮换总开关的唯一事实源是
+  // rotate-settings.enabled（状态页轮换开关）。此前两处 enabled 共用
+  // ROTATE_ENABLED env，存在「面板只开其一」的语义碰撞。时刻字段仍留此处。
   rotateHour: { env: 'ROTATE_HOUR', default: 0, min: 0, max: 23 },
   rotateMinute: { env: 'ROTATE_MINUTE', default: 10, min: 0, max: 59 },
   // 成长中心独立轮询：0=关闭；与签到链解耦，用于及时领奖/补派（对齐轮询补签模型）

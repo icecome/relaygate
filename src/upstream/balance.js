@@ -8,6 +8,7 @@
 const store = require('../credentials/store');
 const auth = require('../auth');
 const legacy = require('../lib/auth');
+const headersLib = require('../lib/headers');
 const { runPlanned, localDateKey } = require('../lib/util');
 const variant = require('../platform/variant');
 // 权益包纯计算放在 credentials 域（pool 的 FEFO 排序也要用）；
@@ -24,7 +25,7 @@ function ugHost() {
 
 async function postUg(acct, apiPath, body) {
   const url = ugHost() + apiPath;
-  const headers = legacy.buildCommonHeaders({
+  const headers = headersLib.buildCommonHeaders({
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,

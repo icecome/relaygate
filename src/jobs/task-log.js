@@ -16,6 +16,11 @@ const FILE = () => process.env.TASK_LOG_FILE
   : stateFile('task-log.jsonl');
 const MAX_ENTRIES = Number(process.env.TASK_LOG_MAX_ENTRIES) || 500;
 
+// 进程内行数计数器（m-31 根因修复）：此前按「文件字节 > MAX_ENTRIES*512」粗估
+// 触发整文件重写，阈值偏大且长日志行下周期性全量重写代价随文件线性增长。
+// 现按真实行数精确计数，超限立即裁剪一次。
+let lineCount = null;
+
 /** 追加一条任务执行记录（best-effort，不抛错）。 */
 function appendTaskLog(entry) {
   try {
@@ -24,13 +29,20 @@ function appendTaskLog(entry) {
     migrateLegacyLog();
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
     fs.appendFileSync(FILE(), line, 'utf-8');
-    // 简单环形：超出上限时截断为最近 MAX_ENTRIES 条
-    const size = fs.statSync(FILE()).size;
-    if (size > MAX_ENTRIES * 512) {
-      const text = fs.readFileSync(FILE(), 'utf-8');
-      const lines = text.split('\n').filter(Boolean);
+    // 首次写入时校准计数器（含迁移历史行）；此后增量维护
+    if (lineCount == null) {
+      lineCount = fs.readFileSync(FILE(), 'utf-8').split('\n').filter(Boolean).length;
+    } else {
+      lineCount += 1;
+    }
+    // 精确环形：按行数裁剪为最近 MAX_ENTRIES 条
+    if (lineCount > MAX_ENTRIES) {
+      const lines = fs.readFileSync(FILE(), 'utf-8').split('\n').filter(Boolean);
       if (lines.length > MAX_ENTRIES) {
         writeFileAtomic(FILE(), lines.slice(lines.length - MAX_ENTRIES).join('\n') + '\n');
+        lineCount = MAX_ENTRIES;
+      } else {
+        lineCount = lines.length; // 计数漂移时校准
       }
     }
   } catch { /* 记录失败不影响主流程 */ }

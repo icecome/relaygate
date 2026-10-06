@@ -9,6 +9,7 @@
 const store = require('../credentials/store');
 const auth = require('../auth');
 const legacy = require('../lib/auth');
+const headersLib = require('../lib/headers');
 const { ensureAccountDevices } = require('../credentials/import');
 const { sleep, runPlanned, localDateKey } = require('../lib/util');
 const variant = require('../platform/variant');
@@ -35,7 +36,7 @@ function ugHost() {
 
 async function postUg(acct, apiPath) {
   const url = ugHost() + apiPath;
-  const headers = legacy.buildCommonHeaders({
+  const headers = headersLib.buildCommonHeaders({
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,

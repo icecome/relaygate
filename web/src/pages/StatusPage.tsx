@@ -161,8 +161,11 @@ export default function StatusPage() {
       const seeded = r.seeded?.ok?.length ?? 0;
       const parts = [`成功 ${r.ok}`, `失败 ${r.failed}`];
       if (seeded) parts.push(`自动生成备份 ${seeded} 个`);
-      setRotStatus({ msg: `轮换完成：${parts.join(' · ')}`, kind: r.failed ? 'err' : 'ok' });
-      toast(`账号轮换完成：${parts.join(' · ')}`, r.failed ? 'warn' : 'ok');
+      // 前置失败（无备份 / 停不掉客户端）在 results 里带 msg，透出原因避免"成功0失败0"式的困惑
+      const reason = (r.results || []).map((x) => x.msg).filter(Boolean).join('；');
+      const msg = `轮换完成：${parts.join(' · ')}${reason ? ` · ${reason}` : ''}`;
+      setRotStatus({ msg, kind: r.failed ? 'err' : 'ok' });
+      toast(msg, r.failed ? 'warn' : 'ok');
       load();
     } catch (e) {
       setRotStatus({ msg: `轮换失败：${(e as Error).message}`, kind: 'err' });

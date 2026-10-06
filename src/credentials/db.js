@@ -183,6 +183,9 @@ function db() {
   if (_db) return _db;
   fs.mkdirSync(path.dirname(DB_FILE()), { recursive: true });
   _db = new DatabaseSync(DB_FILE());
+  // n-14：单连接架构下管理面长查询与转发写入并发时可能偶发 SQLITE_BUSY，
+  // 显式设置 busy_timeout（5s）让短锁等待而非直接抛错。
+  try { _db.exec('PRAGMA busy_timeout = 5000'); } catch { /* 老版本不支持时忽略 */ }
   ensureSchema(_db);
   return _db;
 }

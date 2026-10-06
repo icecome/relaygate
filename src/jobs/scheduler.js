@@ -263,25 +263,31 @@ async function runKeepalive() {
 }
 
 /**
- * 账号轮换仅按每日定时（scheduleOnce 的 rotate 时刻）触发；
- * 此前的 intervalMinutes 间隔链与「启动 2 分钟首轮」已移除——持续后台
- * 轮换会在用户使用中途反复杀/启客户端，且重启必跑一轮令人困惑。
- * rotate-settings.enabled 仍作为总开关（false 时每日定时也跳过执行）。
+ * 账号轮换：自动部分仅按每日定时（scheduleOnce 的 rotate 时刻）触发，
+ * 总开关唯一事实源为 rotate-settings.enabled（m-32 收敛，scheduler-settings
+ * 的 rotateEnabled 镜像已移除）。
+ * 手动触发（面板「立即轮换一遍」/ POST /rotate/run）传 { manual: true }，
+ * 不受任何开关限制——用户点了按钮就是明确意图，开关只约束自动调度。
  */
 let rotateTimer = null;
-async function runRotateAccounts() {
-  const rs = require('./rotate-settings').getEffective();
-  if (!rs.enabled) return { ok: 0, failed: 0, skipped: 1 };
-  const schedEff = scheduleSettings.getEffective();
-  if (!schedEff.rotateEnabled) return { ok: 0, failed: 0, skipped: 1 };
-  console.log('[scheduler] account rotate start');
+async function runRotateAccounts(opts = {}) {
+  const manual = !!(opts && opts.manual);
+  if (!manual) {
+    const rs = require('./rotate-settings').getEffective();
+    if (!rs.enabled) {
+      // 跳过也落任务日志：否则面板「任务日志」只见成功记录，开关被关无从知晓
+      appendTaskLog({ task: 'account-rotate', trigger: 'scheduler', ok: 0, failed: 0, total: 0, skipped: 1, reason: 'rotate_disabled' });
+      return { ok: 0, failed: 0, skipped: 1, reason: 'rotate_disabled' };
+    }
+  }
+  console.log('[scheduler] account rotate start' + (manual ? ' (manual)' : ''));
   try {
     const rotate = require('./rotate-accounts');
     const r = await rotate.rotateAll();
     state.lastRotateAt = new Date().toISOString();
     console.log(`[scheduler] account rotate done: ok=${r.ok} failed=${r.failed}`);
     try {
-      appendTaskLog({ task: 'account-rotate', trigger: 'scheduler', ok: r.ok, failed: r.failed, total: (r.results || []).length });
+      appendTaskLog({ task: 'account-rotate', trigger: manual ? 'manual' : 'scheduler', ok: r.ok, failed: r.failed, total: (r.results || []).length });
     } catch { /* ignore */ }
     if (r.failed) {
       notify('rotate_fail', {
@@ -292,7 +298,7 @@ async function runRotateAccounts() {
   } catch (e) {
     state.lastError = `account-rotate: ${e.message}`;
     console.error('[scheduler] account rotate error', e.message);
-    appendTaskLog({ task: 'account-rotate', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
+    appendTaskLog({ task: 'account-rotate', trigger: manual ? 'manual' : 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
     return { ok: 0, failed: 1, error: e.message };
   }
 }
@@ -506,11 +512,9 @@ function start() {
 
   scheduleOnce(eff.checkinHour, eff.checkinMinute, 'checkin', runDailyCheckin);
   scheduleOnce(eff.keepaliveHour, eff.keepaliveMinute, 'keepalive', runKeepalive);
-  if (eff.rotateEnabled) {
-    scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', runRotateAccounts);
-  } else {
-    console.log('[scheduler] account rotate daily schedule disabled');
-  }
+  // 轮换定时仅看时刻是否排上；执行与否由 runRotateAccounts 内部的
+  // rotate-settings.enabled 唯一开关判定（m-32）
+  scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', () => runRotateAccounts());
   scheduleModelProbe(eff);
   scheduleGrowthPoll(eff);
 
@@ -564,7 +568,10 @@ function snapshot() {
     tokenSweepMinutes: eff.tokenSweepMinutes,
     modelProbeIntervalHours: eff.modelProbeIntervalHours,
     modelProbeMaxPerRun: eff.modelProbeMaxPerRun,
-    rotateEnabled: eff.rotateEnabled,
+    // m-32：rotateEnabled 唯一事实源为 rotate-settings.enabled（下方 rotateSettings
+    // 字段），此处不再镜像 scheduler-settings 的同名字段。保留键并指向真实
+    // 开关，StatusPage 无需改取值路径。
+    rotateEnabled: rotateSettings ? (rotateSettings.enabled ? 1 : 0) : eff.rotateEnabled ?? 1,
     rotateHour: eff.rotateHour,
     rotateMinute: eff.rotateMinute,
     growthPollEnabled: eff.growthPollEnabled,

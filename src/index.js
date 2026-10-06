@@ -137,9 +137,13 @@ function listen(port, host, fallbacks = []) {
       console.warn('[relay-gate] 仅绑定 IPv6；请使用 localhost 或 [::1] 访问（127.0.0.1 可能被其他进程占用，如 VMware NAT）。');
     }
     scheduler.start();
+    // 凭据模块启动初始化（devices 回填；m-38：从 require 期副作用改为显式调用）
+    require('./routes/credentials').initCredentials();
     // 余额自动刷新 / 全量备份（独立定时器，配置驱动）
     require('./jobs/balance-refresh').start();
     require('./jobs/backup').start();
+    // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
+    require('./log/retention').pruneAtStartup(config.ROOT);
     console.log('[relay-gate] periodic jobs started (balance refresh + backup)');
   });
   server.on('error', (err) => {

@@ -16,18 +16,20 @@ const cmd = String(process.argv[2] || '').toLowerCase();
 const labelArg = process.argv[3] || 'login';
 
 function printKey(k) {
-  console.log('');
-  console.log('  id:       ', k.id);
-  console.log('  label:    ', k.label);
-  console.log('  kind:     ', k.kind);
-  console.log('  createdAt:', k.createdAt);
-  console.log('');
-  console.log('  ┌──────────────── 登录密钥明文（仅显示一次，请立即保存）────────────────┐');
-  console.log('  │');
-  console.log('  │  ' + k.key);
-  console.log('  │');
-  console.log('  └──────────────────────────────────────────────────────────────────────┘');
-  console.log('');
+  // 明文走 stderr（m-28）：stdout 常被运维重定向进日志文件，密钥经 stderr
+  // 输出可避免误重定向泄密。其余指引文案仍走 stdout。
+  console.error('');
+  console.error('  id:       ', k.id);
+  console.error('  label:    ', k.label);
+  console.error('  kind:     ', k.kind);
+  console.error('  createdAt:', k.createdAt);
+  console.error('');
+  console.error('  ┌──────────────── 登录密钥明文（仅显示一次，请立即保存）────────────────┐');
+  console.error('  │');
+  console.error('  │  ' + k.key);
+  console.error('  │');
+  console.error('  └──────────────────────────────────────────────────────────────────────┘');
+  console.error('');
 }
 
 try {

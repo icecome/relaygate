@@ -166,7 +166,8 @@ router.post('/rotate/run', admin, async (req, res) => {
     const rotate = require('../jobs/rotate-accounts');
     // 无备份时先种入账号库备份，再执行轮换（一键免手动登录）
     const seed = rotate.seedAll();
-    const r = await scheduler.runRotateAccounts();
+    // manual:true —— 用户点「立即轮换一遍」不受自动调度开关限制
+    const r = await scheduler.runRotateAccounts({ manual: true });
     res.json({ object: 'rotate_run', ...r, seeded: seed });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });

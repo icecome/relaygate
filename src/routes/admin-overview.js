@@ -37,12 +37,21 @@ router.get('/sticky', admin, (req, res) => {
   res.json({ object: 'list', data: sticky.listSafe(), ttlMs: sticky.TTL_MS });
 });
 
-/** 导出账号备份（含密文 token，仅 Admin）。 */
+/** 导出账号备份（含密文 token，仅 Admin）。密文+全量元数据集中导出属敏感操作，落审计（Q-09）。 */
 router.get('/credentials/export', admin, (req, res) => {
   try {
     const rows = require('../credentials/db').db()
       .prepare('SELECT * FROM accounts')
       .all();
+    require('../log/audit').audit({
+      action: 'credentials.export',
+      actorKeyId: req.apiKeyId || null,
+      resource: 'accounts:all',
+      result: 'allow',
+      clientIp: req.ip || null,
+      userAgent: req.get('user-agent') || null,
+      meta: { count: rows.length },
+    });
     const payload = {
       object: 'trae_relay_export',
       version: 1,

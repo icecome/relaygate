@@ -260,9 +260,8 @@ const DEFAULT_HOST_US = process.env.TRAE_HOST_US || TRAE_HOSTS.agentUs;
 // Trae's manifest.json cannot be read. Update when Trae CN/SG releases new builds.
 // 2026-09-12: 对齐 TraeWorkAssistant 实测可用的 SOLO 线指纹（0.1.50 / 20260811），
 // 旧值 3.3.67 / 20260401 与当前在售客户端脱节，易被上游风控识别。
-const DEFAULT_IDE_VERSION_CN = '0.1.50';
-const DEFAULT_IDE_VERSION_SG = '0.1.50';
-const DEFAULT_IDE_VERSION_CODE = '20260811';
+// m-35：默认值声明下沉 lib/version-defaults.js（headers.js 共用同一份）。
+const { DEFAULT_IDE_VERSION_CN, DEFAULT_IDE_VERSION_SG, DEFAULT_IDE_VERSION_CODE } = require('./version-defaults');
 
 // 上游聊天端点路径（构造 referer 用；默认值与 src/config.js 保持一致）
 const TRAE_CHAT_PATH = process.env.TRAE_UPSTREAM_CHAT_PATH || '/api/agent/v3/llm_utils_chat';
@@ -497,201 +496,30 @@ async function refreshTokenIfNeeded() {
   return _refreshPromise;
 }
 
-/** 探测真实 Trae/TraeWork 安装目录，返回 { dir, appVersion, buildVersion } 或 null。 */
-// 客户端元数据缓存：headersFor 每请求会调此函数 5 次，
-// 而候选目录常不存在（每次 5 轮 existsSync），高并发下同步 IO 会阻塞事件循环。
-// 用 TTL 缓存（含 null 结果），客户端升级后最多延迟一个 TTL 生效。
-const CLIENT_META_TTL_MS = (() => {
-  const n = Number(process.env.TRAE_CLIENT_META_TTL_MS);
-  return Number.isFinite(n) && n >= 0 ? n : 5 * 60 * 1000;
-})();
-let _clientMetaCache = null;
-let _clientMetaAt = 0;
-const CLIENT_META_UNSET = 0; // _clientMetaAt 初始值：0 表示尚未扫描过
+/** 探测真实 Trae/TraeWork 安装目录（m-35：实现下沉 lib/client-meta.js，此处委托）。 */
+const clientMeta = require('./client-meta');
+const readRealClientMeta = clientMeta.readRealClientMeta;
+const resetClientMetaCache = clientMeta.resetClientMetaCache;
 
-function readRealClientMeta() {
-  const now = Date.now();
-  if (_clientMetaAt !== CLIENT_META_UNSET && now - _clientMetaAt < CLIENT_META_TTL_MS) {
-    return _clientMetaCache;
-  }
-  _clientMetaCache = scanRealClientMeta();
-  _clientMetaAt = now;
-  return _clientMetaCache;
-}
-
-function scanRealClientMeta() {
-  // 客户端安装目录候选：TRAE_CLIENT_DIR 优先（非标准安装位置时用），
-  // 其余为 Windows 常见安装路径。
-  const candidates = [
-    process.env.TRAE_CLIENT_DIR,
-    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Trae SOLO CN'),
-    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Trae SOLO'),
-    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Trae-CN'),
-    path.join(os.homedir(), 'AppData', 'Local', 'Programs', 'Trae'),
-  ].filter(Boolean);
-  for (const dir of candidates) {
-    try {
-      const manifestPath = path.join(dir, 'manifest.json');
-      if (!fs.existsSync(manifestPath)) continue;
-      const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
-      const productPath = path.join(dir, 'resources', 'app', 'product.json');
-      let buildVersion = '';
-      try {
-        if (fs.existsSync(productPath)) {
-          buildVersion = JSON.parse(fs.readFileSync(productPath, 'utf-8')).buildVersion || '';
-        }
-      } catch (e) { /* ignore */ }
-      return {
-        dir,
-        appVersion: manifest.appVersion || '',
-        buildVersion: buildVersion || manifest.buildVersion || '',
-      };
-    } catch (e) {
-      continue;
-    }
-  }
-  return null;
-}
-
-/** 清空客户端元数据缓存（测试或客户端升级后手动刷新用）。 */
-function resetClientMetaCache() {
-  _clientMetaCache = null;
-  _clientMetaAt = 0;
-}
-
-function getIdeVersion() {
-  // Explicit env override takes highest priority
-  if (process.env.TRAE_IDE_VERSION) return process.env.TRAE_IDE_VERSION;
-
-  // Try to read from real installed client's manifest.json
-  const meta = readRealClientMeta();
-  if (meta && meta.appVersion) return meta.appVersion;
-
-  try {
-    const authInfo = getAuthInfo();
-    if (authInfo._edition === 'cn') return DEFAULT_IDE_VERSION_CN;
-    return DEFAULT_IDE_VERSION_SG;
-  } catch (e) {
-    return DEFAULT_IDE_VERSION_CN;
-  }
-}
-
-/** x-app-version：真实客户端 appVersion，绝不回退到 'default'。 */
-function getAppVersion() {
-  if (process.env.TRAE_APP_VERSION) return process.env.TRAE_APP_VERSION;
-  const meta = readRealClientMeta();
-  if (meta && meta.appVersion) return meta.appVersion;
-  return getIdeVersion();
-}
-
-function getIdeVersionCode() {
-  if (process.env.TRAE_IDE_VERSION_CODE) return process.env.TRAE_IDE_VERSION_CODE;
-  const meta = readRealClientMeta();
-  if (meta && meta.buildVersion) return meta.buildVersion;
-  return DEFAULT_IDE_VERSION_CODE;
-}
-
-function getDeviceInfo(deviceOverrides) {
-  const o = deviceOverrides || {};
-  let machineId = '';
-  let sqmId = '';
-  let devDeviceId = '';
-  // 账号已自带设备时直接使用，不再依赖本机 storage.json（免本机登录关键）
-  if (o.machineId == null || o.devDeviceId == null) {
-    try {
-      const authInfo = getAuthInfo();
-      const storage = readStorageJsonByEdition(authInfo._edition || detectEdition()) || {};
-      machineId = storage['telemetry.machineId'] || '';
-      sqmId = storage['telemetry.sqmId'] || '';
-      devDeviceId = storage['telemetry.devDeviceId'] || '';
-    } catch (e) { /* 免本机场景无本机登录态，忽略并继续 */ }
-  }
-  machineId = o.machineId != null ? o.machineId : machineId;
-  sqmId = o.sqmId != null ? o.sqmId : sqmId;
-  devDeviceId = o.devDeviceId != null ? o.devDeviceId : devDeviceId;
-  return {
-    cpu: o.cpu || process.env.TRAE_CPU || 'Intel',
-    device_id: o.deviceId || hashDeviceId(machineId) || process.env.TRAE_DEVICE_ID || '',
-    machine_id: o.machineId || machineId || process.env.TRAE_MACHINE_ID || '',
-    device_model: o.deviceModel || process.env.TRAE_DEVICE_MODEL || '82RF',
-    os_name: o.osName || process.env.TRAE_OS_NAME || 'windows',
-    os_version: o.osVersion || process.env.TRAE_OS_VERSION || 'Windows 10'
-  };
-}
-
-function buildCommonHeaders(authInfo, deviceIds) {
-  // 优先使用账号自带设备信息（免本机登录：每账号携带 telemetry，脱离本机 storage.json）
-  const deviceInfo = getDeviceInfo(authInfo && authInfo.devices);
-  // trace 头形态对齐 Trae 官方客户端（TTNet）：
-  //   x-tt-trace-id = "00-<id>-<id>-01"，x-custom-trace-id 取其前 16 字符，
-  //   x-flow-traceparent = "04-<id32>-<id>-01"
-  const traceId = `00-${uuidv4().replace(/-/g, '')}-${uuidv4().replace(/-/g, '')}-01`;
-  const flowParentId = traceId.slice(3, 35);
-  return {
-    'Content-Type': 'application/json',
-    'Authorization': `Cloud-IDE-JWT ${authInfo.token}`,
-    'X-Cloudide-Token': authInfo.token,
-    'x-ide-token': authInfo.token,
-    'user-agent': 'TraeClient/TTNet',
-    'x-app-id': process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8',
-    'x-app-version': getAppVersion(),
-    'app-version': getIdeVersion(),
-    'x-ide-version-code': getIdeVersionCode(),
-    'x-app-version-code': getIdeVersionCode(),
-    'x-custom-trace-id': traceId.slice(0, 16),
-    'x-tt-trace-id': traceId,
-    'x-flow-traceparent': `04-${flowParentId}-${uuidv4().replace(/-/g, '')}-01`,
-    'x-device-brand': deviceInfo.device_model,
-    'x-device-cpu': deviceInfo.cpu,
-    'x-device-id': deviceInfo.device_id,
-    'x-machine-id': deviceInfo.machine_id,
-    'x-os-version': deviceInfo.os_version,
-    'x-device-type': deviceInfo.os_name,
-    'x-ide-version': getIdeVersion(),
-    'x-ide-version-type': 'stable',
-    'request-traffic-type': 'prod',
-    'package-type': 'stable_cn',
-    'x-lgw-req-sdk-type': '3',
-    'x-lscbd-aid': '787976',
-    'x-lscbd-platform': 'windows',
-    'x-ss-dp': '787976',
-    'referer': `${getApiHost()}${TRAE_CHAT_PATH}`,
-    'x-uid': authInfo.userId || ''
-  };
-}
-
-function buildStreamHeaders(authInfo, deviceIds, requestId, lastEventId) {
-  const headers = buildCommonHeaders(authInfo, deviceIds);
-  headers['Accept'] = 'text/event-stream';
-  headers['X-Request-ID'] = requestId || uuidv4();
-  headers['X-Trae-Request-ID'] = headers['X-Request-ID'];
-  if (lastEventId) {
-    headers['Last-Event-ID'] = lastEventId;
-  }
-  return headers;
-}
+// m-35：设备指纹/请求头/版本指纹已下沉 lib/headers.js。auth 不再委托导出
+// （守门测试禁止双向依赖：headers 需读本机登录态兜底，若 auth 转手导出即成
+// auth ⇄ headers 双向）。消费方（auth/index.js、upstream/checkin、upstream/balance）
+// 改为直接 require lib/headers。
 
 module.exports = {
   getTraeDataDir,
   getStorageJsonPath,
   readStorageJson,
+  readStorageJsonByEdition,
   getAuthInfo,
   getDeviceIds,
-  getDeviceInfo,
   isTokenExpired,
   isTokenExpiringSoon,
   getApiHost,
   getAuthHost,
-  getIdeVersion,
-  getIdeVersionCode,
-  getAppVersion,
-  readRealClientMeta,
-  resetClientMetaCache,
   exchangeToken,
   normalizeExchangeResult,
   refreshTokenIfNeeded,
-  buildCommonHeaders,
-  buildStreamHeaders,
   hashDeviceId,
   detectEdition
 };

@@ -2199,6 +2199,146 @@ t('modelCatalog：本机登录态 401 时回退账号库凭据拉取成功', asy
   }
 });
 
+console.log('model-router/dispatch 真流式（M-P1）');
+t('dispatchTraeStream：文本事件逐块写出（首帧先于上游流结束，非整段聚合）', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  // 事件到达顺序记录：sse:xxx 追加于事件下发时刻，consumeEnd 追加于上游流
+  // 读取结束时刻。真流式 ⇒ 首个内容帧先于 consumeEnd。
+  const timeline = [];
+  const line = (obj) => 'data: ' + JSON.stringify(obj) + '\n\n';
+  const firstPromise = new Promise((r) => { global.__probeFirstWrite = r; });
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async (body, onText) => {
+    onText(line({ event: 'output', response: '第一段' }));
+    onText(line({ event: 'output', response: '第二段' }));
+    onText(line({ event: 'done', finish_reason: 'stop' }));
+    timeline.push('consumeEnd');
+  };
+  const chunks = [];
+  const res = {
+    writableEnded: false,
+    headersSent: false,
+    setHeader() {}, flushHeaders() {},
+    write(s) {
+      chunks.push(s);
+      timeline.push(`sse:${String(s).slice(5, 12)}`);
+      if (global.__probeFirstWrite) { const r = global.__probeFirstWrite; delete global.__probeFirstWrite; r(); }
+      return true;
+    },
+    end() { this.writableEnded = true; },
+  };
+  try {
+    const r = await dispatch.dispatchStream(
+      { type: 'builtin', builtin: 'trae' },
+      'glm-5.3',
+      { messages: [{ role: 'user', content: 'hi' }] },
+      res,
+      { echoModel: 'vm/unified-chat' },
+    );
+    assert.strictEqual(r.streamed, true);
+    assert.strictEqual(r.finishReason, 'stop');
+    // 真流式分界断言：首个 SSE 内容帧写出必须早于上游流读取结束
+    const firstContent = timeline.findIndex((x) => typeof x === 'string' && x.startsWith('sse:'));
+    const endIdx = timeline.indexOf('consumeEnd');
+    assert.ok(firstContent !== -1, '应有 SSE 输出');
+    assert.ok(endIdx !== -1, 'consumeStream 应正常结束');
+    assert.ok(firstContent < endIdx, `首个内容帧（#${firstContent}）必须先于上游流结束（#${endIdx}）——假流式会整段聚合后一次性下发`);
+    // 末帧契约：finish_reason=stop + [DONE]
+    const datas = chunks.filter((c) => c.startsWith('data: ')).map((c) => c.slice(6).trim());
+    assert.strictEqual(datas[datas.length - 1], '[DONE]');
+    const parsed = datas.slice(0, -1).map((d) => JSON.parse(d));
+    const fin = parsed.find((o) => o.choices[0].finish_reason);
+    assert.ok(fin, '应有 finish 帧');
+    assert.strictEqual(fin.choices[0].finish_reason, 'stop');
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+    delete global.__probeFirstWrite;
+  }
+});
+
+t('dispatchTraeStream：上游 error 事件抛错（未写头时可切换候选），不静默吞', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async (body, onText) => {
+    // error 事件需经 SSE event: 行设置 currentEvent（sse.js feedLine:319 → normalizeChunk:258）
+    onText('event: error\n');
+    onText('data: ' + JSON.stringify({ message: 'rate limited' }) + '\n\n');
+  };
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() {}, write() { return true; }, end() { this.writableEnded = true; },
+  };
+  try {
+    await assert.rejects(
+      () => dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, {}),
+      (e) => e.code === 'UPSTREAM_STREAM_ERROR',
+    );
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+console.log('log/retention（m-29）');
+t('ageInDays：合法日期目录计算天数，非法名返回 null', () => {
+  const { ageInDays } = require('../log/retention');
+  const now = new Date('2026-10-06T00:00:00Z');
+  assert.strictEqual(ageInDays('2026-10-01', now), 5);
+  assert.strictEqual(ageInDays('2026-10-06', now), 0);
+  assert.strictEqual(ageInDays('2026-13-99', now), null);
+  assert.strictEqual(ageInDays('traffic', now), null);
+  assert.strictEqual(ageInDays('', now), null);
+});
+t('pruneLogDirs：只删超期日期目录，保留新目录与非日期目录', () => {
+  const { pruneLogDirs } = require('../log/retention');
+  const os = require('os');
+  const dir = path.join(os.tmpdir(), `logret-${Date.now()}`);
+  fs.mkdirSync(path.join(dir, '2026-09-01'), { recursive: true });   // 35 天前 → 删
+  fs.mkdirSync(path.join(dir, '2026-10-01'), { recursive: true });   // 5 天前 → 留
+  fs.mkdirSync(path.join(dir, 'traffic'), { recursive: true });      // 非日期名 → 留
+  fs.writeFileSync(path.join(dir, 'relay.out.log'), 'x');
+  try {
+    const r = pruneLogDirs(dir, new Date('2026-10-06T00:00:00Z'));
+    assert.deepStrictEqual(r.removed, ['2026-09-01']);
+    assert.ok(fs.existsSync(path.join(dir, '2026-10-01')));
+    assert.ok(fs.existsSync(path.join(dir, 'traffic')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+t('retentionDays：默认 30，0 表示关闭，非法回落默认', () => {
+  const retention = require('../log/retention');
+  const orig = process.env.LOG_RETENTION_DAYS;
+  try {
+    delete process.env.LOG_RETENTION_DAYS;
+    assert.strictEqual(retention.retentionDays(), 30);
+    process.env.LOG_RETENTION_DAYS = '0';
+    assert.strictEqual(retention.retentionDays(), 0);
+    process.env.LOG_RETENTION_DAYS = '7';
+    assert.strictEqual(retention.retentionDays(), 7);
+    process.env.LOG_RETENTION_DAYS = 'abc';
+    assert.strictEqual(retention.retentionDays(), 30);
+  } finally {
+    if (orig === undefined) delete process.env.LOG_RETENTION_DAYS;
+    else process.env.LOG_RETENTION_DAYS = orig;
+  }
+});
+
 main();
 
 

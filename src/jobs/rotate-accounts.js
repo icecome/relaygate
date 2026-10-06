@@ -399,7 +399,8 @@ async function rotateAllInner() {
     accounts = included;
   }
   if (accounts.length === 0) {
-    return { ok: 0, failed: 0, results: [{ msg: '未发现可用账号备份' + (skippedUids.length ? `（${skippedUids.length} 个被排除）` : '') }], skippedUids };
+    // 前置失败计入 failed：否则面板显示「成功 0 失败 0」，用户无法判断是否真的执行了
+    return { ok: 0, failed: 1, results: [{ ok: false, msg: '未发现可用账号备份' + (skippedUids.length ? `（${skippedUids.length} 个被排除）` : '') }], skippedUids };
   }
   const results = [];
   let ok = 0, failed = 0;
@@ -407,7 +408,7 @@ async function rotateAllInner() {
   // 确保客户端进程停止（覆盖式切换的唯一可靠时机）
   const stopped = await stopClient();
   if (!stopped) {
-    return { ok: 0, failed: 0, results: [{ msg: '无法停止 WorkBuddy 客户端（进程被保护，需以管理员运行或手动关闭客户端）' }], skippedUids };
+    return { ok: 0, failed: 1, results: [{ ok: false, msg: '无法停止 WorkBuddy 客户端（进程被保护，需以管理员运行或手动关闭客户端）' }], skippedUids };
   }
   await sleep(1000);
 
