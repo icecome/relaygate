@@ -82,6 +82,16 @@ router.post('/reload', admin, (req, res) => {
   ok(res, { object: 'reloaded', ...mr.snapshot() });
 });
 
+/** 重新同步自动分层虚拟模型（拉取两平台目录 → 按窗口分层 → 倍率排序写回）。 */
+router.post('/virtual/resync-auto', admin, async (req, res) => {
+  try {
+    const r = await mr.autotier.syncAutoTiers({ force: true });
+    ok(res, { object: 'autotier_sync', ...r, generatedAt: new Date().toISOString() });
+  } catch (e) {
+    res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
+  }
+});
+
 /** 诊断：解释某虚拟模型当前候选可用性 */
 router.get('/route-check/:id', admin, (req, res) => {
   const id = String(req.params.id || '');

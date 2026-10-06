@@ -113,7 +113,7 @@ router.get('/client-config', admin, (req, res) => {
       note: 'Responses 协议最小兼容；复杂事件族可能不完整',
     },
     notes: [
-      '转发面使用 API_KEY；管理面板使用 ADMIN_KEY（若已分离）。',
+      '转发面使用管理面创建的访问密钥（sk-…）；管理面板使用登录密钥（sk-admin-…）。',
       '默认仅监听 127.0.0.1；跨机请 SSH 隧道或自配 HOST + 防火墙。',
       'SSE 场景请关闭反代缓冲：proxy_buffering off; proxy_read_timeout 600s;',
       '流式一旦开始输出，不在中途切换账号重试。',
@@ -131,7 +131,9 @@ router.get('/runtime', admin, (req, res) => {
     scheduler: scheduler.snapshot(),
     notify: { enabled: notifyEnabled() },
     keys: {
-      adminSeparated: config.adminKey !== config.apiKey,
+      // K-1 后管理/转发两域由 DB 密钥体系强制分离;此字段语义改为「管理域已配置」
+      // (DB 登录密钥或 env ADMIN_KEY 任一存在),前端仅作提示展示。
+      adminSeparated: require('../credentials/api-keys').hasLoginKey() || !!config.adminKey,
     },
   });
 });

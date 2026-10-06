@@ -141,6 +141,44 @@ async function run() {
   // 不传 authKey 的对照：说明 ACL 依赖路由层补参（与 M-S4 对照用例同口径）
   check('M-S5 不传 authKey 时平台 ACL 被跳过（对照）', canUseModel('trae', 'doubao-1-6').ok === true, '');
 
+  // ---- K-1：管理/转发权限分离 ----
+  // env API_KEY 在启动时已被 bootstrapFromEnv 种成库内 access key（引导种子的设计角色），
+  // 因此转发面 /v1/models 200 是正确行为；权限分离的判定点是管理面被拒。
+  r = await req('GET', '/v1/models', { token: process.env.API_KEY });
+  check('K-1 env API_KEY（已引导为 access key）转发面可用', r.status === 200, `-> ${r.status}`);
+
+  r = await req('GET', '/v1/credentials', { token: process.env.API_KEY });
+  check('K-1 env API_KEY 访问管理面被拒（不再跨界）', r.status === 401, `-> ${r.status}`);
+
+  r = await req('GET', '/v1/credentials', { token: process.env.ADMIN_KEY });
+  check('K-1 env ADMIN_KEY 管理面可用', r.status === 200, `-> ${r.status}`);
+
+  r = await req('GET', '/v1/models', { token: process.env.ADMIN_KEY });
+  check('K-1 env ADMIN_KEY 管理视图 /v1/models 可用', r.status === 200, `-> ${r.status}`);
+
+  // ---- K-2：/v1/models 对访问密钥强制 models:read scope ----
+  // 库内密钥在启动迁移后均含 models:read；直接改库构造一个显式剔除的密钥验证 403。
+  const noRead = apiKeys.createKey({ label: 'sec-no-read', kind: 'access', platform: 'trae', scopes: ['models:invoke'] });
+  const { db } = require('../credentials/db');
+  db().prepare("UPDATE api_keys SET scopes = ? WHERE id = ?").run(JSON.stringify(['models:invoke']), noRead.id);
+  r = await req('GET', '/v1/models', { token: noRead.key });
+  check('K-2 缺 models:read 的访问密钥被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 80)}`);
+
+  // 迁移函数幂等补齐
+  const patched = apiKeys.ensureModelsReadScope();
+  check('K-2 ensureModelsReadScope 补齐缺失密钥', patched.includes(noRead.id), JSON.stringify(patched));
+  r = await req('GET', '/v1/models', { token: noRead.key });
+  check('K-2 迁移后同一密钥恢复 200', r.status === 200, `-> ${r.status}`);
+
+  // K-4：reveal 高危操作落审计（M-S1 已删除库内 login key，此处补建管理凭据）
+  const loginK4 = apiKeys.createKey({ label: 'sec-login-k4', kind: 'login' });
+  r = await req('GET', `/v1/api-keys/${noRead.id}/reveal`, { token: loginK4.key });
+  check('K-4 reveal 返回明文', r.status === 200, `-> ${r.status}`);
+  const auditRows = require('../log/audit').query({ action: 'key.reveal', limit: 5 });
+  check('K-4 reveal 审计已记录', auditRows.some((x) => x.resource === `key:${noRead.id}`), '');
+  apiKeys.deleteKey(loginK4.id);
+  apiKeys.deleteKey(noRead.id);
+
   // ---- E1：虚拟模型守门 400 透传 error.code=context_length_exceeded ----
   // E2E 验证客户端可按 .env.example 承诺的结构化 code 识别超限，
   // 而非匹配错误文案（后端改文案即失效的脆弱契约）。

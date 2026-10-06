@@ -71,14 +71,20 @@ function makeResolveModelOptions(map) {
 const MODEL_MAP = buildModelMap(modelConfig);
 const resolveModelOptions = makeResolveModelOptions(MODEL_MAP);
 
-const apiKey = process.env.API_KEY;
-if (!apiKey) {
-  throw new Error('[config] API_KEY 未设置；请先在 .env 配置 API_KEY（禁止使用公开默认值）');
+/**
+ * 密钥分域（K-1 权限分离）：
+ *   - 管理域：ADMIN_KEY（env 过渡）/ DB 登录密钥 —— 仅管理面
+ *   - 转发域：DB 访问密钥 —— 仅转发 API
+ * API_KEY 不再参与运行期鉴权，仅为「库内尚无 access key」时的引导种子，
+ * 且强制与管理密钥分值（同值视为配置事故，拒绝落库）。
+ */
+const apiKey = process.env.API_KEY || '';
+const adminKey = process.env.ADMIN_KEY || '';
+if (!adminKey) {
+  console.warn('[config] ADMIN_KEY 未设置：首次引导只能经管理面板 setup 或 CLI 创建登录密钥');
 }
-// 管理密钥与转发密钥分离；未配置 ADMIN_KEY 时回退 API_KEY，但需显式告警
-const adminKey = process.env.ADMIN_KEY || apiKey;
-if (!process.env.ADMIN_KEY) {
-  console.warn('[config] ADMIN_KEY 未设置，管理面将回退使用 API_KEY；建议配置独立 ADMIN_KEY');
+if (apiKey && adminKey && apiKey === adminKey) {
+  throw new Error('[config] API_KEY 与 ADMIN_KEY 同值：管理/转发密钥必须分离（K-1），请为二者配置不同值');
 }
 
 const config = {

@@ -65,6 +65,31 @@ function parseContactRate(raw) {
   };
 }
 
+/** 单条 config 的窗口/输出限制：取 context_window_tokens 与 model_detail_list 逐档参数。 */
+function extractLimits(item) {
+  const ctxRaw = item && item.context_window_tokens;
+  const ctx = ctxRaw && typeof ctxRaw === 'object' && !Array.isArray(ctxRaw)
+    ? {
+        dev: Number.isFinite(Number(ctxRaw.dev)) ? Number(ctxRaw.dev) : null,
+        max: Number.isFinite(Number(ctxRaw.max)) ? Number(ctxRaw.max) : null,
+      }
+    : { dev: null, max: null };
+  const tiers = [];
+  for (const md of (item && item.model_detail_list) || []) {
+    if (!md || !md.model_name) continue;
+    const name = String(md.model_name);
+    const tier = /__max$/i.test(name) || /__max$/i.test(String(md.model_name || '')) ? 'max' : 'dev';
+    tiers.push({
+      tier,
+      modelName: name,
+      promptMaxTokens: Number.isFinite(Number(md.prompt_max_tokens)) ? Number(md.prompt_max_tokens) : null,
+      maxOutputTokens: Number.isFinite(Number(md.max_tokens)) ? Number(md.max_tokens) : null,
+      maxTurn: Number.isFinite(Number(md.max_turn)) ? Number(md.max_turn) : null,
+    });
+  }
+  return { ctx, tiers };
+}
+
 function normalizeItem(item) {
   if (!item || !item.config_name) return null;
   if (item.config_switch === false) return null;
@@ -78,6 +103,13 @@ function normalizeItem(item) {
   }
 
   const rateInfo = parseContactRate(item.display_contact_config);
+  const limits = extractLimits(item);
+  // 窗口口径：dev 档=context_window_tokens.dev；max 档优先 context_window_tokens.max，
+  // 缺失时回退 dev（平台未下发双档时视为单档模型）。promptMaxTokens 为输入保护上限。
+  const ctxDev = limits.ctx.dev;
+  const ctxMax = limits.ctx.max != null ? limits.ctx.max : limits.ctx.dev;
+  const tierDev = limits.tiers.find((x) => x.tier === 'dev') || limits.tiers[0] || null;
+  const tierMax = limits.tiers.find((x) => x.tier === 'max') || null;
   return {
     id: item.config_name,
     display_name: dc.display_name || item.config_name,
@@ -91,6 +123,20 @@ function normalizeItem(item) {
     rate: rateInfo.rate,
     afterRate: rateInfo.afterRate,
     discounted: rateInfo.discounted,
+    // —— 上下文窗口/输出上限（按档）——
+    contextWindow: ctxDev,
+    contextWindowMax: tierMax || ctxMax != null ? ctxMax : null,
+    promptMaxTokens: tierDev ? tierDev.promptMaxTokens : null,
+    maxOutputTokens: tierDev ? tierDev.maxOutputTokens : null,
+    maxTurn: tierDev ? tierDev.maxTurn : null,
+    maxTier: tierMax
+      ? {
+          modelName: tierMax.modelName,
+          promptMaxTokens: tierMax.promptMaxTokens,
+          maxOutputTokens: tierMax.maxOutputTokens,
+          maxTurn: tierMax.maxTurn,
+        }
+      : null,
   };
 }
 

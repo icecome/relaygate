@@ -53,4 +53,58 @@ function summarizeExpiry(packs, nowMs) {
   return { d3: roundCredits(d3), d7: roundCredits(d7) };
 }
 
-module.exports = { roundCredits, naturalDayDiff, summarizeExpiry };
+/**
+ * 汇总「最早到期」信息，供账号池 FEFO（先到期先用）排序。
+ *
+ * 背景：此前 least_balance 只按 d3/d7 金额分档排序，无法区分
+ * 「3 天后到期的 68 分」与「7 天后到期的 68 分」，也分不出
+ * 同档内到期时间更早的账号，临期积分会因余额策略被白白浪费。
+ * FEFO 直接以最近一个未用尽权益包的到期时刻为准，先到期先消耗。
+ *
+ * 判定口径：
+ * - 只统计 remaining > 0 且未过期的包（已用尽 / unlimited / 无到期时间的都跳过）。
+ * - 多个包取 expireTime 最小者作为 soonest。
+ * - 仅有 unlimited 包时视为「不会过期」，返回 never=true。
+ *
+ * @param {Array<{expireTime?:number, remaining?:number|null, unlimited?:boolean}>} packs
+ * @param {number} [nowMs]
+ * @returns {{soonest:number|null, soonestMs:number|null, soonestAmount:number,
+ *            soonestDays:number|null, expiringAmount:number, never:boolean,
+ *            hasExpiry:boolean}}
+ */
+function summarizeFefo(packs, nowMs) {
+  const now = nowMs == null ? Date.now() : nowMs;
+  const out = {
+    soonest: null, soonestMs: null, soonestAmount: 0,
+    soonestDays: null, expiringAmount: 0, never: false, hasExpiry: false,
+  };
+  if (!Array.isArray(packs) || !packs.length) return out;
+
+  let sawUnlimited = false;
+  for (const p of packs) {
+    if (!p || typeof p !== 'object') continue;
+    // unlimited 包永不过期：只在没有任何可计量包时作为兜底标记
+    if (p.remaining == null || p.unlimited === true) { sawUnlimited = true; continue; }
+    const rem = roundCredits(p.remaining);
+    if (!(rem > 0)) continue; // 已用尽
+    const expireSec = p.expireTime;
+    // 无到期时间 = 长期有效，不参与 FEFO 抢占
+    if (typeof expireSec !== 'number' || expireSec <= 0) continue;
+    const ms = expireSec * 1000;
+    if (ms <= now) continue; // 已过期
+    out.expiringAmount = roundCredits(out.expiringAmount + rem);
+    if (out.soonestMs === null || ms < out.soonestMs) {
+      out.soonestMs = ms;
+      out.soonest = expireSec;
+      out.soonestAmount = rem;
+    }
+  }
+  out.hasExpiry = out.soonestMs !== null;
+  if (!out.hasExpiry) out.never = sawUnlimited;
+  out.soonestDays = out.soonestMs === null
+    ? null
+    : Math.round(((out.soonestMs - now) / 86400000) * 100) / 100;
+  return out;
+}
+
+module.exports = { roundCredits, naturalDayDiff, summarizeExpiry, summarizeFefo };

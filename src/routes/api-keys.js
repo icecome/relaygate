@@ -72,6 +72,12 @@ router.post('/setup/login-key', (req, res) => {
   }
   const label = (req.body && req.body.label) || 'login';
   const created = apiKeys.createKey({ label, kind: 'login' });
+  require('../log/audit').audit({
+    action: 'key.setup',
+    resource: `key:${created.id}`,
+    result: 'ok',
+    meta: { channel: 'first-login-setup' },
+  });
   res.status(201).json({ object: 'login_key', ...created });
 });
 
@@ -85,6 +91,13 @@ router.get('/login-key', admin, (req, res) => {
 router.post('/login-key/reset', admin, (req, res) => {
   const label = (req.body && req.body.label) || 'login';
   const created = apiKeys.resetLoginKey({ label });
+  require('../log/audit').audit({
+    action: 'key.rotate',
+    actorKeyId: req.apiKeyId || null,
+    resource: `key:${created.id}`,
+    result: 'ok',
+    meta: { channel: 'login-key-reset', rotatedKind: 'login' },
+  });
   res.status(201).json({ object: 'login_key', ...created });
 });
 
@@ -252,6 +265,14 @@ router.get('/:id/reveal', admin, (req, res) => {
       },
     });
   }
+  // K-4：明文回显属高危读操作，落审计（谁在何时复制了哪把密钥）
+  require('../log/audit').audit({
+    action: 'key.reveal',
+    actorKeyId: req.apiKeyId || null,
+    resource: `key:${key.id}`,
+    result: 'ok',
+    meta: { keyKind: key.kind, platform: key.platform },
+  });
   res.json({ object: 'api_key_plain', id: key.id, key: plain });
 });
 

@@ -27,10 +27,13 @@ const SCOPES = new Set([
   'admin:keys',
   'admin:catalog',
 ]);
+// K-3：平台密钥默认 scope 补齐 models:read —— /v1/models 双面端点对访问密钥
+// 强制 scope 校验后，存量平台密钥（只有 models:invoke）会在模型列表直接 403，
+// 因此新建与迁移口径统一包含 models:read。
 const DEFAULT_SCOPES = {
   all: ['models:read', 'models:invoke', 'router:read', 'router:invoke'],
-  trae: ['models:invoke'],
-  workbuddy: ['models:invoke'],
+  trae: ['models:read', 'models:invoke'],
+  workbuddy: ['models:read', 'models:invoke'],
 };
 const DEFAULT_RESOURCES = {
   all: ['*'],
@@ -342,6 +345,28 @@ function resetLoginKey({ label = 'login', plainKey = null } = {}) {
 }
 
 /**
+ * K-3 存量密钥 scope 迁移：models:read 补齐。
+ *
+ * 背景：/v1/models 对访问密钥实施 scope 强校验（requireKeyScope），而历史创建的
+ * 平台密钥默认 scopes 只有 models:invoke，直接上线会导致存量客户端模型列表 403。
+ * 迁移在启动时执行一次：为所有启用且缺 models:read 的 access 密钥补上，幂等；
+ * 管理面模型列表是双面端点的基础可用性，因此显式收窄过 scope 的密钥同样补齐。
+ * @returns {string[]} 补齐过的密钥 id 列表
+ */
+function ensureModelsReadScope() {
+  const patched = [];
+  const rows = db().prepare("SELECT id, scopes FROM api_keys WHERE kind = 'access' AND enabled = 1").all();
+  for (const row of rows) {
+    const list = parseJsonArr(row.scopes, []);
+    if (list.includes('models:read')) continue;
+    const merged = [...list, 'models:read'];
+    db().prepare('UPDATE api_keys SET scopes = ? WHERE id = ?').run(JSON.stringify(merged), row.id);
+    patched.push(row.id);
+  }
+  return patched;
+}
+
+/**
  * 启动引导（仅 access；login 走首登 setup 或 CLI）：
  * 库内无 access key 时，用 API_KEY 建 trae 访问密钥。
  * 若存在 ADMIN_KEY 且无 login key，建 login 密钥（兼容旧部署）。
@@ -391,6 +416,7 @@ module.exports = {
   touchLastUsed,
   sweepExpired,
   bootstrapFromEnv,
+  ensureModelsReadScope,
   hashKey,
   genPlainKey,
   isUsableRow,

@@ -21,7 +21,7 @@
  */
 const store = require('./store');
 const { classifyError, parseRateLimitReset } = require('../upstream/errors');
-const { summarizeExpiry } = require('./credits');
+const { summarizeExpiry, summarizeFefo } = require('./credits');
 const config = require('../config');
 const { notify } = require('../notify');
 
@@ -358,6 +358,13 @@ function balanceOf(a) {
   return typeof a.balance === 'number' && Number.isFinite(a.balance) ? a.balance : null;
 }
 
+/** 账号快照里的权益包列表（两平台结构一致：{ packs: [...] }）。 */
+function packsOf(a) {
+  return a && a.entitlementSnapshot && Array.isArray(a.entitlementSnapshot.packs)
+    ? a.entitlementSnapshot.packs
+    : [];
+}
+
 function balanceOk(a) {
   const min = Number(config.minBalanceToUse) || 0;
   const b = balanceOf(a);
@@ -418,19 +425,31 @@ function pick(excludeId, opts = {}) {
   const prioOf = (a) => Number(a.priority) || 0;
   // 成本分层：costTier 越小越优先（0=免费额度包，1=未知/默认，2=收费）；对齐 Sliverkiss 成本优先选号
   const costTierOf = (a) => (Number.isFinite(a.costTier) ? Number(a.costTier) : 1);
-  // FEFO：按快照 expireTime 实时计算临期积分（d3/d7），临期作废是硬损失，优先于余额排序
-  const expiringOf = (a) => {
-    const packs = a.entitlementSnapshot && Array.isArray(a.entitlementSnapshot.packs)
-      ? a.entitlementSnapshot.packs
-      : [];
-    const e = summarizeExpiry(packs);
-    return e || { d3: 0, d7: 0 };
-  };
+  // FEFO（先到期先用）：临期积分作废是硬损失，优先于余额。
+  // 账号携带的权益包（entitlementSnapshot.packs）里取「最近一个未用尽包的到期时刻」，
+  // 到期越近的账号越先被调度，从根上避免按余额排序把临期积分拖过期。
+  // packsOf 见模块级定义（snapshot / explain 亦需复用）
+  // 兜底排序信号：d3/d7 金额分档（仅在到期时刻相同时用于打破平局）
+  const expiringOf = (a) => summarizeExpiry(packsOf(a)) || { d3: 0, d7: 0 };
+  // 主排序信号：最近到期时刻；无任何可计量到期包的账号排最后（不抢占临期额度）
+  const fefoOf = (a) => summarizeFefo(packsOf(a)) || { soonestMs: null, soonestDays: null, soonestAmount: 0 };
   if (strategy() === 'least_balance') {
     all.sort((x, y) => {
       const px = prioOf(x);
       const py = prioOf(y);
       if (px !== py) return py - px; // 置顶优先级高的先
+      // 1) FEFO：到期时刻升序（先到期先用）。无到期包的账号沉底，不与临期账号抢。
+      const fx = fefoOf(x);
+      const fy = fefoOf(y);
+      const hx = fx.soonestMs == null;
+      const hy = fy.soonestMs == null;
+      if (hx !== hy) return hx ? 1 : -1;
+      if (!hx && !hy) {
+        if (fx.soonestMs !== fy.soonestMs) return fx.soonestMs - fy.soonestMs;
+        // 同一到期时刻：临期金额多的先消耗
+        if (fx.soonestAmount !== fy.soonestAmount) return fy.soonestAmount - fx.soonestAmount;
+      }
+      // 2) 同到期档位再按 d3/d7 金额分档
       const ex = expiringOf(x);
       const ey = expiringOf(y);
       if (ex.d3 !== ey.d3) return ey.d3 - ex.d3; // 3 天内到期积分多者优先
@@ -722,6 +741,8 @@ function snapshot() {
         id: a.id,
         label: a.label,
         balance: a.balance,
+        // FEFO 排序信号：暴露给管理面，便于核对「先到期先用」是否按预期生效
+        fefo: summarizeFefo(packsOf(a)),
         errorCount: a.errorCount,
         coolUntil: a.coolUntil,
         modelCooldowns: Object.keys(modelCooldowns).length ? modelCooldowns : null,

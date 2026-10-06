@@ -139,6 +139,7 @@ export default function VirtualModelEditModal({
                 className="field w-full"
                 value={editing.strategy}
                 onChange={(e) => onEditingChange({ ...editing, strategy: e.target.value as 'priority' | 'weighted' })}
+                disabled={editing.auto}
               >
                 <option value="priority">优先级（数字小先用）</option>
                 <option value="weighted">权重（按比例分流）</option>
@@ -156,7 +157,8 @@ export default function VirtualModelEditModal({
                 onChange={(e) =>
                   onEditingChange({ ...editing, contextWindow: e.target.value === '' ? null : Number(e.target.value) })
                 }
-                placeholder="留空则不设守门"
+                disabled={editing.auto}
+                placeholder={editing.auto ? '分层窗口（自动）' : '留空则不设守门'}
               />
             </label>
             <label className="block" htmlFor="vm-max-attempts">
@@ -192,9 +194,11 @@ export default function VirtualModelEditModal({
           <div className="flex flex-wrap items-baseline justify-between gap-2">
             <h3 className="text-[12.5px] font-semibold text-ink">候选远端模型</h3>
             <span className="text-[11.5px] text-ink-faint">
-              {editing.strategy === 'priority'
-                ? '按优先级升序排列，数字小的先用 · 改数字后失焦即归位 · maxRpm 留空表示不限'
-                : '按权重随机分流，优先级仅作为平局裁决 · maxRpm 留空表示不限'}
+              {editing.auto
+                ? '自动分层虚拟模型：候选由网关按目录上下文窗口生成，仅可启用/禁用；重同步会按最新目录刷新'
+                : editing.strategy === 'priority'
+                  ? '按优先级升序排列，数字小的先用 · 改数字后失焦即归位 · maxRpm 留空表示不限'
+                  : '按权重随机分流，优先级仅作为平局裁决 · maxRpm 留空表示不限'}
             </span>
           </div>
 
@@ -232,7 +236,7 @@ export default function VirtualModelEditModal({
                       className="field w-full"
                       aria-label={`候选 ${i + 1} 的 Provider`}
                       value={c.provider}
-                      onChange={(e) => patchCandidate(i, { provider: e.target.value, model: '' })}
+                      disabled={editing.auto} onChange={(e) => patchCandidate(i, { provider: e.target.value, model: '' })}
                     >
                       {(data?.providers || []).map((p) => (
                         <option key={p.id} value={p.id} disabled={!p.enabled}>
@@ -250,7 +254,7 @@ export default function VirtualModelEditModal({
                       value={c.model}
                       aria-label={`候选 ${i + 1} 的远端模型`}
                       placeholder={known ? '选择或输入模型…' : '该 Provider 无模型目录，请手输'}
-                      onChange={(e) => patchCandidate(i, { model: e.target.value })}
+                      disabled={editing.auto} onChange={(e) => patchCandidate(i, { model: e.target.value })}
                     />
                     <datalist id={listId}>
                       {opts.map((m) => (
@@ -263,7 +267,7 @@ export default function VirtualModelEditModal({
                       className="field w-full text-right tabular-nums"
                       aria-label={`候选 ${i + 1} 的优先级，数字小先用`}
                       value={c.priority}
-                      onChange={(e) => patchCandidate(i, { priority: Number(e.target.value) })}
+                      disabled={editing.auto} onChange={(e) => patchCandidate(i, { priority: Number(e.target.value) })}
                       // 失焦时才重排：边输入边换位会让输入框失焦，无法连续改数字
                       onBlur={onCommitPriority}
                     />
@@ -272,7 +276,7 @@ export default function VirtualModelEditModal({
                       className="field w-full text-right tabular-nums"
                       aria-label={`候选 ${i + 1} 的权重`}
                       value={c.weight}
-                      onChange={(e) => patchCandidate(i, { weight: Number(e.target.value) })}
+                      disabled={editing.auto} onChange={(e) => patchCandidate(i, { weight: Number(e.target.value) })}
                     />
                     <input
                       type="number"
@@ -280,7 +284,7 @@ export default function VirtualModelEditModal({
                       aria-label={`候选 ${i + 1} 的每分钟请求上限，留空不限`}
                       placeholder="不限"
                       value={c.maxRpm ?? ''}
-                      onChange={(e) =>
+                      disabled={editing.auto} onChange={(e) =>
                         patchCandidate(i, { maxRpm: e.target.value === '' ? null : Number(e.target.value) })
                       }
                     />
@@ -289,6 +293,8 @@ export default function VirtualModelEditModal({
                       className="btn-quiet justify-self-end"
                       aria-label={`移除候选 ${c.id || c.model || i + 1}`}
                       onClick={() => setCandidates(editing.candidates.filter((_, j) => j !== i))}
+                      disabled={editing.auto}
+                      title={editing.auto ? '自动分层候选不可删除（可取消勾选启用状态）' : '移除候选'}
                     >
                       移除
                     </button>
@@ -303,7 +309,7 @@ export default function VirtualModelEditModal({
                         placeholder={`${autoCandidateId(c)}（留空自动生成）`}
                         value={c.id}
                         spellCheck={false}
-                        onChange={(e) => patchCandidate(i, { id: e.target.value })}
+                        disabled={editing.auto} onChange={(e) => patchCandidate(i, { id: e.target.value })}
                       />
                       {known > 0 && (
                         <span className="text-[11px] text-ink-faint">该 Provider 可选 {known} 个模型，输入可过滤</span>
@@ -315,18 +321,23 @@ export default function VirtualModelEditModal({
             )}
 
             <div className="px-3 py-2.5 bg-surf-soft">
-              <button
-                type="button"
-                className="btn btn-ghost btn-sm"
-                onClick={() => {
-                  const p = data?.providers.find((x) => x.enabled)?.id || 'trae';
-                  // 新候选排在最后：优先级取当前最大值 +1
-                  const maxPri = editing.candidates.reduce((m, c) => Math.max(m, Number(c.priority) || 0), 0);
-                  setCandidates([...editing.candidates, { ...emptyCandidate(p), priority: maxPri + 1 }]);
-                }}
-              >
-                添加候选
-              </button>
+              {editing.auto ? (
+                <span className="text-[11px] text-ink-faint">
+                  候选为自动生成（共 {editing.candidates.length} 个），保存后由网关重同步刷新，此处只读。
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    const prov = data?.providers.find((x) => x.enabled)?.id || 'trae';
+                    const maxPri = editing.candidates.reduce((m, c) => Math.max(m, Number(c.priority) || 0), 0);
+                    setCandidates([...editing.candidates, { ...emptyCandidate(prov), priority: maxPri + 1 }]);
+                  }}
+                >
+                  添加候选
+                </button>
+              )}
             </div>
           </div>
         </section>

@@ -65,8 +65,12 @@ const MODEL_DEV_NAME = {
 };
 
 function upstreamModelName(cfgName, model) {
-  const key = String(model || '').toLowerCase();
-  return MODEL_DEV_NAME[key] || `${cfgName}__dev`;
+  const raw = String(model || '');
+  // '@max' 后缀 = 上行长上下文档（__max）；先剥后缀再查映射表
+  const wantMax = /@max$/i.test(raw);
+  const key = raw.toLowerCase().replace(/@max$/i, '');
+  const base = MODEL_DEV_NAME[key] || `${cfgName}__dev`;
+  return wantMax && !/__max$/i.test(base) ? base.replace(/__dev$/i, '__max') : base;
 }
 
 // 代理 agent：多个模块共用，按需从环境变量创建
@@ -142,16 +146,20 @@ function buildBody(messages, model, stream, options, authInfo) {
   // llm_utils_chat 不认识 config_name，只认 model 字段
   const cfgName = options?.config_name || modelOpts?.config_name;
   if (cfgName && funcName !== 'inline_chat') {
-    body.model = cfgName;
+    // '@max' 是网关侧档位标记：上游只认 model_name 的 __max 后缀，config_name/model 须剥掉
+    const wantMax = /@max$/i.test(String(cfgName));
+    const baseCfgName = wantMax ? cfgName.replace(/@max$/i, '') : cfgName;
+    body.model = baseCfgName;
     // 请求体增强：对齐官方客户端指纹（文档见 docs/TRADEWORK-ASSISTANT-COMPARISON.md §2.2）。
     // 保留 model 字段（chat_v3 通道依赖），额外补充 config_name/model_name 及会话/设备字段。
     if (process.env.TRAE_BODY_ENRICH !== 'off') {
-      body.config_name = cfgName;
-      body.model_name = upstreamModelName(cfgName, model);
+      body.config_name = baseCfgName;
+      body.model_name = upstreamModelName(baseCfgName, model);
       body.conversation_id = uuidv4();
       body.session_id = uuidv4();
       body.project_id = uuidv4();
-      body.prompt_max_tokens = 168000;
+      // 输入保护上限按档下发：max 档 936000（上游实测值），dev 档 168000（客户端实测常量）
+      body.prompt_max_tokens = wantMax ? 936000 : 168000;
       body.mode = 'FunctionCall';
       body.ide_version = headersLib.getIdeVersion();
       body.ide_version_code = headersLib.getIdeVersionCode();

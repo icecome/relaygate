@@ -364,6 +364,16 @@ async function runModelProbe() {
       unknownLeft: Math.max(0, targets.length - usable - unavailable),
     };
     console.log(`[scheduler] model probe done ${JSON.stringify(state.lastProbeSummary)}`);
+
+    // 自动分层重算：目录/探活状态变化后，自动虚拟模型（vm/*-context）候选随之刷新。
+    // 失败不影响探活结果，仅告警。
+    try {
+      const autotier = require('../model-router/autotier');
+      const sync = await autotier.syncAutoTiers({});
+      console.log('[scheduler] autotier sync ' + (sync.ok ? 'ok' : 'degraded') + ' ' + JSON.stringify(sync.tiers));
+    } catch (e2) {
+      console.warn('[scheduler] autotier sync failed:', e2.message);
+    }
     return state.lastProbeSummary;
   } catch (e) {
     state.lastError = `model-probe: ${e.message}`;

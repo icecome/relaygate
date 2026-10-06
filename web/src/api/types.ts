@@ -47,6 +47,15 @@ export interface PoolAccount {
   id: string;
   label?: string | null;
   balance?: number | null;
+  /** FEFO 排序信号：最近一个未用尽权益包的到期信息 */
+  fefo?: {
+    soonest?: number | null;
+    soonestDays?: number | null;
+    soonestAmount?: number;
+    expiringAmount?: number;
+    hasExpiry?: boolean;
+    never?: boolean;
+  };
   errorCount?: number;
   coolUntil?: string | null;
   inFlight?: number;

@@ -30,7 +30,7 @@ const apiKeys = require('./routes/api-keys');
 const modelRouterAdmin = require('./routes/model-router');
 const adminSecurity = require('./routes/admin-security');
 const { keyRateLimit } = require('./middleware/rate-limit');
-const { authenticate, authenticateAny } = require('./middleware/auth');
+const { authenticate, authenticateAny, requireKeyScope } = require('./middleware/auth');
 const scheduler = require('./jobs/scheduler');
 const apiKeyStore = require('./credentials/api-keys');
 
@@ -102,9 +102,10 @@ app.use('/v1/admin', adminDebug);
 app.use('/v1/admin/model-router', modelRouterAdmin);
 app.use('/v1/admin', adminSecurity);
 app.use('/v1/api-keys', apiKeys);
-// 模型列表双面可用（转发客户端 + 面板）：与转发面共用同一限流中间件实例
+// 模型列表双面可用（转发客户端 + 面板）：与转发面共用同一限流中间件实例。
+// K-2：访问密钥需 models:read scope；登录密钥/管理域直接放行（关卡内判定）。
 const rateLimitMw = keyRateLimit();
-app.use('/v1/models', authenticateAny, rateLimitMw);
+app.use('/v1/models', authenticateAny, requireKeyScope('models:read'), rateLimitMw);
 app.use(models);
 app.use(authenticate);
 app.use(rateLimitMw);
@@ -159,13 +160,18 @@ function listen(port, host, fallbacks = []) {
 }
 
 // 优先 HOST；Windows 上 0.0.0.0 可能被 vmnat 等独占，回退 ::（IPv6）再 127.0.0.1
-// 启动引导：库内无 Key 时用 API_KEY / WORKBUDDY_API_KEY 建初始转发 Key
+// 启动引导：库内无 Key 时用 API_KEY / WORKBUDDY_API_KEY 建初始转发 Key（可选种子）
 try {
   const bootstrapped = apiKeyStore.bootstrapFromEnv();
   if (bootstrapped.length) {
     for (const k of bootstrapped) {
       console.log(`[api-keys] bootstrap created platform=${k.platform} label=${k.label} id=${k.id}`);
     }
+  }
+  // K-3：存量访问密钥补齐 models:read（幂等），否则升级后模型列表 403
+  const patched = apiKeyStore.ensureModelsReadScope();
+  if (patched.length) {
+    console.log(`[api-keys] scope migration: models:read added to ${patched.length} key(s): ${patched.join(', ')}`);
   }
 } catch (e) {
   console.error('[api-keys] bootstrap failed:', e.message);

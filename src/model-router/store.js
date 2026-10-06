@@ -108,14 +108,27 @@ function normalizeVirtual(id, vm) {
       weight: Number.isFinite(Number(c.weight)) && Number(c.weight) > 0 ? Number(c.weight) : 1,
       maxRpm: Number.isFinite(Number(c.maxRpm)) && Number(c.maxRpm) > 0 ? Number(c.maxRpm) : null,
       enabled: c.enabled !== false,
+      // —— 自动分层字段（autotier 写入；手动 VM 亦可声明）——
+      // 候选侧真实窗口/输出上限：声明后路由按「请求输入 ≤ 该候选窗口」择优，不依赖虚拟级单一声明
+      contextWindow: Number.isFinite(Number(c.contextWindow)) && Number(c.contextWindow) > 0 ? Number(c.contextWindow) : null,
+      promptMaxTokens: Number.isFinite(Number(c.promptMaxTokens)) && Number(c.promptMaxTokens) > 0 ? Number(c.promptMaxTokens) : null,
+      maxOutputTokens: Number.isFinite(Number(c.maxOutputTokens)) && Number(c.maxOutputTokens) > 0 ? Number(c.maxOutputTokens) : null,
+      rate: Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : null,
     });
   }
   if (!candidates.length) return null;
+  // 自动分层虚拟模型：候选由 autotier 按平台目录窗口层生成，面板只读候选、
+  // 仅保留候选级禁用开关；contextWindow 声明值 = 分层窗口（硬约束）。
+  // sort：候选自动排序策略 rate=倍率低优先 | window=窗口大优先 | null=按 priority
+  const auto = vm.auto === true;
+  const sort = vm.sort === 'rate' ? 'rate' : (vm.sort === 'window' ? 'window' : null);
   const failover = vm.failover || {};
   return {
     enabled: vm.enabled !== false,
     description: String(vm.description || ''),
     strategy: vm.strategy === 'weighted' ? 'weighted' : 'priority',
+    auto,
+    sort,
     // 对外声明的上下文窗口（token）。应取候选模型真实窗口的最小值：
     // 客户端按该值规划历史长度，超限由网关显式拦截，而非上游静默截断。
     // 仅接受 number 类型（字符串数字由前端保存前归一，避免 true→1 这类误归一）。
@@ -219,10 +232,28 @@ function reload() {
   return load();
 }
 
+/** 更新单个虚拟模型的候选列表与排序（autotier 专用；不改动其余配置）。 */
+function setVirtualCandidates(id, candidates, extra = {}) {
+  const c = load();
+  const vm = c.virtualModels[id];
+  if (!vm) return { ok: false, message: 'virtual model not found: ' + id };
+  const merged = normalizeVirtual(id, {
+    ...vm,
+    ...extra,
+    candidates,
+  });
+  if (!merged) return { ok: false, message: 'candidates 不能为空' };
+  c.virtualModels[id] = merged;
+  cache = c;
+  save();
+  return { ok: true, data: { id, ...merged } };
+}
+
 module.exports = {
   load,
   save,
   reload,
+  setVirtualCandidates,
   listProviders,
   getProvider,
   upsertProvider,

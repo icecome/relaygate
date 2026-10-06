@@ -9,6 +9,7 @@ import {
   unfreezeVirtual,
   upsertProvider,
   getAvailableModels,
+  resyncAutoTiers,
   type RouterOverview,
   type VirtualModel,
   type RouterProvider,
@@ -38,6 +39,7 @@ import type { ModelOption } from '../api/modelRouter';
 export default function ModelRouterPage() {
   const { key } = useAuth();
   const toast = useToast();
+  const [syncing, setSyncing] = useState(false);
   const [data, setData] = useState<RouterOverview | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [editing, setEditing] = useState<EditVirtual | null>(null);
@@ -90,6 +92,41 @@ export default function ModelRouterPage() {
    * 行换了位次，人的注意力不该被甩掉。行以 uid 作 key，重排时 React 移动的是同一个
    * DOM 节点，因此可直接复用该元素，无需按位次重新查找。
    */
+  /** 触发网关重新同步自动分层虚拟模型（按当前目录窗口/倍率重写候选）。 */
+  async function resyncAuto() {
+    if (!key) return;
+    setSyncing(true);
+    try {
+      const r = await resyncAutoTiers(key);
+      if (r.ok) {
+        const parts = (r.tiers || []).map((tier) => tier.id + ' ' + tier.candidates + '个').join(' · ');
+        toast('已重同步自动分层（' + parts + '）', 'ok');
+      } else {
+        toast('重同步部分失败：' + (r.errors || []).join('；'), 'warn');
+      }
+      load();
+    } catch (e) {
+      toast('重同步失败：' + (e as Error).message, 'err');
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  /** 自动分层虚拟模型：仅切换候选启用状态（不改写候选列表，重同步不会恢复被禁用的候选）。 */
+  async function toggleAutoCandidate(vmId: string, candId: string, enabled: boolean) {
+    if (!key) return;
+    try {
+      const vm = data?.virtualModels.find((v) => v.id === vmId);
+      if (!vm) return;
+      const candidates = vm.candidates.map((c) => (c.id === candId ? { ...c, enabled } : c));
+      await upsertVirtual(vmId, { auto: true, sort: vm.sort ?? null, candidates } as Partial<VirtualModel>, key);
+      toast(candId + (enabled ? ' 已启用' : ' 已禁用'), 'ok');
+      load();
+    } catch (e) {
+      toast('更新候选失败：' + (e as Error).message, 'err');
+    }
+  }
+
   function commitPriority(e: FocusEvent<HTMLInputElement>) {
     if (!editing) return;
     const el = e.currentTarget;
@@ -264,7 +301,15 @@ export default function ModelRouterPage() {
                     </span>
                   )}
                   {vm.description && <span className="text-xs text-ink-faint">{vm.description}</span>}
+                  {vm.auto && (
+                    <span className="pill pill-muted" title="自动分层：候选由网关按目录上下文窗口生成，可重同步">自动分层</span>
+                  )}
                   <div className="ml-auto flex gap-2">
+                    {vm.auto && (
+                      <button type="button" className="btn-quiet text-xs" onClick={resyncAuto} disabled={syncing}>
+                        {syncing ? '同步中…' : '重同步分层'}
+                      </button>
+                    )}
                     <button type="button" className="btn-quiet text-xs" onClick={() => unfreeze(vm.id)}>解除冷却</button>
                     <button type="button" className="btn-quiet text-xs" onClick={() => openEdit(vm)}>编辑</button>
                     <button type="button" className="btn-quiet text-xs text-red-600" onClick={() => removeVirtual(vm.id)}>删除</button>
@@ -285,6 +330,9 @@ export default function ModelRouterPage() {
                       <th className="th cell-num" scope="col" title="策略=优先级时生效：数字小的先用">优先级</th>
                       <th className="th cell-num" scope="col" title="策略=权重时生效：按数值分配流量占比">权重</th>
                       <th className="th cell-num" scope="col" title="该候选每分钟最多请求数；留空不限。本地闸门，降低撞上游限流概率">maxRpm</th>
+                      <th className="th cell-num" scope="col" title="候选真实上下文窗口；声明后网关按此做单候选输入守门">窗口</th>
+                      <th className="th cell-num" scope="col" title="候选最大输出 token；请求 max_tokens 超过时网关自动钳制">输出</th>
+                      <th className="th cell-num" scope="col" title="积分倍率（自动分层排序依据；越低越优先）">倍率</th>
                       <th className="th" scope="col">状态</th>
                       <th className="th cell-num" scope="col">成功率</th>
                     </tr>
@@ -306,10 +354,30 @@ export default function ModelRouterPage() {
                           <td className="td cell-num">{c.priority}</td>
                           <td className="td cell-num">{c.weight}</td>
                           <td className="td cell-num">{c.maxRpm ?? '—'}</td>
+                          <td className="td cell-num tabular-nums text-ink-soft">
+                            {c.contextWindow ? Math.round(c.contextWindow / 1000) + 'K' : '—'}
+                          </td>
+                          <td className="td cell-num tabular-nums text-ink-soft">
+                            {c.maxOutputTokens ? c.maxOutputTokens.toLocaleString() : '—'}
+                          </td>
+                          <td className="td cell-num tabular-nums text-ink-soft">
+                            {c.rate != null ? String(c.rate) : '—'}
+                          </td>
                           <td className="td">
-                            <span className={`pill ${c.usable ? 'pill-ok' : 'pill-muted'}`}>
-                              {c.usable ? '可用' : (c.reasons || []).join(',') || '不可用'}
-                            </span>
+                            {vm.auto ? (
+                              <label className="inline-flex items-center gap-1 text-[11px] text-ink-faint" title="取消勾选后网关不再路由到该候选；重同步不会自动恢复">
+                                <input
+                                  type="checkbox"
+                                  checked={c.enabled !== false}
+                                  onChange={(e) => toggleAutoCandidate(vm.id, c.id, e.target.checked)}
+                                />
+                                {c.enabled !== false ? '启用' : '已禁用'}
+                              </label>
+                            ) : (
+                              <span className={c.usable ? 'pill pill-ok' : 'pill pill-muted'}>
+                                {c.usable ? '可用' : (c.reasons || []).join(',') || '不可用'}
+                              </span>
+                            )}
                           </td>
                           <td className="td cell-num">
                             {h ? `${h.successRate ?? '—'}%${h.cooling ? ' · 冷却' : ''}` : '—'}

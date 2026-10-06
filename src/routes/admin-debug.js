@@ -171,7 +171,8 @@ router.get('/config', admin, (req, res) => {
     retryBaseDelay: config.retryBaseDelay,
     requestTimeoutMs: config.requestTimeoutMs,
     statusPublic: config.statusPublic,
-    adminSeparated: config.adminKey !== config.apiKey,
+    // K-1 后语义 = 「管理域已配置」（DB 登录密钥或 env ADMIN_KEY）
+    adminSeparated: require('../credentials/api-keys').hasLoginKey() || !!config.adminKey,
   });
 });
 

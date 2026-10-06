@@ -60,3 +60,5 @@ web/tsconfig.tsbuildinfo
 web/dev.*.log
 web/_dev_v4.out
 web/.playwright-cli/
+design/
+

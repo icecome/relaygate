@@ -21,6 +21,8 @@ const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
 const { providerAllowedForKey } = require('../middleware/model-access');
 const { estimatePromptTokens } = require('../lib/token-estimate');
+const autotier = require('./autotier');
+const { runWithContinuation } = require('../transform/continue');
 
 const VIRTUAL_PREFIX = 'vm/';
 
@@ -48,6 +50,24 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
     if (!health.allowRpm(virtualId, c.id, c.maxRpm)) return false;
     return true;
   });
+
+  // 自动分层 VM：sort=rate 按倍率升序（未知倍率排后），sort=window 按窗口大优先；
+  // 平局回退 priority。手动 VM（sort=null）维持 priority 排序不变。
+  if (vm.auto && vm.sort) {
+    const rateOf = (c) => (Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : Infinity);
+    const winOf = (c) => (Number.isFinite(Number(c.contextWindow)) ? Number(c.contextWindow) : 0);
+    list.sort((a, b) => {
+      if (vm.sort === 'window') {
+        const dw = winOf(b) - winOf(a);
+        if (dw) return dw;
+      } else {
+        const dr = rateOf(a) - rateOf(b);
+        if (dr) return dr;
+      }
+      return (a.priority - b.priority) || String(a.id).localeCompare(String(b.id));
+    });
+    return list;
+  }
 
   if (vm.strategy === 'weighted') {
     // 加权随机：先按 weight 抽序，再按 priority 稳定排序作为平局裁决
@@ -142,6 +162,10 @@ async function handleChat(req, res, ctx) {
   // 日志不在此处记：handleChat 唯一调用点 openai.js 的 catch 统一落 traffic 日志。
   const tooLong = checkContextLimit(vm, ctx.messages);
   if (tooLong) throw tooLong;
+  // 候选级窗口守门（autotier）：候选声明了 contextWindow 且输入超该候选 75% → 跳过该候选，
+  // 让请求落到窗口更大的候选上；全部候选装不下时在循环内显式 400。
+  const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, ctx.messages);
+  const hasCandidateWindows = (vm.candidates || []).some((c) => Number(c.contextWindow) > 0);
 
   const startedAt = ctx.startedAt || Date.now();
   const keyPlatform = ctx.keyPlatform || 'all';
@@ -151,14 +175,19 @@ async function handleChat(req, res, ctx) {
   let lastErr = null;
 
   for (let i = 0; i < maxAttempts; i++) {
-    const candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
+    let candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
+    // 候选级窗口守门：只把「装得下当前输入」的候选视为可用（有候选声明窗口时才启用）
+    if (hasCandidateWindows) candidates = candidates.filter((c) => fittingAll.some((f) => f.id === c.id));
     if (!candidates.length) {
       if (!lastErr) {
+        const windowBlocked = hasCandidateWindows && estTokens > 0;
         const e = new Error(
-          `virtual model "${virtualId}": no available candidate (platform=${keyPlatform}; disabled/cooling/rate-limited or not in platform scope)`,
+          windowBlocked
+            ? `virtual model "${virtualId}": no candidate can fit estimated input ${estTokens} tokens (all candidates below 75% of their context window, or disabled/cooling)`
+            : `virtual model "${virtualId}": no available candidate (platform=${keyPlatform}; disabled/cooling/rate-limited or not in platform scope)`,
         );
-        e.status = 429;
-        e.code = 'VIRTUAL_NO_CANDIDATE';
+        e.status = windowBlocked ? 400 : 429;
+        e.code = windowBlocked ? 'context_length_exceeded' : 'VIRTUAL_NO_CANDIDATE';
         lastErr = e;
       }
       break;
@@ -175,7 +204,7 @@ async function handleChat(req, res, ctx) {
         messages: ctx.messages,
         temperature: ctx.temperature,
         top_p: ctx.top_p,
-        max_tokens: ctx.max_tokens,
+        max_tokens: autotier.clampMaxTokens(cand, ctx.max_tokens),
         stop: ctx.stop,
         tools: ctx.tools || undefined,
         tool_choice: ctx.tool_choice || undefined,
@@ -266,6 +295,7 @@ async function handleChat(req, res, ctx) {
 module.exports = {
   hasVirtualModel,
   isVirtualId,
+  autotier,
   orderCandidates,
   explainCandidates,
   handleChat,

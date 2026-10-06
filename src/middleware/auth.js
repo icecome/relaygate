@@ -19,9 +19,10 @@ function extractToken(req) {
 }
 
 function isEnvLogin(token) {
-  if (process.env.ADMIN_KEY && token === process.env.ADMIN_KEY) return true;
-  // 过渡兼容：尚无 DB login key 时，API_KEY 可登录管理面
-  if (!apiKeys.hasLoginKey() && process.env.API_KEY && token === process.env.API_KEY) return true;
+  // K-1 权限分离：管理面只认 ADMIN_KEY / DB 登录密钥。
+  // API_KEY 历史上可作管理面过渡登录，已移除——转发种子与管理凭据必须分值。
+  const adminKey = process.env.ADMIN_KEY;
+  if (adminKey && token === adminKey) return true;
   return false;
 }
 
@@ -118,11 +119,34 @@ function authenticateAny(req, res, next) {
   return res.status(401).json({ error: { message: 'Invalid API key', type: 'auth_error' } });
 }
 
+/**
+ * K-2 scope 关卡：要求访问密钥具备指定 scope（如 models:read）。
+ * - 登录密钥 / env ADMIN_KEY（管理域）天然放行：scope 只约束转发域；
+ * - 访问密钥按 req.authKey.scopes 判定，缺失返回 403（401 会误导客户端重试凭据）。
+ */
+function requireKeyScope(scope) {
+  return (req, res, next) => {
+    if (req.keyKind === 'login') return next();
+    const rec = req.authKey;
+    if (!rec) return next(); // env 管理密钥等无记录路径
+    const scopes = Array.isArray(rec.scopes) ? rec.scopes : [];
+    if (scopes.includes(scope)) return next();
+    return res.status(403).json({
+      error: {
+        message: `access denied: scope_missing:${scope}. 请让管理员为该访问密钥补充 scope。`,
+        type: 'insufficient_scope',
+        code: 'SCOPE_MISSING',
+      },
+    });
+  };
+}
+
 module.exports = {
   authenticate,
   authenticateAdmin,
   authenticateAdminOrPublic,
   authenticateAny,
   checkAdminToken,
+  requireKeyScope,
   extractToken,
 };

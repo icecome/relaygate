@@ -942,7 +942,8 @@ t('密钥生命周期：默认 scope/过期、撤销、轮换宽限', () => {
     rpmLimit: 30,
     expiresAt: new Date(Date.now() + 3600_000).toISOString(),
   });
-  assert.deepStrictEqual(created.scopes, ['models:invoke']);
+  // K-3 后平台密钥默认 scope 含 models:read（/v1/models 双面端点基础可用性）
+  assert.deepStrictEqual(created.scopes, ['models:read', 'models:invoke']);
   assert.ok(created.resources.includes('model:virtual:vm/wb-chat'));
   assert.strictEqual(created.rpmLimit, 30);
   assert.strictEqual(created.status, 'active');
@@ -1668,7 +1669,70 @@ t('checkContextLimit：未声明/未超限放行，超限 400 且标记 context_
     null,
   );
 });
+
+console.log('model-router autotier（自动分层）');
+t('autotier：按窗口分层、倍率排序、候选级守门与输出钳制', () => {
+  const autotier = require('../model-router/autotier');
+  const models = [
+    { provider: 'trae', model: 'a', window: 116000, promptMax: 100000, maxOut: 16000, rate: 0.78, maxTier: { modelName: 'a__max', promptMaxTokens: 936000, maxOutputTokens: 64000, maxTurn: 70 } },
+    { provider: 'trae', model: 'a@max', window: 1000000, promptMax: 936000, maxOut: 64000, rate: 0.78, maxTier: null },
+    { provider: 'workbuddy', model: 'wb/b', window: 1000000, promptMax: null, maxOut: 128000, rate: 0.11, maxTier: null },
+    { provider: 'workbuddy', model: 'wb/c', window: 192000, promptMax: null, maxOut: 64000, rate: 0, maxTier: null },
+  ];
+  const grouped = autotier.assignTiers(models);
+  // 分层区间：[116K, 200K) → 基础层；[200K, 1M) → 大窗口层；[1M, ∞) → 超长层。
+  // 116K 的 a 与 192K 的 wb/c 都落基础层。
+  assert.strictEqual(grouped.get('vm/unified-chat').length, 2, '116K/192K 模型进基础层');
+  assert.strictEqual(grouped.get('vm/large-context').length, 0, '无 200K-1M 区间模型');
+  assert.strictEqual(grouped.get('vm/long-context').length, 2, '1M 模型进超长层');
+  const sorted = autotier.sortCandidates(grouped.get('vm/long-context'), 'rate');
+  assert.strictEqual(sorted[0].model, 'wb/b', '倍率低者优先');
 
+  const clamped = autotier.clampMaxTokens({ maxOutputTokens: 16000 }, 32000);
+  assert.strictEqual(clamped, 16000, 'max_tokens 应被候选输出上限钳制');
+  assert.strictEqual(autotier.clampMaxTokens({ maxOutputTokens: null }, 32000), 32000, '无上限声明时不钳制');
+  assert.strictEqual(autotier.clampMaxTokens({}, undefined), undefined, '未传 max_tokens 不钳制');
+
+  const vm = {
+    candidates: [
+      { id: 'small', enabled: true, contextWindow: 116000 },
+      { id: 'big', enabled: true, contextWindow: 1000000 },
+    ],
+  };
+  const msgs = [{ role: 'user', content: 'x'.repeat(4 * 700000) }];
+  const { estimated, list } = autotier.filterCandidatesByInput(vm, msgs);
+  assert.ok(estimated > 116000 * 0.75, '估算应超过小候选的 75% 窗口');
+  assert.deepStrictEqual(list.map((c) => c.id), ['big'], '只保留装得下的候选');
+  const vm2 = { candidates: [{ id: 'x', enabled: true, contextWindow: null }] };
+  assert.strictEqual(autotier.filterCandidatesByInput(vm2, msgs).list.length, 1, '未声明窗口的候选全放行');
+});
+t('orderCandidates：auto+sort=rate 按倍率升序，禁用候选被过滤', () => {
+  const store = require('../model-router/store');
+  const mr = require('../model-router');
+  store.upsertVirtual('vm/auto-rate', {
+    auto: true,
+    sort: 'rate',
+    candidates: [
+      { id: 'exp', provider: 'trae', model: 'm1', priority: 1, rate: 1.5, enabled: true },
+      { id: 'cheap', provider: 'trae', model: 'm2', priority: 2, rate: 0.1, enabled: true },
+      { id: 'off', provider: 'trae', model: 'm3', priority: 3, rate: 0, enabled: false },
+    ],
+  });
+  const ordered = mr.orderCandidates('vm/auto-rate', store.getVirtual('vm/auto-rate'));
+  assert.deepStrictEqual(ordered.map((c) => c.id), ['cheap', 'exp']);
+  store.removeVirtual('vm/auto-rate');
+});
+t('store：候选扩展字段持久化（contextWindow/maxOutputTokens/rate）', () => {
+  const store = require('../model-router/store');
+  store.upsertVirtual('vm/cand-fields', {
+    candidates: [{ id: 'k', provider: 'workbuddy', model: 'wb/m', priority: 1, contextWindow: 1000000, maxOutputTokens: 128000, rate: 0.11 }],
+  });
+  const c = store.getVirtual('vm/cand-fields').candidates[0];
+  assert.strictEqual(c.contextWindow, 1000000);
+  assert.strictEqual(c.maxOutputTokens, 128000);
+  assert.strictEqual(c.rate, 0.11);
+  store.removeVirtual('vm/cand-fields');
+});
 console.log('log.client-logs');
 t('extractUsage 解析驼峰 usage 与 credit', () => {
   const { extractUsage } = require('../log/client-logs');
@@ -2130,6 +2194,11 @@ t('checkAdminToken：env ADMIN_KEY 通过', () => {
   assert.strictEqual(checkAdminToken(process.env.ADMIN_KEY).ok, true);
 });
 
+t('checkAdminToken：API_KEY 不再能通过管理面（K-1 权限分离）', () => {
+  const { checkAdminToken } = require('../middleware/auth');
+  assert.strictEqual(checkAdminToken(process.env.API_KEY).ok, false);
+});
+
 console.log('workbuddy/chat modelCatalog');
 t('parseRate：兼容旧格式 x2.5 与新格式 x0.00 credits', async () => {
   // parseRate 未导出，经 modelCatalog 的解析路径验证：mock fetch 返回两种格式
@@ -2339,6 +2408,81 @@ t('retentionDays：默认 30，0 表示关闭，非法回落默认', () => {
   }
 });
 
+t('summarizeFefo 取最近一个未用尽包的到期时刻', () => {
+  const { summarizeFefo } = require('../credentials/credits');
+  const now = new Date('2026-05-10T12:00:00');
+  const nowMs = now.getTime();
+  const DAY = 86400000;
+  const packs = [
+    { remaining: 100, expireTime: (nowMs + 10 * DAY) / 1000 },
+    { remaining: 20, expireTime: (nowMs + 2 * DAY) / 1000 },  // 最近
+    { remaining: 30, expireTime: (nowMs + 5 * DAY) / 1000 },
+  ];
+  const r = summarizeFefo(packs, nowMs);
+  assert.strictEqual(r.hasExpiry, true);
+  assert.strictEqual(r.soonestAmount, 20);
+  assert.strictEqual(r.soonestDays, 2);
+  assert.strictEqual(r.expiringAmount, 150);
+});
+
+t('summarizeFefo 跳过已用尽 / 已过期 / 无到期时间的包', () => {
+  const { summarizeFefo } = require('../credentials/credits');
+  const now = new Date('2026-05-10T12:00:00');
+  const nowMs = now.getTime();
+  const DAY = 86400000;
+  const packs = [
+    { remaining: 0, expireTime: (nowMs + 1 * DAY) / 1000 },      // 用尽
+    { remaining: 50, expireTime: (nowMs - 1 * DAY) / 1000 },     // 已过期
+    { remaining: 60, expireTime: 0 },                            // 无到期
+    { remaining: 70, expireTime: (nowMs + 4 * DAY) / 1000 },     // 唯一有效
+  ];
+  const r = summarizeFefo(packs, nowMs);
+  assert.strictEqual(r.soonestAmount, 70);
+  assert.strictEqual(r.soonestDays, 4);
+});
+
+t('summarizeFefo 仅 unlimited 包时视为不会过期', () => {
+  const { summarizeFefo } = require('../credentials/credits');
+  const nowMs = Date.parse('2026-05-10T12:00:00');
+  const r = summarizeFefo([{ remaining: null, unlimited: true, expireTime: (nowMs + 999 * 86400000) / 1000 }], nowMs);
+  assert.strictEqual(r.hasExpiry, false);
+  assert.strictEqual(r.never, true);
+  assert.strictEqual(r.soonestMs, null);
+});
+
+t('summarizeFefo 空输入返回零值', () => {
+  const { summarizeFefo } = require('../credentials/credits');
+  const r = summarizeFefo([], Date.now());
+  assert.strictEqual(r.hasExpiry, false);
+  assert.strictEqual(r.expiringAmount, 0);
+});
+
+t('least_balance 按 FEFO 到期时刻升序（先到期先用）', () => {
+  const pool = require('../credentials/pool');
+  const store = require('../credentials/store');
+  const DAY = 86400000;
+  const now = Date.now();
+  const mk = (id, label, balance, expDays, amt) => ({
+    id, label, balance,
+    entitlementSnapshot: {
+      packs: [{ remaining: amt, unlimited: false, expireTime: (now + expDays * DAY) / 1000 }],
+    },
+  });
+  // 早到期的余额低，晚到期的余额高：FEFO 必须让早到期的先被选中
+  const early = mk('a_early', 'early', 100, 2, 10);
+  const late = mk('a_late', 'late', 9999, 20, 10);
+  const soonestOf = (a) => {
+    const packs = a.entitlementSnapshot.packs;
+    let best = null;
+    for (const p of packs) {
+      if (p.remaining == null || !(p.remaining > 0)) continue;
+      const ms = p.expireTime * 1000;
+      if (best === null || ms < best) best = ms;
+    }
+    return best;
+  };
+  const list = [late, early];
+  const ordered = [...list].sort((x, y) => soonestOf(x) - soonestOf(y));
+  assert.strictEqual(ordered[0].id, 'a_early', '到期更近的账号应排在前面');
+});
 main();
-
-
