@@ -68,14 +68,25 @@ export default function TokenStatsPage() {
     return sum;
   }, [daily.data]);
 
-  // 积分主口径：WorkBuddy 官方账单的逐请求精确 credit（仅 WB 账号可用）。
-  // Trae 侧无对等接口，只能以本地费率估算，因此在卡片上明确分开两种口径。
+  // 积分主口径：上游官方账单。Trae 逐会话、WorkBuddy 逐请求，都是精确值。
   const officialTotals = useMemo(() => {
     const list = official.data?.accounts ?? [];
     const ok = list.filter((a) => a.available);
+    const sum = (pred: (a: (typeof ok)[number]) => boolean) => {
+      const hit = ok.filter(pred);
+      return {
+        credit: hit.reduce((s, a) => s + a.credit, 0),
+        requests: hit.reduce((s, a) => s + a.requests, 0),
+        tokens: hit.reduce((s, a) => s + (a.tokens ?? 0), 0),
+        accounts: hit.length,
+      };
+    };
+    const trae = sum((a) => a.platform === 'trae');
+    const wb = sum((a) => a.platform === 'workbuddy');
     return {
-      credit: ok.reduce((s, a) => s + a.credit, 0),
-      requests: ok.reduce((s, a) => s + a.requests, 0),
+      trae,
+      wb,
+      credit: trae.credit + wb.credit,
       accounts: ok.length,
       total: list.length,
     };
@@ -87,11 +98,12 @@ export default function TokenStatsPage() {
     {
       key: '官方账单积分',
       value: formatNumber(officialTotals.credit),
-      delta: officialTotals.accounts > 0
-        ? `WorkBuddy ${officialTotals.accounts}/${officialTotals.total} 账号精确值`
-        : '无可用 WB 账号',
+      delta:
+        officialTotals.accounts > 0
+          ? `Trae ${officialTotals.trae.accounts} 账号 · WB ${officialTotals.wb.accounts} 账号`
+          : '无可用账号',
     },
-    { key: '本地估算成本', value: formatCost(totals.cost), delta: '费率表推算，含未计费平台' },
+    { key: '本地估算成本', value: formatCost(totals.cost), delta: '费率表推算，仅作对照' },
   ];
 
   async function clearCache() {
@@ -274,8 +286,9 @@ export default function TokenStatsPage() {
 
         <Panel
           title="官方账单"
-          description="逐请求 credit 精确值（积分主口径），仅 WorkBuddy 账号可用；Trae 侧无对等接口"
+          description="上游精确积分（主口径）：Trae 逐会话、WorkBuddy 逐请求"
           flush
+          footer="粒度不同：Trae 一行 = 一次完整会话的聚合（含 token 明细）；WorkBuddy 一行 = 单次模型调用。上游按会话落库有滞后，近一两天数据可能尚未入账。"
         >
           {official.loading && !official.data ? (
             <LoadingBlock />
@@ -288,22 +301,35 @@ export default function TokenStatsPage() {
               <thead>
                 <tr>
                   <th className="th">账号</th>
+                  <th className="th">平台</th>
                   <th className="th">可用</th>
-                  <th className="th cell-num">请求</th>
+                  <th className="th cell-num">明细行</th>
+                  <th className="th cell-num">Token</th>
                   <th className="th cell-num">Credit</th>
                   <th className="th">最近错误</th>
                 </tr>
               </thead>
               <tbody>
                 {(official.data?.accounts ?? []).map((a) => (
-                  <tr key={a.accountId} className="row-hover">
+                  <tr key={`${a.platform ?? ''}-${a.accountId}`} className="row-hover">
                     <td className="td">{a.label || a.accountId}</td>
+                    <td className="td">
+                      <Chip tone={a.platform === 'trae' ? 'brand' : 'neutral'}>
+                        {a.platform === 'trae' ? 'Trae' : 'WorkBuddy'}
+                      </Chip>
+                      <div className="text-[11px] mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        {a.granularity === 'session' ? '逐会话' : '逐请求'}
+                      </div>
+                    </td>
                     <td className="td">
                       <Chip tone={a.available ? 'ok' : 'danger'} dot={a.available ? 'dot-ok' : 'dot-error'}>
                         {a.available ? '可用' : '不可用'}
                       </Chip>
                     </td>
                     <td className="td cell-num">{a.available ? formatNumber(a.requests) : '—'}</td>
+                    <td className="td cell-num">
+                      {a.available && a.tokens != null ? formatNumber(a.tokens) : '—'}
+                    </td>
                     <td className="td cell-num">{a.available ? formatNumber(a.credit) : '—'}</td>
                     <td className="td font-mono text-[11px] break-all">{a.error || '—'}</td>
                   </tr>
@@ -312,6 +338,37 @@ export default function TokenStatsPage() {
             </table>
           )}
         </Panel>
+
+        {(official.data?.accounts ?? []).some((a) => (a.byModel ?? []).length > 0) && (
+          <Panel
+            title="账单模型拆分"
+            description="官方账单里各模型消耗的积分（Trae 逐会话按模型拆分；WB 按请求聚合）"
+            flush
+          >
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr>
+                  <th className="th">账号</th>
+                  <th className="th">模型</th>
+                  <th className="th cell-num">明细行</th>
+                  <th className="th cell-num">Credit</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(official.data?.accounts ?? []).flatMap((a) =>
+                  (a.byModel ?? []).map((m) => (
+                    <tr key={`${a.accountId}-${m.model}`} className="row-hover">
+                      <td className="td">{a.label || a.accountId}</td>
+                      <td className="td font-mono text-[12px]">{m.model}</td>
+                      <td className="td cell-num">{formatNumber(m.requests)}</td>
+                      <td className="td cell-num">{formatNumber(m.credits)}</td>
+                    </tr>
+                  )),
+                )}
+              </tbody>
+            </table>
+          </Panel>
+        )}
 
         <Panel title="积分消耗" flush>
           <table className="w-full border-collapse text-[13px]">
@@ -333,8 +390,9 @@ export default function TokenStatsPage() {
         </Panel>
 
         <Note>
-          积分以官方账单为主口径（WorkBuddy 精确值）；本地估算成本由费率表推算，
-          Trae 侧无逐请求账单接口，只能以估算值参考。两者口径不同，不建议直接相加。
+          积分主口径为上游官方账单：Trae 逐会话（query_user_usage_group_by_session）、
+          WorkBuddy 逐请求（get-user-request-usage），均为上游精确值。
+          本地估算成本由费率表推算，仅作 Trae 老数据与无账单场景的对照，不建议与官方值相加。
         </Note>
       </Stack>
     </PageShell>

@@ -18,7 +18,7 @@ const store = require('./store');
 const health = require('./health');
 const dispatch = require('./dispatch');
 const { classifyError } = require('../upstream/errors');
-const { logRequest } = require('../log/traffic');
+const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
 const { estimateTokensOfText } = require('../lib/token-precise');
 const config = require('../config');
@@ -67,20 +67,6 @@ function candRate(c) {
 /** 候选上下文窗口：未声明按 0 计（sort=window 时排后）。 */
 function candWindow(c) {
   return (Number.isFinite(Number(c.contextWindow)) ? Number(c.contextWindow) : 0);
-}
-
-/**
- * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
- * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
- * 兼容 OpenAI 蛇形与 Trae 驼峰两种键名。
- */
-function usageToLogFields(u) {
-  if (!u || typeof u !== 'object') return {};
-  const pt = Number(u.prompt_tokens ?? u.inputTokens) || 0;
-  const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
-  const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
-  if (!pt && !ct && !tt) return {};
-  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
 }
 
 /**

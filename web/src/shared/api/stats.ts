@@ -102,6 +102,14 @@ export interface OfficialUsageAccount {
   error?: string | null;
   credit: number;
   requests: number;
+  /** 会话/请求级 token 合计（Trae 有，WorkBuddy 账单接口不返回）。 */
+  tokens?: number;
+  /** 平台：trae | workbuddy */
+  platform?: 'trae' | 'workbuddy';
+  /** 明细粒度：request=逐请求（WB）；session=逐会话聚合（Trae） */
+  granularity?: 'request' | 'session';
+  byDay?: { date: string; requests: number; credit: number; tokens?: number }[];
+  byModel?: { model: string; requests: number; credits: number }[];
 }
 
 export const getOfficialUsage = (days: number, key: string, signal?: AbortSignal) =>

@@ -46,7 +46,10 @@ const VARIANTS = {
       checkin: true,
       balance: true,
       growth: false,
-      billing: false,
+      // 会话级用量明细（query_user_usage_group_by_session）。注意粒度：
+      // 是「逐会话聚合」而非 WorkBuddy 那种逐请求，一行 = 一次完整会话
+      // 的积分/token 汇总。2026-10 实测 CN 域可用（v1 路径）。
+      billing: true,
       oauthLogin: true,
       deviceFingerprint: true,
     },
@@ -80,6 +83,9 @@ const VARIANTS = {
       checkinStatus: '/trae/api/v2/ug/checkin_credits/status',
       checkinClaim: '/trae/api/v2/ug/checkin_credits/claim',
       entitlementUsage: '/trae/api/v2/pay/ide_user_ent_usage',
+      // 会话级用量明细（v1，非 v2；v2 实测 404）。参数 usage_type:[7] 为
+      // Cloud-IDE 会话积分口径，page_size 上限 20。
+      sessionUsage: '/trae/api/v1/pay/query_user_usage_group_by_session',
     },
     errors: {
       alreadyCheckedIn: [9095],

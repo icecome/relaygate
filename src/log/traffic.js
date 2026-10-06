@@ -96,4 +96,18 @@ function logRequest(entry) {
   }
 }
 
-module.exports = { logRequest, sanitize };
+/**
+ * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
+ * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
+ * 兼容 OpenAI 蛇形与 Trae 驼峰两种键名。
+ */
+function usageToLogFields(u) {
+  if (!u || typeof u !== 'object') return {};
+  const pt = Number(u.prompt_tokens ?? u.inputTokens) || 0;
+  const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
+  const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
+  if (!pt && !ct && !tt) return {};
+  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
+}
+
+module.exports = { logRequest, sanitize, usageToLogFields };

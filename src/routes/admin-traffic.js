@@ -12,6 +12,9 @@ const { Router } = require('express');
 const { authenticateAdmin } = require('../middleware/auth');
 const { readTrafficLines, dailyStats, modelStats, accountStats } = require('../log/stats');
 const { loadRateMap } = require('../models/rates');
+const bu = require('../workbuddy/billing-usage');
+const tu = require('../upstream/trae-usage');
+const credStore = require('../credentials/store');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
@@ -232,22 +235,39 @@ router.post('/stats/client/cache/clear', admin, (req, res) => {
   res.json({ ok: cl.clearCache(), dir: cl.CACHE_DIR() });
 });
 
-/** 官方账单接口（精确积分，仅 WorkBuddy 账号）。 */
+/** 官方账单（精确积分）：WorkBuddy 逐请求 + Trae 逐会话，双平台汇总。 */
 router.get('/stats/official-usage', admin, async (req, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), 90);
     const accountId = req.query.account ? String(req.query.account) : null;
-    const bu = require('../workbuddy/billing-usage');
-    const result = accountId ? { object: 'official_usage', days, accounts: [await bu.scanAccount(accountId, days)] } : await bu.scanAll(days);
-    res.json(result);
+
+    let wb;
+    let trae;
+    if (accountId) {
+      const acct = credStore.get(accountId);
+      if (!acct) return res.status(404).json({ error: { message: `account not found: ${accountId}`, type: 'invalid_request_error' } });
+      const one = acct.edition === 'workbuddy'
+        ? await bu.scanAccount(accountId, days)
+        : await tu.scanAccount(accountId, days);
+      wb = acct.edition === 'workbuddy' ? { accounts: [one] } : { accounts: [] };
+      trae = acct.edition === 'workbuddy' ? { accounts: [] } : { accounts: [one] };
+    } else {
+      [wb, trae] = await Promise.all([bu.scanAll(days), tu.scanAll(days)]);
+    }
+    const accounts = [
+      ...wb.accounts.map((a) => ({ ...a, platform: 'workbuddy', granularity: 'request' })),
+      ...trae.accounts.map((a) => ({ ...a, platform: 'trae', granularity: 'session' })),
+    ];
+    res.json({ object: 'official_usage', days, accounts });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }
 });
 
 router.post('/stats/official-usage/cache/clear', admin, (req, res) => {
-  const bu = require('../workbuddy/billing-usage');
-  res.json({ ok: bu.clearCache(), dir: bu.cacheDir() });
+  const okWb = bu.clearCache();
+  const okTrae = tu.clearCache();
+  res.json({ ok: okWb && okTrae, dir: bu.cacheDir(), traeDir: tu.cacheDir() });
 });
 
 module.exports = router;

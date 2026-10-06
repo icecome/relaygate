@@ -15,7 +15,7 @@ const { createStreamHandler } = require('../transform/sse');
 const { isTruncatedFinish } = require('../transform/finish');
 const { runWithContinuation } = require('../transform/continue');
 const { exportOpenAI } = require('../transform/emitters');
-const { logRequest } = require('../log/traffic');
+const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
 const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
@@ -26,19 +26,6 @@ const { canUseModel, isWorkBuddyOnlyModel } = require('../middleware/model-acces
 const { createLineFeeder } = require('../lib/sse-lines');
 
 const router = Router();
-
-/**
- * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
- * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
- */
-function usageToLogFields(u) {
-  if (!u || typeof u !== 'object') return {};
-  const pt = Number(u.prompt_tokens ?? u.inputTokens) || 0;
-  const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
-  const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
-  if (!pt && !ct && !tt) return {};
-  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
-}
 
 /** 兼容 tools 与旧版 functions 字段。 */
 function extractTools(body) {

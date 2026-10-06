@@ -2167,6 +2167,65 @@ t('recentDayKeys 生成 N 个连续本地日期（新→旧）', () => {
   assert.deepStrictEqual(keys, ['2026-10-03', '2026-10-02', '2026-10-01']);
 });
 
+console.log('upstream/trae-usage');
+t('normalizeRow：保留计费字段，剥离 user_input_preview（隐私）', () => {
+  const { normalizeRow } = require('../upstream/trae-usage');
+  const row = normalizeRow({
+    session_id: 's-1',
+    usage_time: 1791126902,
+    model_name: 'DeepSeek-V4-Flash 正式版',
+    credits_float: 1.5324,
+    amount_float: 1.5324,
+    cost_money_float: 0.03831,
+    user_input_preview: 'SECRET-PROMPT',
+    extra_info: { input_token: 439017, output_token: 142, cache_read_token: 438528, cache_write_token: 0 },
+    usage_group_details: [
+      { group_key: 'default', model_display_name: 'DeepSeek-V4-Flash 正式版', credits_float: 1.2 },
+      { group_key: 'default', model_display_name: 'GLM-5.3-Flash', credits_float: 0.3324 },
+    ],
+  });
+  assert.strictEqual(row.sessionId, 's-1');
+  assert.strictEqual(row.credits, 1.5324);
+  assert.strictEqual(row.inputTokens, 439017);
+  assert.strictEqual(row.byModel.length, 2, '按 usage_group_details 拆分');
+  assert.strictEqual(row.byModel[1].credits, 0.3324);
+  assert.ok(JSON.stringify(row).indexOf('SECRET-PROMPT') === -1, 'user_input_preview 不得落盘');
+});
+
+t('normalizeRow：无 usage_group_details 时回退行级模型；无 session_id 返回 null', () => {
+  const { normalizeRow } = require('../upstream/trae-usage');
+  const row = normalizeRow({
+    session_id: 's-2', usage_time: 1, model_name: 'glm-5.2',
+    credits_float: 0.78, extra_info: { input_token: 10, output_token: 5 },
+  });
+  assert.deepStrictEqual(row.byModel, [{ model: 'glm-5.2', credits: 0.78 }]);
+  assert.strictEqual(normalizeRow({ usage_time: 1, credits_float: 1 }), null);
+  assert.strictEqual(normalizeRow(null), null);
+});
+
+t('dayBounds：本地日界（非 UTC）', () => {
+  const { dayBounds } = require('../upstream/trae-usage');
+  const { start, end } = dayBounds('2026-10-07');
+  assert.strictEqual(end - start, 86400);
+  // 本地时区 2026-10-07 00:00:00 的 unix 秒
+  assert.strictEqual(start, Math.floor(new Date(2026, 9, 7).getTime() / 1000));
+});
+
+t('recentDayKeys（trae-usage）生成 N 个连续本地日期（新→旧）', () => {
+  const { recentDayKeys } = require('../upstream/trae-usage');
+  const keys = recentDayKeys(3, new Date(2026, 9, 3, 12, 0, 0));
+  assert.deepStrictEqual(keys, ['2026-10-03', '2026-10-02', '2026-10-01']);
+});
+
+t('variant：Trae billing 能力已启用且端点路径收敛', () => {
+  const v = require('../platform/variant');
+  assert.strictEqual(v.can('trae', 'billing'), true);
+  assert.strictEqual(
+    v.variantOf(v.TRAE).paths.sessionUsage,
+    '/trae/api/v1/pay/query_user_usage_group_by_session',
+  );
+});
+
 t('非 workbuddy 账号不发起扫描', async () => {
   const { scanAccount } = require('../workbuddy/billing-usage');
   const r = await scanAccount('__no_such_account__', 1);
