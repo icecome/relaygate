@@ -46,12 +46,19 @@ export const checkinOne = (id: string, key: string) =>
     key,
   );
 
+/**
+ * 批量刷新全部启用账号的剩余积分。
+ * 供页面自动轮询使用；后端受互斥锁保护，被占用时返回 202（解析为 skipped）。
+ */
 export const refreshAllBalance = (key: string) =>
-  api<{ ok: { accountId: string }[]; failed: { accountId: string; reason: string }[] }>(
-    '/v1/credentials/balance',
-    { method: 'POST' },
-    key,
-  );
+  api<{
+    object: string;
+    ok?: { accountId: string }[];
+    failed?: { id: string; label: string; reason: string }[];
+    total?: number;
+    /** true 表示后端因另一轮刷新进行中而跳过本轮 */
+    skipped?: boolean;
+  }>('/v1/credentials/balance', { method: 'POST' }, key);
 
 export const refreshOneBalance = (id: string, key: string) =>
   api<BalanceResult>(`/v1/credentials/${encodeURIComponent(id)}/balance`, { method: 'POST' }, key);

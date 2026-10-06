@@ -190,21 +190,27 @@ async function runDailyCheckin() {
     }
     if (config.schedulerEnabled) {
       const b = await refreshBalanceAllEnabled({ spreadMinutes: balanceSpread, windowStartMs });
-      for (const item of b.ok) pool.unfreezeIfHealthy(item.accountId);
-      console.log(`[scheduler] balance ok=${b.ok.length} failed=${b.failed.length}`);
-      try {
-        appendTaskLog({
-          task: 'balance-refresh',
-          trigger: 'checkin-chain',
-          ok: b.ok.length,
-          failed: b.failed.length,
-          total: b.total,
-        });
-      } catch { /* 日志失败不影响签到链 */ }
-      try {
-        await checkCreditAlerts();
-      } catch (e) {
-        console.error('[scheduler] credit alerts error', e.message);
+      // 批量锁被占用（定时刷新正在跑）时会被跳过：此时没有 ok/failed 可读，
+      // 直接访问会抛错。跳过不算失败，也不写任务日志与告警。
+      if (b && b.skipped) {
+        console.log('[scheduler] balance skipped: 另一轮批量刷新进行中');
+      } else {
+        for (const item of b.ok) pool.unfreezeIfHealthy(item.accountId);
+        console.log(`[scheduler] balance ok=${b.ok.length} failed=${b.failed.length}`);
+        try {
+          appendTaskLog({
+            task: 'balance-refresh',
+            trigger: 'checkin-chain',
+            ok: b.ok.length,
+            failed: b.failed.length,
+            total: b.total,
+          });
+        } catch { /* 日志失败不影响签到链 */ }
+        try {
+          await checkCreditAlerts();
+        } catch (e) {
+          console.error('[scheduler] credit alerts error', e.message);
+        }
       }
     }
     return {

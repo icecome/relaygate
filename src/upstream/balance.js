@@ -267,14 +267,52 @@ async function refreshBalance(accountId) {
 }
 
 /**
+ * 批量余额刷新的进程级互斥。
+ *
+ * 背景：批量刷新有两条触发路径——jobs/balance-refresh.js 的定时器，
+ * 与 jobs/scheduler.js 签到链后的串行刷新。此前各自维护独立 running 标志，
+ * 两者互不知情，签到链与定时器可在同一时刻各跑一轮，造成重复请求上游。
+ * 这里把锁提到本模块，所有批量入口共用；单账号 refreshBalance 不受限。
+ */
+let batchRunning = false;
+
+/** 当前是否有批量刷新在执行。 */
+function isBatchRunning() {
+  return batchRunning;
+}
+
+/**
+ * 以互斥方式执行一轮批量刷新。
+ * @param {(opts: object) => Promise<object>} fn 实际刷新逻辑
+ * @param {object} [opts] 透传给 fn，同时可含 skipLock 强制执行（内部复用）
+ * @returns {Promise<object>} fn 的结果；若因互斥被跳过则返回 {skipped:true, running:true}
+ */
+async function withBatchLock(fn, opts = {}) {
+  if (batchRunning) return { skipped: true, running: true };
+  batchRunning = true;
+  try {
+    return await fn(opts);
+  } finally {
+    batchRunning = false;
+  }
+}
+
+/**
  * 刷新全部 enabled 账号余额。
  *
- * 默认按 (本地日期, 账号id) 确定性错峰分散，避免多账号同时打上游权益接口
+ * 默认按(本地日期, 账号id) 确定性错峰分散，避免多账号同时打上游权益接口
  * （余额刷新频率高，洪峰更容易触发限流）。spreadMinutes=0 时立即顺序执行。
  *
- * @param {{windowStartMs?:number, spreadMinutes?:number}} [opts]
+ * 批量入口受withBatchLock 互斥保护；内部也可传 skipLock 供已持锁的调用方复用。
+ *
+ * @param {{windowStartMs?:number, spreadMinutes?:number, skipLock?:boolean}} [opts]
  */
 async function refreshBalanceAllEnabled(opts = {}) {
+  if (opts.skipLock) return refreshBatch(opts);
+  return withBatchLock(refreshBatch, opts);
+}
+
+async function refreshBatch(opts) {
   const accounts = store.list().filter((a) => a.enabled);
   const ok = [];
   const failed = [];
@@ -301,6 +339,7 @@ async function refreshBalanceAllEnabled(opts = {}) {
 module.exports = {
   refreshBalance,
   refreshBalanceAllEnabled,
+  isBatchRunning,
   parseEntitlementUsage,
   DEFAULT_UG_HOST,
 };

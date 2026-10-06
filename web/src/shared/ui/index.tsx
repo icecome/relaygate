@@ -36,7 +36,14 @@ export function Button({
 
 /* ----------------------------------------------------------------- Field */
 
-export interface FieldProps extends InputHTMLAttributes<HTMLInputElement> {
+/**
+ * 单输入框 + 可选标签。
+ *
+ * 刻意在类型上排除 children：input 是 void 元素，传入 children 会被 React
+ * 判为「void 元素带 children」并在渲染期抛错（对应压缩错误 #137）。
+ * 需要「时:分」这类组合控件时用 FieldRow。
+ */
+export interface FieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'children'> {
   label?: string;
 }
 
@@ -62,6 +69,21 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
     </label>
   );
 });
+
+/**
+ * 带标签的表单行，接受任意 children。
+ * 用于「时:分」这类需要多个输入框或组合控件的场景。
+ */
+export function FieldRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1 min-w-0">
+      <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
 
 /* ------------------------------------------------------------------ Panel */
 

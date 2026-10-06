@@ -5,14 +5,18 @@
  */
 const { Router } = require('express');
 const config = require('../config');
-const pool = require('../credentials/pool');
 const scheduler = require('../jobs/scheduler');
 const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
-/** 手动触发定时任务（立即签到/保活/刷余额）。 */
+/**
+ * 手动触发定时任务（立即签到/保活/模型探测）。
+ *
+ * action=balance 已删除：它与 POST /v1/credentials/balance、POST
+ * /balance-refresh/run 同义，属于重复的「立刻刷一遍」入口，前端从未调用。
+ */
 router.post('/scheduler/:action', admin, async (req, res) => {
   const action = req.params.action;
   try {
@@ -23,15 +27,6 @@ router.post('/scheduler/:action', admin, async (req, res) => {
     if (action === 'keepalive') {
       await scheduler.runKeepalive();
       return res.json({ action, ok: true, ...scheduler.snapshot() });
-    }
-    if (action === 'balance') {
-      // 手动触发不参与确定性错峰（用户期望立即执行）
-      const r = await require('../upstream/balance').refreshBalanceAllEnabled({ spreadMinutes: 0 });
-      for (const item of r.ok || []) pool.unfreezeIfHealthy(item.accountId);
-      try {
-        await require('../jobs/credit-alerts').checkCreditAlerts();
-      } catch { /* 告警失败不影响余额结果 */ }
-      return res.json({ action, ...r });
     }
     if (action === 'probe') {
       const r = await scheduler.runModelProbe();
@@ -72,7 +67,14 @@ router.post('/task-log/clear', admin, (req, res) => {
   res.json({ ok });
 });
 
-/** 余额自动刷新（可配间隔）。 */
+/**
+ * 余额自动刷新（可配间隔）。
+ *
+ * 只保留配置读写与状态查询。原先的 POST /balance-refresh/run 与
+ * POST /scheduler/balance 是「立刻刷一遍」的重复入口（与
+ * POST /v1/credentials/balance 同义），前端从未调用，已删除；
+ * 需要手动刷新时由账号页对单个账号触发。
+ */
 router.get('/balance-refresh', admin, (req, res) => {
   res.json({ object: 'balance_refresh', ...require('../jobs/balance-refresh').snapshot() });
 });
@@ -83,15 +85,6 @@ router.post('/balance-refresh', admin, (req, res) => {
     const eff = br.save(req.body || {});
     br.restart();
     res.json({ object: 'balance_refresh', ...eff, ...br.snapshot() });
-  } catch (e) {
-    res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
-  }
-});
-
-router.post('/balance-refresh/run', admin, async (req, res) => {
-  try {
-    const r = await require('../jobs/balance-refresh').runRefresh({ trigger: 'manual' });
-    res.json({ object: 'balance_refresh_run', ...r });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }

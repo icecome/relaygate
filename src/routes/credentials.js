@@ -7,6 +7,7 @@ const { Router } = require('express');
 const store = require('../credentials/store');
 const { importAccount, importMany, ensureAllMissingDevices, resetAccountDevices } = require('../credentials/import');
 const oauth = require('../credentials/oauth');
+const pool = require('../credentials/pool');
 const { checkinAccount, checkinAllEnabled } = require('../upstream/checkin');
 const { refreshBalance, refreshBalanceAllEnabled } = require('../upstream/balance');
 const { summarizeExpiry } = require('../credentials/credits');
@@ -125,10 +126,21 @@ router.post('/:id/checkin', admin, async (req, res) => {
   }
 });
 
-// 批量刷新剩余积分
+/**
+ * 批量刷新剩余积分（供面板定时轮询）。
+ *
+ * 与被删除的 POST /v1/admin/scheduler/balance、POST /v1/admin/balance-refresh/run
+ * 的区别：那两个是语义重复的「手动触发」入口，已移除；这里保留给前端轮询使用，
+ * 命中 upstream/balance.js 的批量锁，与签到链、定时器互斥，不会并发打上游。
+ */
 router.post('/balance', admin, async (req, res) => {
   try {
-    const r = await refreshBalanceAllEnabled();
+    const r = await refreshBalanceAllEnabled({ spreadMinutes: 0 });
+    // 被互斥跳过：正在跑另一轮，返回 202 让前端保持原值、稍后再试
+    if (r && r.skipped) return res.status(202).json({ object: 'balance.batch', skipped: true });
+    for (const item of r.ok || []) {
+      try { pool.unfreezeIfHealthy(item.accountId); } catch { /* 解冻失败不影响余额结果 */ }
+    }
     res.json({ ...r, object: 'balance.batch' });
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: 'internal_error' } });

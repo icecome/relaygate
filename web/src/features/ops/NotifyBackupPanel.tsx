@@ -22,6 +22,7 @@ import {
   verifyBackup,
   type BackupInspect,
   type NotifySettings,
+  type NotifySettingsResponse,
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
@@ -143,6 +144,31 @@ function formatSize(v: number | undefined): string {
   return `${(v / 1024 / 1024).toFixed(2)} MB`;
 }
 
+/**
+ * 渠道生效判定。优先用后端的 activeChannels / configuredChannels；
+ * 服务未升级到新版时按已保存字段推导，避免把「已配好」误报成「未配置」。
+ */
+function deriveChannels(src: NotifySettingsResponse | null | undefined) {
+  const activeList = src?.activeChannels;
+  const configuredList = src?.configuredChannels;
+  const has = (v: unknown) => typeof v === 'string' && v.trim() !== '';
+  const webhook = has(src?.webhookUrl);
+  const serverchan = has(src?.serverChanSendKey);
+  const pushplus = has(src?.pushPlusToken);
+  const telegram = has(src?.telegramBotToken) && has(src?.telegramChatId);
+  const derivedConfigured = [
+    webhook && 'webhook',
+    serverchan && 'serverchan',
+    pushplus && 'pushplus',
+    telegram && 'telegram',
+  ].filter(Boolean) as string[];
+  const master = src?.enabled !== false;
+  return {
+    active: new Set(activeList ?? (master ? derivedConfigured : [])),
+    configured: new Set(configuredList ?? derivedConfigured),
+  };
+}
+
 export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
   const toast = useToast();
   const prompt = usePrompt();
@@ -174,8 +200,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
   }, [backup.data]);
 
   const channelRows = useMemo(() => {
-    const configured = new Set(notify.data?.configuredChannels ?? []);
-    const active = new Set(notify.data?.activeChannels ?? []);
+    const { active, configured } = deriveChannels(notify.data);
     return CHANNEL_IDS.map((id) => {
       const fields = CHANNELS.filter((c) => c.channel === id);
       return {
@@ -183,10 +208,14 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
         label: NOTIFY_CHANNEL_LABELS[id],
         fields,
         active: active.has(id),
-        // Webhook 只看地址；Telegram 需要两字段齐备，与后端判定一致
         configured: configured.has(id),
       };
     });
+  }, [notify.data]);
+
+  const notifyStatus = useMemo(() => {
+    const { active, configured } = deriveChannels(notify.data);
+    return { active: active.size, configured: configured.size };
   }, [notify.data]);
 
   const events = useMemo(() => {
@@ -368,13 +397,13 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   { value: 'off', label: '停用' },
                 ]}
               />
-              {notify.data?.running ? (
+              {notifyStatus.active > 0 ? (
                 <Chip tone="ok" dot="dot-ok">
-                  发送中 · {notify.data.activeChannels?.length ?? 0} 个渠道
+                  发送中 · {notifyStatus.active} 个渠道
                 </Chip>
-              ) : notify.data?.configuredChannels?.length ? (
+              ) : notifyStatus.configured > 0 ? (
                 <Chip tone="warn" dot="dot-cool">
-                  已配 {notify.data.configuredChannels.length} 个渠道，当前不发送
+                  已配 {notifyStatus.configured} 个渠道，当前不发送
                 </Chip>
               ) : (
                 <Chip tone="neutral" dot="dot-off">
@@ -383,43 +412,49 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               )}
             </div>
 
-            <div className="grid gap-4 grid-cols-2 items-start">
-              {channelRows.map((ch) => (
-                <div
-                  key={ch.id}
-                  className="rounded-lg border px-3.5 py-3 min-w-0"
-                  style={{ borderColor: 'var(--rg-border)' }}
-                >
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
-                      {ch.label}
-                    </span>
-                    <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
-                    <Chip tone={ch.active ? 'ok' : 'neutral'} dot={ch.active ? 'dot-ok' : 'dot-off'}>
-                      {ch.active ? '生效中' : '未生效'}
-                    </Chip>
+            {/* 四张渠道卡等高对齐；字段多的渠道在卡内分两列，避免整行留白 */}
+            <div className="grid gap-4 grid-cols-2">
+              {channelRows.map((ch) => {
+                const dense = ch.fields.length > 2;
+                return (
+                  <div
+                    key={ch.id}
+                    className="rounded-lg border px-3.5 py-3 min-w-0 flex flex-col"
+                    style={{ borderColor: 'var(--rg-border)' }}
+                  >
+                    <div className="mb-2.5 flex items-center gap-2">
+                      <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        {ch.label}
+                      </span>
+                      <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                      <Chip tone={ch.active ? 'ok' : 'neutral'} dot={ch.active ? 'dot-ok' : 'dot-off'}>
+                        {ch.active ? '生效中' : '未生效'}
+                      </Chip>
+                    </div>
+                    <div className={dense ? 'grid gap-x-4 gap-y-2.5 grid-cols-2' : 'flex flex-col gap-2.5'}>
+                      {ch.fields.map((f) => (
+                        <Field
+                          key={String(f.id)}
+                          label={f.hint ? `${f.label}（${f.hint}）` : f.label}
+                          className="font-mono text-[12px]"
+                          // 密钥类字段不回显明文：已配置时留空并给掩码提示，避免 token 暴露在屏幕上
+                          type={f.secret && notify.data?.[f.id] ? 'password' : 'text'}
+                          value={String(draft[f.id] ?? '')}
+                          placeholder={
+                            f.secret && maskHint(notify.data?.[f.id])
+                              ? maskHint(notify.data?.[f.id])
+                              : f.placeholder
+                          }
+                          onChange={(e) => {
+                            setDraft((d) => ({ ...d, [f.id]: e.target.value }));
+                            setDirty(true);
+                          }}
+                        />
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex flex-col gap-2.5">
-                    {ch.fields.map((f) => (
-                      <Field
-                        key={String(f.id)}
-                        label={f.hint ? `${f.label}（${f.hint}）` : f.label}
-                        className="font-mono text-[12px]"
-                        value={String(draft[f.id] ?? '')}
-                        placeholder={
-                          f.secret && maskHint(notify.data?.[f.id])
-                            ? maskHint(notify.data?.[f.id])
-                            : f.placeholder
-                        }
-                        onChange={(e) => {
-                          setDraft((d) => ({ ...d, [f.id]: e.target.value }));
-                          setDirty(true);
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <div>

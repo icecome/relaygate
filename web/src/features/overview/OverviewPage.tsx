@@ -6,8 +6,10 @@ import { useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
 import { useAuth } from '../../shared/api/auth';
 import { getRuntime } from '../../shared/api/admin';
+import { getCreditHistory } from '../../shared/api/stats';
 import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { creditTotals } from '../accounts/accountPacks';
 import {
   accountState,
   coolRemaining,
@@ -40,8 +42,21 @@ export default function OverviewPage() {
     { enabled: !!key },
   );
 
+  const credits = useAsyncData(
+    (signal) => getCreditHistory(1, key, signal),
+    [key],
+    { enabled: !!key },
+  );
+
   // 派生值不落state，随 summary 变化即时算出
   const accounts = useMemo<Account[]>(() => summary?.accounts ?? [], [summary]);
+  const credit = useMemo(() => creditTotals(accounts), [accounts]);
+  // 逐账号额度预先算好，避免在表格每行里重复遍历权益包
+  const perAccountCredits = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof creditTotals>>();
+    for (const a of accounts) map.set(a.id, creditTotals([a]));
+    return map;
+  }, [accounts]);
 
   const metrics = [
     { key: '凭据总数', value: formatNumber(summary?.total), delta: '含 Trae 与 WorkBuddy' },
@@ -68,6 +83,74 @@ export default function OverviewPage() {
 
         {error && <ErrorState message={error} onRetry={reload} />}
 
+        <Panel
+          title="积分额度"
+          description="来自各账号权益包快照，已用尽与已过期的包不计入"
+          actions={
+            <Button
+              size="sm"
+              onClick={() => {
+                reload();
+                credits.reload();
+              }}
+              disabled={credits.loading}
+            >
+              {credits.loading ? '刷新中…' : '刷新额度'}
+            </Button>
+          }
+        >
+          <div className="flex flex-col gap-4">
+            <div className="grid gap-4 grid-cols-2 items-start">
+              <div
+                className="rounded-lg border px-3.5 py-3 min-w-0"
+                style={{ borderColor: 'var(--rg-border)' }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                    可用额度
+                  </span>
+                  <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                </div>
+                <div className="font-metric text-[28px] leading-tight">
+                  {formatNumber(credit.total)}
+                </div>
+                <div className="mt-1 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  覆盖 {credit.accounts} 个账号 · {credit.packs} 个可用权益包
+                </div>
+              </div>
+
+              <div
+                className="rounded-lg border px-3.5 py-3 min-w-0"
+                style={{ borderColor: 'var(--rg-border)' }}
+              >
+                <div className="mb-2 flex items-center gap-2">
+                  <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                    今日消耗
+                  </span>
+                  <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                  {credit.expiring > 0 && (
+                    <Chip tone="warn" dot="dot-cool">
+                      7 日内到期 {formatNumber(credit.expiring)}
+                    </Chip>
+                  )}
+                </div>
+                <div className="font-metric text-[28px] leading-tight">
+                  {formatNumber(credits.data?.totalUsed)}
+                </div>
+                <div className="mt-1 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  {credit.unlimited > 0
+                    ? `另有 ${credit.unlimited} 个不限量包`
+                    : '按各账号快照差分统计'}
+                </div>
+              </div>
+            </div>
+
+            <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+              不限量包不计入金额，仅按个数统计；消耗量来自余额刷新时写入的快照差分，未刷新过的账号不计入。
+            </div>
+          </div>
+        </Panel>
+
         <Panel title="账号池" description="按账号标识与最近操作排序" flush>
           {loading && !summary ? (
             <LoadingBlock />
@@ -82,7 +165,7 @@ export default function OverviewPage() {
                   <th className="th">账号</th>
                   <th className="th">状态</th>
                   <th className="th">来源</th>
-                  <th className="th cell-num">余额</th>
+                  <th className="th cell-num">可用积分</th>
                   <th className="th">最近选用</th>
                   <th className="th">最近签到</th>
                   <th className="th cell-num">错误数</th>
@@ -92,6 +175,9 @@ export default function OverviewPage() {
                 {accounts.map((a) => {
                   const state = accountState(a);
                   const cooling = state === 'cool' ? coolRemaining(a.coolUntil) : null;
+                  // 单账号可用额度：与上方汇总同口径（已用尽/已过期不计），无包时回退 balance
+                  const perAccount = perAccountCredits.get(a.id);
+                  const hasPacks = !!perAccount && (perAccount.packs > 0 || perAccount.unlimited > 0);
                   return (
                     <tr key={a.id} className="row-hover">
                       <td className="td font-mono text-[12px]">{a.label || a.id}</td>
@@ -106,7 +192,20 @@ export default function OverviewPage() {
                         )}
                       </td>
                       <td className="td">{a.source || a.edition || '—'}</td>
-                      <td className="td cell-num">{formatNumber(a.balance)}</td>
+                      <td className="td cell-num">
+                        {hasPacks ? (
+                          <>
+                            {formatNumber(perAccount.total)}
+                            {perAccount.unlimited > 0 && (
+                              <span className="ml-1 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                                +{perAccount.unlimited}不限量
+                              </span>
+                            )}
+                          </>
+                        ) : (
+                          formatNumber(a.balance)
+                        )}
+                      </td>
                       <td className="td font-mono text-[12px]">{formatTime(a.lastPickedAt)}</td>
                       <td className="td font-mono text-[12px]">{formatTime(a.lastCheckinAt)}</td>
                       <td className="td cell-num">{formatNumber(a.errorCount)}</td>

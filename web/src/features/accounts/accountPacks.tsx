@@ -127,6 +127,57 @@ export function expirySummary(
   return { expiring, expired };
 }
 
+/**
+ * 全库积分额度汇总，口径与 packsOf 一致（已用尽/ 已过期都不计入）：
+ *   - total：所有可用包的 remaining 之和；unlimited 包不计入金额，只计数量
+ *   - expiring：7 日内到期的可用额度
+ *   - unlimited：带不限量包的账号数
+ *   - packs：可用计量包总数
+ */
+export interface CreditTotals {
+  total: number;
+  expiring: number;
+  unlimited: number;
+  packs: number;
+  /** 至少有可用权益包的账号数 */
+  accounts: number;
+}
+
+export function creditTotals(accounts: Account[], now = Date.now()): CreditTotals {
+  let total = 0;
+  let expiring = 0;
+  let unlimited = 0;
+  let packs = 0;
+  let withCredit = 0;
+
+  for (const a of accounts) {
+    let accountHasCredit = false;
+    for (const p of packsOf(a, now)) {
+      if (p.unlimited) {
+        if (p.usable) {
+          unlimited += 1;
+          accountHasCredit = true;
+        }
+        continue;
+      }
+      if (!p.usable || p.remaining == null) continue;
+      packs += 1;
+      accountHasCredit = true;
+      total += p.remaining;
+      if (p.days != null && p.days <= NOTICE_DAYS) expiring += p.remaining;
+    }
+    if (accountHasCredit) withCredit += 1;
+  }
+
+  return {
+    total: Math.round(total * 100) / 100,
+    expiring: Math.round(expiring * 100) / 100,
+    unlimited,
+    packs,
+    accounts: withCredit,
+  };
+}
+
 export function ExpiryChip({ item }: { item: PackView | null }) {
   if (!item) return <span style={{ color: 'var(--rg-text-disabled)' }}>—</span>;
   const meta = URGENCY_META[item.urgency as Urgency];

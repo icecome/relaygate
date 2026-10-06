@@ -272,14 +272,33 @@ export const reloadConfig = (key: string) =>
 
 /* ---------------------------------------------------------- 定时任务 */
 
+/**
+ * 调度设置。字段与后端 jobs/scheduler-settings.js 的 SPECS 完全一致。
+ * 注意：这里没有 enabled 字段——调度器总开关的唯一来源是环境变量
+ * SCHEDULER_ENABLED（config.schedulerEnabled），接口以 schedulerEnabled 回传。
+ */
 export interface SchedulerSettings {
-  enabled?: boolean;
+  object?: string;
+  /** 调度器总开关，来自 SCHEDULER_ENABLED，非配置文件可改 */
+  schedulerEnabled?: boolean;
   checkinHour?: number;
   checkinMinute?: number;
   keepaliveHour?: number;
-  tokenRefreshLeadHours?: number;
+  keepaliveMinute?: number;
+  /** 令牌扫描间隔（分钟） */
+  tokenSweepMinutes?: number;
   modelProbeIntervalHours?: number;
-  balanceRefresh?: { enabled?: boolean; hour?: number; minute?: number };
+  modelProbeMaxPerRun?: number;
+  rotateHour?: number;
+  rotateMinute?: number;
+  /** 成长中心轮询开关（0/1） */
+  growthPollEnabled?: number;
+  growthPollIntervalHours?: number;
+  /** 确定性错峰窗口（分钟） */
+  checkinSpreadMinutes?: number;
+  balanceSpreadMinutes?: number;
+  /** 保存后回传的调度器快照 */
+  scheduler?: SchedulerSnapshot;
 }
 
 export const getSchedulerSettings = (key: string, signal?: AbortSignal) =>
@@ -288,12 +307,21 @@ export const getSchedulerSettings = (key: string, signal?: AbortSignal) =>
 export const saveSchedulerSettings = (body: Partial<SchedulerSettings>, key: string) =>
   api<SchedulerSettings>('/v1/admin/scheduler-settings', { method: 'POST', body }, key);
 
+/**
+ * 任务日志。字段与后端 appendTaskLog 写入的一致：
+ * 计数用 ok/failed/total（部分任务另有 acted），trigger 区分 scheduler/manual/timer。
+ * 后端不记录 durationMs 与 message，故类型里不设这两个字段。
+ */
 export interface TaskLogRow {
   ts?: string;
   task?: string;
-  ok?: boolean;
-  durationMs?: number;
-  message?: string;
+  trigger?: string;
+  ok?: number;
+  failed?: number;
+  total?: number;
+  /** growth-auto 等任务的实际动作数 */
+  acted?: number;
+  error?: string;
 }
 
 /**
@@ -319,36 +347,104 @@ export const getTaskLog = (
 export const clearTaskLog = (key: string) =>
   api<{ ok: boolean }>('/v1/admin/task-log/clear', { method: 'POST' }, key);
 
+/**
+ * 余额自动刷新配置。字段与后端 jobs/balance-refresh.js 的 SPECS 一致：
+ * 只有 enabled 与 intervalMinutes（分钟），没有 hour/minute。
+ */
 export interface BalanceRefreshSettings {
   enabled?: boolean;
-  hour?: number;
-  minute?: number;
+  intervalMinutes?: number;
+  /** 上次执行时间 */
+  lastRunAt?: string | null;
+  lastOk?: number | null;
+  lastFailed?: number | null;
+  lastSummary?: {
+    ok: number;
+    failed: number;
+    total: number;
+    ranAt: string;
+    trigger: string;
+    error?: string;
+  } | null;
+  running?: boolean;
+  timer?: { intervalMinutes?: number; nextRunAt?: string } | null;
 }
 
 export const getBalanceRefresh = (key: string, signal?: AbortSignal) =>
-  api<BalanceRefreshSettings>('/v1/admin/balance-refresh', { signal }, key);
+  api<BalanceRefreshSettings & { object: string }>('/v1/admin/balance-refresh', { signal }, key);
 
-export const runBalanceRefresh = (key: string) =>
-  api<{ ok: number; failed: number; total: number; running?: boolean }>(
-    '/v1/admin/balance-refresh/run',
-    { method: 'POST' },
+/** 保存余额刷新配置；后端会重排定时器。 */
+export const saveBalanceRefresh = (
+  body: Partial<Pick<BalanceRefreshSettings, 'enabled' | 'intervalMinutes'>>,
+  key: string,
+) =>
+  api<BalanceRefreshSettings & { object: string }>(
+    '/v1/admin/balance-refresh',
+    { method: 'POST', body },
     key,
   );
 
 /* ------------------------------------------------------------ 账号轮换 */
 
-export interface RotateStatus {
-  busy?: boolean;
-  uid?: string;
+/**
+ * 轮换状态。字段与后端 routes/admin-jobs.js 的 /rotate/status 完全一致：
+ *   - currentUid：当前 auth 文件对应的 uid（不是账号库 id）
+ *   - accounts：本机 auth 目录里发现的账号备份
+ *   - heatmap：各账号当日成长活跃度（仅 workbuddy 账号，逐个查上游）
+ */
+export interface RotateAccount {
+  uid: string;
   label?: string;
-  updatedAt?: string;
-  pool?: { total?: number; candidates?: number };
+  backup?: string;
 }
 
+/** 单账号活跃度条目；上游查询失败时只有 error。 */
+export interface RotateHeatmapRow {
+  accountId: string;
+  label?: string | null;
+  uid?: string | null;
+  score?: number;
+  isActive?: boolean;
+  /** 活跃度档位文案（后端按分数分档） */
+  level?: string;
+  statusText?: string;
+  error?: string;
+}
+
+export interface RotateStatus {
+  object: string;
+  currentUid?: string | null;
+  authDir?: string;
+  accounts?: RotateAccount[];
+  heatmap?: RotateHeatmapRow[];
+  lastRotateAt?: string | null;
+  lastRotateOk?: boolean | null;
+  lastRotateFailed?: number | null;
+  scheduler?: SchedulerSnapshot;
+  settings?: RotateSettings;
+}
+
+/**
+ * 轮换配置。字段与后端 jobs/rotate-settings.js 的 SPECS 完全一致。
+ * 注意：没有 intervalHours / keepCount —— 间隔轮换链已移除，
+ * 时刻由 scheduler-settings 的 rotateHour:rotateMinute 决定。
+ */
 export interface RotateSettings {
+  object?: string;
+  /** 自动轮换总开关（每日 rotateHour:rotateMinute 定时执行） */
   enabled?: boolean;
-  intervalHours?: number;
-  keepCount?: number;
+  /** 每个账号停留时长（毫秒），默认 60000 */
+  stayMs?: number;
+  /** 不参与轮换的 uid 列表，逗号分隔 */
+  excludeUids?: string;
+  /** 轮换结束后是否切回起始账号 */
+  switchBack?: boolean;
+  /** 客户端 auth 目录，空= 默认探测 */
+  authDir?: string;
+  /** 已废弃，保留仅为兼容旧配置文件 */
+  intervalMinutes?: number;
+  /** 保存后回传的调度器快照 */
+  scheduler?: SchedulerSnapshot;
 }
 
 export const getRotateStatus = (key: string, signal?: AbortSignal) =>
@@ -357,6 +453,7 @@ export const getRotateStatus = (key: string, signal?: AbortSignal) =>
 export const getRotateSettings = (key: string, signal?: AbortSignal) =>
   api<RotateSettings>('/v1/admin/rotate/settings', { signal }, key);
 
+/** 保存轮换配置；后端会重启轮换定时器使新配置生效。 */
 export const saveRotateSettings = (body: Partial<RotateSettings>, key: string) =>
   api<RotateSettings>('/v1/admin/rotate/settings', { method: 'POST', body }, key);
 

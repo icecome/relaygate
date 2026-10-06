@@ -6,7 +6,7 @@
  * 与签到后的手动刷新互斥（running 标志），刷新过程不阻塞任何请求（不占用账号池租约）。
  */
 const pool = require('../credentials/pool');
-const { refreshBalanceAllEnabled } = require('../upstream/balance');
+const { refreshBalanceAllEnabled, isBatchRunning } = require('../upstream/balance');
 const { checkCreditAlerts } = require('./credit-alerts');
 const { appendTaskLog } = require('./task-log');
 const { createSettingsStore } = require('../lib/settings-store');
@@ -23,7 +23,6 @@ const store = createSettingsStore({ name: NAME, specs: SPECS });
 const FILE = () => store.FILE();
 
 let timer = null;
-let running = false;
 const state = {
   lastRunAt: null,
   lastOk: null,
@@ -43,13 +42,14 @@ function save(partial) {
 }
 
 /**
- * 执行一轮全账号余额刷新（互斥）。
+ * 执行一轮全账号余额刷新。
+ *
+ * 互斥由 upstream/balance.js 的批量锁统一提供（与签到链共用），
+ * 此处不再维护独立 running标志，避免两把锁互不知情导致并发。
+ *
  * @param {object} [opts] {trigger:'timer'|'manual', skipAlerts?:boolean}
  */
 async function runRefresh(opts = {}) {
-  if (running) return { skipped: true, running: true };
-  running = true;
-  state.running = true;
   const trigger = opts.trigger || 'timer';
   const startedAt = new Date().toISOString();
   let result;
@@ -63,6 +63,12 @@ async function runRefresh(opts = {}) {
       spreadMinutes = Math.max(0, Math.min(wanted, Math.floor(eff.intervalMinutes / 2)));
     }
     const r = await refreshBalanceAllEnabled({ spreadMinutes });
+    // 被互斥跳过：不算失败，也不写告警与任务日志
+    if (r && r.skipped) {
+      state.lastSummary = { ...(state.lastSummary || {}), skippedAt: new Date().toISOString() };
+      console.log(`[balance-refresh] ${trigger} skipped: 另一轮批量刷新进行中`);
+      return r;
+    }
     // 余额健康账号解冻（与签到后逻辑一致）
     for (const item of r.ok || []) pool.unfreezeIfHealthy(item.accountId);
     if (!opts.skipAlerts) {
@@ -116,8 +122,8 @@ async function runRefresh(opts = {}) {
     return result;
   } finally {
     state.lastRunAt = new Date().toISOString();
-    running = false;
-    state.running = false;
+    // 锁已在本轮结束时释放，running 恒为 false；真实在跑状态由 isBatchRunning() 按需查询
+    state.running = isBatchRunning();
   }
 }
 
