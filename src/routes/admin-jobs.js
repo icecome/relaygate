@@ -135,6 +135,37 @@ router.post('/backup/verify', admin, (req, res) => {
   }
 });
 
+/** 备份内容预览（解密后只回摘要，不回明文凭据）。 */
+router.get('/backup/inspect', admin, (req, res) => {
+  try {
+    const p = String((req.query && req.query.path) || '');
+    res.json({ object: 'backup_inspect', ...require('../jobs/backup').inspectBackup(p) });
+  } catch (e) {
+    res.status(400).json({ error: { message: e.message, type: 'invalid_request_error' } });
+  }
+});
+
+/**
+ * 从备份恢复。会覆盖同 id 的账号、密钥与配置文件，
+ * 因此默认先对当前状态做一次快照备份。
+ */
+router.post('/backup/restore', admin, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const p = String(body.path || '');
+    if (!p) return res.status(400).json({ error: { message: 'path required', type: 'invalid_request_error' } });
+    const r = await require('../jobs/backup').restoreBackup(p, { safetyBackup: body.safetyBackup !== false });
+    // 恢复后配置可能已变，重载定时器使新配置生效
+    try {
+      require('../jobs/backup').restart();
+      require('../jobs/scheduler').restart();
+    } catch { /* 重载失败不否定恢复结果 */ }
+    res.json({ object: 'backup_restore', ...r, list: require('../jobs/backup').listBackups() });
+  } catch (e) {
+    res.status(400).json({ error: { message: e.message, type: 'invalid_request_error' } });
+  }
+});
+
 /** 多账号活跃度维护（账号轮换）。 */
 router.get('/rotate/status', admin, async (req, res) => {
   try {

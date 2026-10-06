@@ -14,8 +14,20 @@ const recent = new Map();
 /** 合并窗口：同一 key 在窗口内多次触发时，把详情串追加到「合并详情」键。 */
 const merged = new Map();
 
-/** 当前已启用的渠道名列表。 */
+/** 当前已启用的渠道名列表（总开关关闭时返回空）。 */
 function activeChannels() {
+  const s = settings.getEffective();
+  if (s.enabled === false) return [];
+  const list = [];
+  if (s.webhookUrl) list.push('webhook');
+  if (s.serverChanSendKey) list.push('serverchan');
+  if (s.pushPlusToken) list.push('pushplus');
+  if (s.telegramBotToken && s.telegramChatId) list.push('telegram');
+  return list;
+}
+
+/** 已配置渠道（忽略总开关），供面板展示「配了但被关掉」。 */
+function configuredChannels() {
   const s = settings.getEffective();
   const list = [];
   if (s.webhookUrl) list.push('webhook');
@@ -306,4 +318,4 @@ async function notify(event, payload = {}, title) {
   return r.delivered;
 }
 
-module.exports = { notify, notifyDetail, enabled };
+module.exports = { notify, notifyDetail, enabled, activeChannels, configuredChannels };

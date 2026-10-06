@@ -22,17 +22,6 @@
       "apiKey": null,
       "models": null,
       "timeoutMs": 600000
-    },
-    "deepseek": {
-      "type": "openai",
-      "builtin": null,
-      "label": "DeepSeek（示例）",
-      "enabled": false,
-      "baseUrl": "https://api.deepseek.com/v1",
-      "apiKeyEnv": "DEEPSEEK_API_KEY",
-      "apiKey": null,
-      "models": null,
-      "timeoutMs": 600000
     }
   },
   "virtualModels": {

@@ -254,6 +254,22 @@ async function runBackup(opts = {}) {
   }
 }
 
+function decryptPayload(enc, key) {
+  const alg = (enc && enc.alg) || 'aes-256-gcm';
+  if (alg !== 'aes-256-gcm') throw new Error(`不支持的加密算法: ${alg}`);
+  const decipher = nodeCrypto.createDecipheriv(
+    'aes-256-gcm',
+    nodeCrypto.createHash('sha256').update(key, 'utf8').digest(),
+    Buffer.from(String(enc.iv || ''), 'base64'),
+  );
+  decipher.setAuthTag(Buffer.from(String(enc.tag || ''), 'base64'));
+  const plain = Buffer.concat([
+    decipher.update(Buffer.from(String(enc.data || ''), 'base64')),
+    decipher.final(),
+  ]);
+  return JSON.parse(plain.toString('utf8'));
+}
+
 /** 清理目录内旧备份，仅保留最近 keep 份（按文件名时间戳排序）。 */
 function pruneBackups(dir, keep) {
   try {
@@ -303,6 +319,198 @@ function verifyBackup(filePath) {
   }
 }
 
+/**
+ * 解析并校验备份文件路径。
+ * 恢复接口接收来自前端的文件路径，必须限制在配置的备份目录内，
+ * 否则会成为任意文件读取入口。
+ */
+function resolveBackupPath(inputPath) {
+  const raw = String(inputPath || '').trim();
+  if (!raw) throw new Error('path required');
+  const dir = path.resolve(getEffective().dir);
+  const full = path.resolve(raw);
+  const rel = path.relative(dir, full);
+  // 目录外、目录本身或非备份文件一律拒绝
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    throw new Error('备份文件必须位于备份目录内');
+  }
+  if (!/^relay-backup-.*\.json$/.test(path.basename(full))) {
+    throw new Error('不是有效的备份文件名');
+  }
+  if (!fs.existsSync(full)) throw new Error('备份文件不存在');
+  return full;
+}
+
+/** 读取并解密备份，返回 manifest 与载荷摘要（不写库）。 */
+function inspectBackup(filePath) {
+  const full = resolveBackupPath(filePath);
+  const manifest = JSON.parse(fs.readFileSync(full, 'utf-8'));
+  // 先比对校验和：密文被篡改时 GCM 解密会先抛认证失败，
+  // 直接透出解密异常会掩盖「文件已损坏」这一真实结论。
+  const verify = verifyBackup(full);
+  let payload = null;
+  let decryptError = null;
+  try {
+    payload = decryptPayload(manifest.encrypted, backupKey());
+  } catch (e) {
+    decryptError = e.message;
+  }
+  return {
+    file: path.basename(full),
+    path: full,
+    createdAt: manifest.createdAt || (payload && payload.createdAt) || null,
+    checksumOk: verify.ok,
+    checksumReason: verify.reason,
+    decryptError,
+    summary: {
+      accounts: ((payload && payload.accounts) || []).length,
+      apiKeys: ((payload && payload.api_keys) || []).length,
+      creditHistory: ((payload && payload.credit_history) || []).length,
+      configKeys: Object.keys((payload && payload.config) || {}).filter(
+        (k) => payload.config[k],
+      ).length,
+      hasNotifySettings: !!(payload && payload.notifySettings),
+      hasBalanceRefresh: !!(payload && payload.balanceRefresh),
+    },
+  };
+}
+
+// accounts 表可恢复列白名单：与 collectBackupPayload 的输出键一致，
+// 避免把任意 JSON 键拼进 SQL 列名
+const ACCOUNT_COLUMNS = [
+  'id', 'label', 'edition', 'token_enc', 'refresh_token_enc', 'expired_at',
+  'refresh_expired_at', 'token_release_at', 'user_id', 'host', 'user_region',
+  'devices', 'source', 'enabled', 'balance', 'error_count', 'cool_until',
+  'last_picked_at', 'last_checkin_at', 'last_checkin_result',
+  'entitlement_snapshot', 'priority', 'tags', 'group_name', 'device_gen',
+  'auth_client_id', 'auth_host', 'cost_tier',
+];
+const API_KEY_COLUMNS = [
+  'id', 'label', 'kind', 'platform', 'key_hash', 'key_enc',
+  'enabled', 'created_at', 'last_used_at',
+];
+const CREDIT_COLUMNS = ['id', 'account_id', 'ts', 'remaining', 'used_total', 'source'];
+
+/**
+ * 从备份文件恢复数据。
+ *
+ * 语义：按 id 覆盖同 id 的账号与密钥（备份是全量快照），
+ * credit_history 按 id 覆盖，配置文件按备份内容覆盖。
+ * 默认先对当前状态做一次快照备份，便于回退。
+ *
+ * @param {string} filePath 备份文件路径（须位于备份目录内）
+ * @param {object} [opts] {safetyBackup?:boolean}
+ */
+async function restoreBackup(filePath, opts = {}) {
+  const info = inspectBackup(filePath);
+  if (!info.checksumOk) {
+    throw new Error(`备份校验不通过，已中止恢复：${info.checksumReason}`);
+  }
+  if (info.decryptError) {
+    throw new Error(`备份解密失败，已中止恢复：${info.decryptError}`);
+  }
+  const manifest = JSON.parse(fs.readFileSync(info.path, 'utf-8'));
+  const payload = decryptPayload(manifest.encrypted, backupKey());
+
+  // 恢复前先快照当前状态：恢复是覆盖写，误选文件时需要回退路径
+  let safetyBackup = null;
+  if (opts.safetyBackup !== false) {
+    safetyBackup = await runBackup({ trigger: 'restore-guard', skipNotify: true });
+  }
+
+  const database = db();
+  /**
+   * node:sqlite 的 DatabaseSync 没有 better-sqlite3 的 transaction()，
+   * 项目内事务统一用 exec('BEGIN'/'COMMIT'/'ROLLBACK') 手写（见 credentials/db.js）。
+   */
+  const runInTransaction = (fn) => {
+    database.exec('BEGIN');
+    try {
+      const out = fn();
+      database.exec('COMMIT');
+      return out;
+    } catch (e) {
+      try { database.exec('ROLLBACK'); } catch { /* 回滚失败保留原始错误 */ }
+      throw e;
+    }
+  };
+
+  /** 按 id 覆盖写入；columns 为可写列白名单。 */
+  const upsertById = (table, columns, rows) => {
+    const updatable = columns.filter((c) => c !== 'id');
+    const sql = `INSERT INTO ${table} (${columns.join(',')})
+      VALUES (${columns.map(() => '?').join(',')})
+      ON CONFLICT(id) DO UPDATE SET ${updatable.map((c) => `${c}=excluded.${c}`).join(',')}`;
+    const stmt = database.prepare(sql);
+    let n = 0;
+    for (const row of rows) {
+      stmt.run(...columns.map((c) => (row[c] === undefined ? null : row[c])));
+      n += 1;
+    }
+    return n;
+  };
+
+  const restoreCounts = runInTransaction(() => ({
+    accounts: upsertById('accounts', ACCOUNT_COLUMNS, (payload.accounts || []).filter((r) => r && r.id)),
+    apiKeys: upsertById('api_keys', API_KEY_COLUMNS, (payload.api_keys || []).filter((r) => r && r.id)),
+    creditHistory: upsertById(
+      'credit_history',
+      CREDIT_COLUMNS,
+      (payload.credit_history || []).filter((r) => r && r.id),
+    ),
+  }));
+
+  const accounts = restoreCounts.accounts;
+  const apiKeys = restoreCounts.apiKeys;
+  const credits = restoreCounts.creditHistory;
+
+  // 配置文件按备份内容覆盖（文件名固定，不接受外部输入）
+  let configs = 0;
+  const cfg = payload.config || {};
+  const writeIfPresent = (name, value) => {
+    if (!value || typeof value !== 'object') return;
+    writeJsonAtomic(stateFile(name), value);
+    configs += 1;
+  };
+  writeIfPresent('scheduler-settings.json', cfg.scheduler);
+  writeIfPresent('growth-last-run.json', cfg.growthLastRun);
+  if (cfg.modelConfig && typeof cfg.modelConfig === 'object') {
+    writeJsonAtomic(path.join(config.ROOT, 'model-config.json'), cfg.modelConfig);
+    configs += 1;
+  }
+  if (cfg.modelFallback && typeof cfg.modelFallback === 'object') {
+    writeJsonAtomic(path.join(config.ROOT, 'model-fallback.json'), cfg.modelFallback);
+    configs += 1;
+  }
+  if (payload.notifySettings && typeof payload.notifySettings === 'object') {
+    writeJsonAtomic(stateFile('notify-settings.json'), payload.notifySettings);
+    configs += 1;
+  }
+  if (payload.balanceRefresh && typeof payload.balanceRefresh === 'object') {
+    writeJsonAtomic(stateFile('balance-refresh-settings.json'), payload.balanceRefresh);
+    configs += 1;
+  }
+
+  const result = {
+    ok: true,
+    file: info.file,
+    createdAt: info.createdAt,
+    accounts,
+    apiKeys,
+    creditHistory: credits,
+    configs,
+    safetyBackupFile: safetyBackup && safetyBackup.ok ? safetyBackup.file : null,
+  };
+  try {
+    appendTaskLog({
+      task: 'restore', trigger: 'manual', ok: 1, failed: 0,
+      file: info.file, accounts, apiKeys, startedAt: new Date().toISOString(),
+    });
+  } catch { /* ignore */ }
+  console.log(`[backup] restored ${info.file}: accounts=${accounts} keys=${apiKeys} credits=${credits} configs=${configs}`);
+  return result;
+}
+
 /** 定时器（由 index.js 驱动 start/stop）。 */
 let timer = null;
 function start() {
@@ -350,6 +558,8 @@ module.exports = {
   runBackup,
   listBackups,
   verifyBackup,
+  inspectBackup,
+  restoreBackup,
   pruneBackups,
   backupKey,
   start,

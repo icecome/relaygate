@@ -59,6 +59,7 @@ async function listModels(req, res) {
       owned_by: 'workbuddy',
       display_name: id,
       custom: false,
+      virtual: false,
     }));
 
     let data;
@@ -109,14 +110,38 @@ router.get('/v1/models/status', admin, async (req, res) => {
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
   try {
     const cat = await catalog.listWithStatus({ force: refresh, includeCustom: wantCustom(req) });
+    const availability = require('../models/availability');
     // 预热动态目录（含倍率）；失败/未就绪时以静态目录兜底（倍率列显示 —）
     let wbModels = [];
     try { wbModels = await wbChat.modelCatalog(refresh); } catch (e) { /* 回退静态 */ }
     if (!wbModels.length) wbModels = wbChat.WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null }));
     // 目录始终展示，但无启用账号时状态为 unavailable（实际无法调用）
     const wbEnabled = require('../credentials/store').list().some((a) => a.enabled && a.edition === 'workbuddy');
-    const wbStatus = wbEnabled ? 'available' : 'unavailable';
     const wbReason = wbEnabled ? null : '无可用 WorkBuddy 账号';
+    const wbRows = wbModels.map((m) => {
+      const id = 'wb/' + m.id;
+      // 有启用账号时以真实探测记录为准（探测按传入的原始 id 写入，此处用同一 id 查询）；
+      // 无探测记录则回退 unknown —— 不能仅凭「有可用账号」就断言模型可用。
+      const ent = wbEnabled ? availability.entryOf(id) : null;
+      return {
+        id,
+        display_name: m.name || id,
+        status: wbEnabled ? (ent ? ent.status : 'unknown') : 'unavailable',
+        capability: m.supportsReasoning ? 'reasoning_model' : 'chat_model',
+        multimodal: false,
+        custom: false,
+        virtual: false,
+        reason: ent ? ent.reason : wbReason,
+        source: 'workbuddy-cn',
+        source_name: 'WorkBuddy CN',
+        rateText: m.rateText || null,
+        rate: m.rate != null ? m.rate : null,
+        feeLevel: null,
+        scene: null,
+        peak: null,
+        maxInputTokens: m.maxInputTokens || null,
+      };
+    });
     const traeRows = cat.models.map((m) => ({
       id: m.id,
       display_name: m.display_name || m.id,
@@ -124,6 +149,7 @@ router.get('/v1/models/status', admin, async (req, res) => {
       capability: m.capability || null,
       multimodal: !!m.multimodal,
       custom: !!m.custom,
+      virtual: false,
       reason: m.reason || null,
       source: 'trae-cn',
       source_name: 'Trae CN',
@@ -132,21 +158,6 @@ router.get('/v1/models/status', admin, async (req, res) => {
       feeLevel: m.feeLevel != null ? m.feeLevel : null,
       scene: m.scene || null,
       peak: null,
-    }));
-    const wbRows = wbModels.map((m) => ({
-      id: 'wb/' + m.id,
-      display_name: m.name || ('wb/' + m.id),
-      status: wbStatus,
-      capability: m.supportsReasoning ? 'reasoning_model' : 'chat_model',
-      multimodal: false,
-      custom: false,
-      reason: wbReason,
-      source: 'workbuddy-cn',
-      source_name: 'WorkBuddy CN',
-      rateText: m.rateText || null,
-      rate: m.rate,
-      peak: null,
-      maxInputTokens: m.maxInputTokens || null,
     }));
     let data = wbRows.concat(traeRows);
     try {

@@ -425,6 +425,26 @@ t('summarizeExpiry 空列表返回 0', () => {
   assert.deepStrictEqual(summarizeExpiry(null), { d3: 0, d7: 0 });
 });
 
+t('模型可用性状态只取 availability 三态', () => {
+  // 契约：/v1/models/status 的 status 必须来自 availability 三态。
+  // 回归防护 —— 此前 WorkBuddy 分支硬编码 'available'，与本模块声明不一致，
+  // 导致前端映射表查不到值而整页崩溃。
+  const availability = require('../models/availability');
+
+  // 未登记的模型回落 unknown，不产生第四种取值
+  assert.strictEqual(availability.statusOf('never-probed-model'), 'unknown');
+
+  const src = fs.readFileSync(path.join(__dirname, '..', 'routes', 'models.js'), 'utf8');
+  assert.ok(
+    !/status:\s*['"]available['"]/.test(src),
+    'routes/models.js 不应再出现硬编码的 available 状态',
+  );
+  assert.ok(
+    !/wbStatus/.test(src),
+    'routes/models.js 不应再有 wbStatus 旁路赋值',
+  );
+});
+
 t('roundCredits 消除浮点噪声', () => {
   const { roundCredits } = require('../credentials/credits');
   assert.strictEqual(roundCredits(13215.630000000001), 13215.63);
@@ -840,6 +860,92 @@ t('notify 未配置时直接关闭', () => {
   });
   try {
     assert.strictEqual(n.enabled(), false);
+  } finally {
+    if (backup != null) fs.writeFileSync(file, backup, 'utf-8');
+    else if (fs.existsSync(file)) fs.unlinkSync(file);
+  }
+});
+
+console.log('jobs.backup 恢复');
+t('inspectBackup 拒绝备份目录外的路径', () => {
+  const bk = require('../jobs/backup');
+  const outside = path.join(os.tmpdir(), `relay-backup-${Date.now()}.json`);
+  fs.writeFileSync(outside, JSON.stringify({ object: 'relay_gate_backup', checksum: 'x', encrypted: {} }), 'utf-8');
+  try {
+    assert.throws(() => bk.inspectBackup(outside), /备份目录/, '目录外路径应被拒绝，避免任意文件读取');
+  } finally {
+    if (fs.existsSync(outside)) fs.unlinkSync(outside);
+  }
+});
+
+t('inspectBackup 拒绝非备份文件名', () => {
+  const bk = require('../jobs/backup');
+  const dir = bk.getEffective().dir;
+  fs.mkdirSync(dir, { recursive: true });
+  const bad = path.join(dir, 'not-a-backup.json');
+  fs.writeFileSync(bad, '{}', 'utf-8');
+  try {
+    assert.throws(() => bk.inspectBackup(bad), /备份文件名/);
+  } finally {
+    if (fs.existsSync(bad)) fs.unlinkSync(bad);
+  }
+});
+
+t('恢复前校验：校验和不一致时中止且不改动数据', async () => {
+  const bk = require('../jobs/backup');
+  const acc = pStore.add({ label: 'bk-src', token: 'bk-token', refreshToken: 'bk-rt' }, 'import');
+  const run = await bk.runBackup({ trigger: 'manual', skipNotify: true });
+  assert.ok(run.ok && run.file, '备份应成功');
+  // 篡改密文但保留原 checksum，模拟文件损坏
+  const raw = JSON.parse(fs.readFileSync(run.file, 'utf-8'));
+  const tampered = path.join(path.dirname(run.file), 'relay-backup-tamper-check.json');
+  raw.encrypted.data = Buffer.from('corrupted').toString('base64');
+  fs.writeFileSync(tampered, JSON.stringify(raw), 'utf-8');
+  try {
+    await assert.rejects(
+      () => bk.restoreBackup(tampered),
+      /校验不通过/,
+      '校验和不一致必须中止恢复',
+    );
+    const still = pStore.get(acc.id);
+    assert.ok(still, '拒绝后账号应仍在库中');
+    assert.strictEqual(still.label, 'bk-src', '拒绝恢复不应改动现有数据');
+  } finally {
+    if (fs.existsSync(tampered)) fs.unlinkSync(tampered);
+    pStore.remove(acc.id);
+  }
+});
+
+t('恢复按 id 覆盖同 id 账号并回填内容', async () => {
+  const bk = require('../jobs/backup');
+  const acc = pStore.add({ label: 'bk-keep', token: 'orig-token', balance: 11 }, 'import');
+  const run = await bk.runBackup({ trigger: 'manual', skipNotify: true });
+  assert.ok(run.ok, '备份应成功');
+  // 备份后本地改动，恢复应把该账号还原成备份时的状态
+  pStore.update(acc.id, { label: 'changed-after-backup', balance: 999 });
+  const restored = await bk.restoreBackup(run.file, { safetyBackup: false });
+  assert.strictEqual(restored.ok, true);
+  assert.ok(restored.accounts >= 1, '应至少恢复 1 个账号');
+  const after = pStore.get(acc.id);
+  assert.strictEqual(after.label, 'bk-keep', '同 id 账号应被备份内容覆盖');
+  assert.strictEqual(Number(after.balance), 11, '余额应回滚为备份时的值');
+  pStore.remove(acc.id);
+});
+
+console.log('notify.enabled 总开关');
+t('总开关关闭时即使配了渠道也不发送', () => {
+  const n = require('../notify');
+  const settings = require('../notify/settings');
+  const file = settings.FILE;
+  const backup = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : null;
+  // 配好 webhook 但关掉总开关：应判定为不发送
+  settings.save({ webhookUrl: 'https://example.com/hook', enabled: true });
+  assert.strictEqual(n.enabled(), true, '总开关打开且配了 webhook 时应发送');
+  settings.save({ enabled: false });
+  try {
+    assert.strictEqual(n.enabled(), false, '总开关关闭后不应发送');
+    assert.deepStrictEqual(n.activeChannels(), [], '关闭时无生效渠道');
+    assert.deepStrictEqual(n.configuredChannels(), ['webhook'], '已配置渠道仍应可见');
   } finally {
     if (backup != null) fs.writeFileSync(file, backup, 'utf-8');
     else if (fs.existsSync(file)) fs.unlinkSync(file);

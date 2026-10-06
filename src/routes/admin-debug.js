@@ -13,28 +13,60 @@ const { authenticateAdmin } = require('../middleware/auth');
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
-/** 模型探活：最小请求打上游（真实调用）。 */
+/**
+ * 模型探活：最小请求打上游（真实调用）。
+ *
+ * 按模型 id 前缀分流：
+ *   - wb/ 前缀是 WorkBuddy-only 模型，必须走 workbuddy/chat 的 OpenAI 兼容
+ *     passthrough；若统一走 Trae 的 llmUtilsChat，上游会因模型不存在而报错，
+ *     表现为「怎么探测都失败」；
+ *   - 其余走 Trae 转换层。
+ */
 router.post('/models/probe', admin, async (req, res) => {
   const model = String((req.body && req.body.model) || req.query.model || '').trim();
   if (!model) {
     return res.status(400).json({ error: { message: 'model required', type: 'invalid_request_error' } });
   }
-  const { llmUtilsChat } = require('../upstream/client');
-  const { normalizeTraeMessages } = require('../transform/request');
   const startedAt = Date.now();
+
   try {
-    const { result, accountId } = await pool.run((accountId) =>
-      llmUtilsChat(
-        normalizeTraeMessages([{ role: 'user', content: 'ping' }]),
-        model, false, { accountId },
-      ), { maxSwitches: 1 });
+    let accountId = null;
+    let hasBody = false;
+
+    if (model.startsWith('wb/')) {
+      // WorkBuddy 链路：与 routes/openai.js 的非流式分支同源
+      const auth = require('../auth');
+      const wbChat = require('../workbuddy/chat');
+      const { result } = await pool.run(async (id) => {
+        const acct = await auth.ensureAuth(id);
+        accountId = id;
+        return wbChat.chatAggregate(
+          acct,
+          Object.assign({ model, messages: [{ role: 'user', content: 'ping' }], stream: true }),
+        );
+      }, { maxSwitches: 1 });
+      hasBody = !!(result && (result.data || result.body || (Array.isArray(result.choices) && result.choices.length)));
+    } else {
+      const { llmUtilsChat } = require('../upstream/client');
+      const { normalizeTraeMessages } = require('../transform/request');
+      const { result, accountId: id } = await pool.run(
+        (id2) =>
+          llmUtilsChat(normalizeTraeMessages([{ role: 'user', content: 'ping' }]), model, false, {
+            accountId: id2,
+          }),
+        { maxSwitches: 1 },
+      );
+      accountId = id;
+      hasBody = !!(result && (result.data || result.body));
+    }
+
     if (model !== 'auto') require('../models/availability').markUsable(model);
     res.json({
       ok: true,
       model,
       accountId,
       durationMs: Date.now() - startedAt,
-      hasBody: !!(result && (result.data || result.body)),
+      hasBody,
     });
   } catch (err) {
     if (model !== 'auto') {

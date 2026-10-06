@@ -12,13 +12,29 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 /** 通知渠道配置（读写本机 notify-settings.json；env 作兜底）。 */
 router.get('/notify/settings', admin, (req, res) => {
-  res.json({ object: 'notify_settings', ...require('../notify/settings').getEffective() });
+  const notify = require('../notify');
+  const settings = require('../notify/settings');
+  res.json({
+    object: 'notify_settings',
+    ...settings.getEffective(),
+    activeChannels: notify.activeChannels(),
+    configuredChannels: notify.configuredChannels(),
+    running: notify.enabled(),
+  });
 });
 
 router.post('/notify/settings', admin, (req, res) => {
   try {
-    const effective = require('../notify/settings').save(req.body || {});
-    res.json({ object: 'notify_settings', ...effective });
+    const settings = require('../notify/settings');
+    const notify = require('../notify');
+    const effective = settings.save(req.body || {});
+    res.json({
+      object: 'notify_settings',
+      ...effective,
+      activeChannels: notify.activeChannels(),
+      configuredChannels: notify.configuredChannels(),
+      running: notify.enabled(),
+    });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }

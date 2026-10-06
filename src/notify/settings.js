@@ -49,10 +49,15 @@ const EVENTS = [
   'backup_failed',
 ];
 
-// 渠道字段：env 兜底键取自 ENV_MAP；save 接受空串（空串即关闭该渠道）
+/**
+ * 渠道字段：env 兜底键取自 ENV_MAP；save 接受空串（空串即关闭该渠道）。
+ * enabled 是总开关：关闭时即使配了渠道也不发送，
+ * 避免「配好渠道后无法临时停用」只能靠删配置。
+ */
 const SPECS = Object.fromEntries(
   FIELDS.map((f) => [f, { env: ENV_MAP[f], default: '', saveEmpty: true }]),
 );
+SPECS.enabled = { type: 'bool', env: 'NOTIFY_ENABLED', default: true };
 
 const store = createSettingsStore({ name: NAME, specs: SPECS });
 
@@ -126,6 +131,9 @@ function save(partial) {
   for (const f of FIELDS) {
     if (typeof partial[f] === 'string') stored[f] = partial[f].trim();
   }
+  // 总开关也是受管字段：手写遍历只覆盖 FIELDS，不加这里 enabled 永远存不进去。
+  // 直接写 stored 而非 store.save()，避免两次落盘时用旧快照覆盖彼此。
+  if (typeof partial.enabled === 'boolean') stored.enabled = partial.enabled;
   if (partial.events && typeof partial.events === 'object') {
     stored.events = { ...(stored.events && typeof stored.events === 'object' ? stored.events : {}) };
     for (const e of EVENTS) {
