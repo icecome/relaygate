@@ -208,6 +208,9 @@ const EVENT_TITLES = {
   growth_departed: 'WorkBuddy 派猫出发',
   backup_done: '系统备份完成',
   backup_failed: '系统备份失败',
+  zcode_reward_claimed: 'ZCode 套餐领取成功',
+  zcode_reward_failed: 'ZCode 套餐领取失败',
+  zcode_reward_risk: 'ZCode 账号风控告警',
 };
 
 function humanTitle(event, payload = {}, fallback) {

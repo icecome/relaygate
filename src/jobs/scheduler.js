@@ -21,6 +21,7 @@ const pool = require('../credentials/pool');
 const availability = require('../models/availability');
 const catalog = require('../models/catalog');
 const { notify } = require('../notify');
+const variant = require('../platform/variant');
 const { checkCreditAlerts } = require('./credit-alerts');
 const { appendTaskLog } = require('./task-log');
 const { appendCheckinTaskLog } = require('./checkin-log');
@@ -64,7 +65,9 @@ function isExpiringSoon(acct) {
 
 /** 扫描并刷新临期账号 token。 */
 async function refreshExpiringTokens() {
-  const accounts = store.list().filter((a) => a.enabled);
+  // 只刷新声明了 oauthLogin 能力的账号：ZCode 的 JWT 无 exp、也不返回 refresh_token，
+  // 走 Trae 的换票链路既无意义也会打错端点
+  const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
   let refreshed = 0;
   let failed = 0;
   for (const a of accounts) {
@@ -233,8 +236,10 @@ async function runKeepalive() {
   console.log('[scheduler] keepalive token refresh start');
   let failed = 0;
   try {
-    // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）
-    const accounts = store.list().filter((a) => a.enabled);
+    // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）。
+    // 排除 oauthLogin=false 的平台（ZCode）：它没有 refresh_token 也没有换票端点，
+    // 保活只会打错链路。
+    const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
     // 账号间加随机间隔：固定 200ms 的整齐节奏是上游易识别的机器化特征
     const gapMin = 800;
     const gapMax = 2500;
@@ -533,6 +538,8 @@ function start() {
   scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', () => runRotateAccounts());
   scheduleModelProbe(eff);
   scheduleGrowthPoll(eff);
+  // ZCode 限时套餐探测/领取由 jobs/zcode-rewards.js 自管两个时段
+  // （00:30 / 21:30），此处不重复排程，避免两处时刻定义分叉。
 
   console.log('[scheduler] started (checkin + keepalive + token sweep + model probe + rotate + growth poll)');
 }

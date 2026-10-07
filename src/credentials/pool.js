@@ -389,12 +389,18 @@ function groupOk(a) {
 /**
  * 平台过滤：workbuddy 账号（edition='workbuddy'）与 trae 账号分池调度，
  * 由 opts.edition 指定目标平台；未指定时仅取 trae 系账号（保持既有行为）。
+ *
+ * 平台判定走 variant.canChat（单一事实源）：新增平台（如 zcode）的
+ * capability.chat=false，未声明 chat 能力前不可能被误选进转发池。
+ * 未知 edition 显式排除——绝不能兜底进任何池。
  */
 function editionOk(a, wanted) {
-  const isWb = a.edition === 'workbuddy';
-  if (wanted === 'workbuddy') return isWb;
-  if (wanted === 'trae') return !isWb;
-  return !isWb; // 默认：Trae 池
+  const variant = require('../platform/variant');
+  const edition = variant.editionOf(a.edition);
+  if (wanted) return edition === variant.editionOf(wanted) && variant.canChat(edition);
+  // 未指定目标平台时：取「声明了 chat 能力且不是 workbuddy」的账号
+  // （等价于旧版 isWb 语义，但用能力位判定，避免每加一个平台就改这里）
+  return variant.canChat(edition) && edition !== variant.WORKBUDDY;
 }
 
 /**

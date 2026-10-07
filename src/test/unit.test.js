@@ -1775,7 +1775,7 @@ t('checkContextLimit：未声明/未超限放行，超限 400 且标记 context_
     null,
   );
 });
-
+
 console.log('model-router autotier（自动分层）');
 t('autotier：按窗口分层、倍率排序、候选级守门与输出钳制', () => {
   const autotier = require('../model-router/autotier');
@@ -2877,4 +2877,211 @@ t('least_balance 按 FEFO 到期时刻升序（先到期先用）', () => {
   const ordered = [...list].sort((x, y) => soonestOf(x) - soonestOf(y));
   assert.strictEqual(ordered[0].id, 'a_early', '到期更近的账号应排在前面');
 });
+
+// ── zcode 运营面 ────────────────────────────────────────────────────────────
+console.log('platform/variant (zcode)');
+t('zcode 变体已注册且能力位正确', () => {
+  const v = require('../platform/variant');
+  const z = v.variantOf('zcode');
+  assert.strictEqual(z.id, 'zcode');
+  assert.strictEqual(z.label, 'ZCode');
+  assert.strictEqual(v.can('zcode', 'chat'), false, '转发面未启用前 chat 必须为 false');
+  assert.strictEqual(v.can('zcode', 'balance'), true);
+  assert.strictEqual(v.can('zcode', 'checkin'), false);
+  assert.strictEqual(v.can('zcode', 'oauthLogin'), false);
+  assert.strictEqual(v.can('zcode', 'rewardClaim'), true);
+  assert.strictEqual(v.can('zcode', 'localImport'), true);
+  assert.strictEqual(z.rewardClaimHours.length, 2, '每日两个探测时段');
+  assert.strictEqual(v.variantOf('zcode').errors.captchaFailed, 3007);
+  assert.strictEqual(v.variantOf('zcode').errors.riskControl, 3012);
+});
+
+t('isTrae/isEdition 不做未知值兜底（zcode 不得被当 Trae）', () => {
+  const v = require('../platform/variant');
+  assert.strictEqual(v.isTrae('zcode'), false);
+  assert.strictEqual(v.isTrae('cn'), true);
+  assert.strictEqual(v.isTrae('sg'), true);
+  assert.strictEqual(v.isTrae('__unknown__'), false, '未知值不兜底为 Trae');
+  assert.strictEqual(v.isEdition('zcode', 'zcode'), true);
+  assert.strictEqual(v.isEdition('zcode', 'trae'), false);
+  assert.strictEqual(v.isEdition('workbuddy', 'trae'), false);
+  assert.strictEqual(v.isEdition('trae', 'trae'), true);
+});
+
+t('pool.editionOk 拒绝 zcode 账号进 Trae 转发池', () => {
+  const store = require('../credentials/store');
+  const z = store.add({
+    label: 'zcode-test', edition: 'zcode', mode: 'jwt', token: 'x'.repeat(50), userId: 'ztest-pool-1',
+    fingerprint: {
+      platform: 'win32', arch: 'x64', osVersion: '10.0.22631', screen: '1920x1080',
+      language: 'zh-CN', timezone: 'Asia/Shanghai',
+      deviceMid: '0e5b1b56-1111-4222-8333-444455556666',
+    },
+  }, 'test');
+  try {
+    const t1 = store.add({ label: 'trae-test', edition: 'trae', token: 'y'.repeat(50), userId: 'ttest-pool-1' }, 'test');
+    try {
+      // zcode 账号 enabled 且无冷却：若 editionOk 兜底为 Trae，这里会被选中
+      const picked = require('../credentials/pool').pick(null, { edition: 'trae' });
+      assert.notStrictEqual(picked && picked.id, z.id, 'zcode 账号绝不能被 Trae 池选中');
+      void t1;
+    } finally { store.remove(t1.id); }
+  } finally { store.remove(z.id); }
+});
+
+console.log('zcode/fingerprint');
+t('生成的指纹成套自洽（平台/内核/分辨率绑定）', () => {
+  const fp = require('../zcode/fingerprint');
+  for (let i = 0; i < 50; i++) {
+    const f = fp.generate();
+    assert.strictEqual(fp.validate(f), null, `第 ${i} 次生成即应合法: ${JSON.stringify(f)}`);
+    assert.strictEqual(fp.platformFull(f), `${f.platform}-${f.arch}`);
+    const wantCat = f.platform === 'darwin' ? 'macos' : (f.platform === 'win32' ? 'windows' : 'linux');
+    assert.strictEqual(fp.osCategory(f), wantCat);
+  }
+});
+
+t('validate 拒绝笛卡尔积（darwin-arm64 + 1366x768 为假电脑）', () => {
+  const fp = require('../zcode/fingerprint');
+  const err = fp.validate({
+    platform: 'darwin', arch: 'arm64', osVersion: '24.5.0', screen: '1366x768',
+    language: 'zh-CN', timezone: 'Asia/Shanghai', deviceMid: '0e5b1b56-1111-4222-8333-444455556666',
+  });
+  assert.ok(err, '非法组合必须报错');
+  assert.ok(/SKU/.test(err));
+});
+
+t('validate 拒绝语言-时区不真实的组合', () => {
+  const fp = require('../zcode/fingerprint');
+  const err = fp.validate({
+    platform: 'win32', arch: 'x64', osVersion: '10.0.22631', screen: '1920x1080',
+    language: 'zh-CN', timezone: 'Europe/London', deviceMid: '0e5b1b56-1111-4222-8333-444455556666',
+  });
+  assert.ok(err && /语言\/时区/.test(err));
+});
+
+console.log('zcode/rewards');
+t('parsePlan 只保留 model_usage/token 授权项并解出 grants', () => {
+  const { parsePlan } = require('../zcode/rewards');
+  const p = parsePlan({
+    plan_id: ' zcode-v3-start-plan-trust-1007 ',
+    name: ' ZCode Trust Build ',
+    priority: 110,
+    entitlements: [
+      { entitlement_id: 'e1', show_name: 'GLM-5.3-Flash', meter: 'model_usage', unit_type: 'token', grant_units: 100000000, period: 'one_time', capabilities: ['model:glm-5.3-flash'] },
+      { entitlement_id: 'e2', show_name: 'CPU', meter: 'cpu', unit_type: 'core', grant_units: 4, period: 'one_time' },
+    ],
+  });
+  assert.strictEqual(p.planId, 'zcode-v3-start-plan-trust-1007');
+  assert.strictEqual(p.name, 'ZCode Trust Build');
+  assert.strictEqual(p.priority, 110);
+  assert.strictEqual(p.grants.length, 1, '非 model_usage/token 的授权项必须被过滤');
+  assert.strictEqual(p.grants[0].name, 'GLM-5.3-Flash');
+  assert.strictEqual(p.grants[0].units, 100000000);
+  assert.strictEqual(parsePlan(null), null);
+  assert.strictEqual(parsePlan({ plan_id: '  ' }), null);
+});
+
+t('套餐排序：优先级降序、planId 升序稳定 tie-break', () => {
+  const { parsePlan } = require('../zcode/rewards');
+  const plans = [{ plan_id: 'a', priority: 10 }, { plan_id: 'b', priority: 110 }, { plan_id: 'c', priority: 50 }]
+    .map(parsePlan).filter(Boolean)
+    .sort((x, y) => (y.priority - x.priority) || x.planId.localeCompare(y.planId));
+  assert.deepStrictEqual(plans.map((p) => p.planId), ['b', 'c', 'a']);
+});
+
+t('jwtUserId 解出 user_id（sub 兜底，坏 token 返回 null）', () => {
+  const { jwtUserId } = require('../zcode/rewards');
+  const b64 = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  assert.strictEqual(jwtUserId(`h.${b64({ user_id: '79251783416529165' })}.s`), '79251783416529165');
+  assert.strictEqual(jwtUserId(`h.${b64({ sub: 'abc-123' })}.s`), 'abc-123');
+  assert.strictEqual(jwtUserId(''), null);
+  assert.strictEqual(jwtUserId('not-a-jwt'), null);
+  assert.strictEqual(jwtUserId(`h.${b64({})}.s`), null);
+});
+
+t('buildActivationEvent 固定 16 字段且字段自洽', () => {
+  const { buildActivationEvent } = require('../zcode/rewards');
+  const fp = { platform: 'win32', arch: 'x64', osVersion: '10.0.22631', language: 'zh-CN', timezone: 'Asia/Shanghai', screen: '1920x1080', deviceMid: '0e5b1b56-1111-4222-8333-444455556666' };
+  const e = buildActivationEvent('app_daily_active', fp, 'u-1');
+  const keys = Object.keys(e).sort();
+  assert.strictEqual(keys.length, 16, '官方事件体字段集固定 16 个');
+  assert.strictEqual(e.element_name, 'app_daily_active');
+  assert.strictEqual(e.user_id, 'u-1');
+  assert.strictEqual(e.device_mid, fp.deviceMid);
+  assert.strictEqual(e.screen_resolution, fp.screen);
+  assert.strictEqual(e.device_os_category, 'windows');
+  assert.strictEqual(e.event_type, 'view');
+  assert.ok(/^[0-9a-f-]{36}$/.test(e.event_id));
+  assert.strictEqual(e.mac_id, '');
+  assert.strictEqual(e.marketing_params, '{}');
+});
+
+t('billingBlockReason 拦截缺凭据/停用/非 zcode 账号', () => {
+  const { billingBlockReason } = require('../zcode/rewards');
+  assert.ok(billingBlockReason({ edition: 'zcode', enabled: true }, { action: '领取' }).includes('JWT'));
+  assert.ok(billingBlockReason({ edition: 'zcode', enabled: false, token: 'x' }, { action: '领取' }).includes('停用'));
+  assert.ok(billingBlockReason({ edition: 'trae', enabled: true, token: 'x' }, { action: '领取' }).includes('非 ZCode'));
+  assert.strictEqual(billingBlockReason({ edition: 'zcode', enabled: true, token: 'x' }), null);
+});
+
+t('CLAIM_RESULT 语义完整（claimed/already/failed/risk）', () => {
+  const { CLAIM_RESULT } = require('../zcode/rewards');
+  assert.deepStrictEqual(Object.values(CLAIM_RESULT).sort(), ['already', 'claimed', 'failed', 'risk']);
+});
+
+t('claim 业务码映射覆盖上游实证语义', () => {
+  const { CLAIM_FAIL_TEXT } = require('../zcode/rewards');
+  for (const code of [1001, 1002, 1003, 1004, 1005, 3001, 3007, 3012, 401]) {
+    assert.ok(CLAIM_FAIL_TEXT[code], `code ${code} 缺少文案`);
+  }
+  assert.ok(CLAIM_FAIL_TEXT[3012].includes('风控'));
+  assert.ok(CLAIM_FAIL_TEXT[1003].includes('已领取'));
+});
+
+console.log('zcode/captcha');
+t('claimHeaders 同时携带 Param 与 Region（缺 Region 亦 3007）', () => {
+  const { claimHeaders, CAPTCHA_DEFAULTS } = require('../zcode/captcha');
+  const h = claimHeaders('PARAM', 'cn');
+  assert.strictEqual(h['X-Aliyun-Captcha-Verify-Param'], 'PARAM');
+  assert.strictEqual(h['X-Aliyun-Captcha-Verify-Region'], 'cn');
+  const h2 = claimHeaders('PARAM', null);
+  assert.strictEqual(h2['X-Aliyun-Captcha-Verify-Region'], CAPTCHA_DEFAULTS.region, 'region 缺省时回退默认');
+});
+
+console.log('zcode/local');
+t('decryptField 非密文原样返回，密文可解（自加密回环）', () => {
+  const crypto = require('crypto');
+  const local = require('../zcode/local');
+  const key = crypto.createHash('sha256').update('secret').digest();
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+  const ct = Buffer.concat([cipher.update('hello', 'utf-8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  const wrapped = 'enc:v1:' + [iv.toString('base64url'), tag.toString('base64url'), ct.toString('base64url')].join('.');
+  assert.strictEqual(local.decryptField(wrapped, key), 'hello');
+  assert.strictEqual(local.decryptField('plain', key), 'plain');
+});
+
+t('deriveSecret 与客户端实现同源（fallback 形态）', () => {
+  const local = require('../zcode/local');
+  const os = require('os');
+  if (process.env.ZCODE_CREDENTIAL_SECRET) return; // env 注入时形态不同
+  const s = local.deriveSecret();
+  assert.ok(s.startsWith('zcode-credential-fallback:'), 'fallback 前缀必须一致');
+  assert.ok(s.includes(os.platform()));
+  assert.ok(s.includes(os.homedir()));
+});
+
+t('buildAccountFromLocal 产出 zcode/jwt 账号（本机已安装客户端时）', () => {
+  const local = require('../zcode/local');
+  if (!local.isClientInstalled()) return; // CI/无客户端环境跳过
+  const acct = local.buildAccountFromLocal();
+  assert.strictEqual(acct.edition, 'zcode');
+  assert.strictEqual(acct.mode, 'jwt');
+  assert.ok(acct.token && acct.token.split('.').length === 3, '应为三段 JWT');
+  assert.strictEqual(acct.refreshToken, null, '客户端不返回 refresh_token');
+  assert.ok(acct.userId, 'JWT 必含 user_id/sub');
+});
+
 main();

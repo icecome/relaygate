@@ -47,6 +47,10 @@ const EVENTS = [
   'growth_departed',
   'backup_done',
   'backup_failed',
+  // ZCode 限时套餐运营面
+  'zcode_reward_claimed',
+  'zcode_reward_failed',
+  'zcode_reward_risk',
 ];
 
 /**

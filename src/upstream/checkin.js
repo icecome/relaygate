@@ -269,7 +269,9 @@ async function checkinAccount(accountId) {
  * @param {{windowStartMs?:number, spreadMinutes?:number}} [opts]
  */
 async function checkinAllEnabled(opts = {}) {
-  const accounts = store.list().filter((a) => a.enabled && a.edition !== 'workbuddy');
+  // 只跑 Trae 系账号（显式白名单）。不能写 edition !== 'workbuddy'：
+  // 那会把新平台（如 zcode）的账号误抓进 Trae 签到链。
+  const accounts = store.list().filter((a) => a.enabled && variant.isTrae(a.edition));
   const claimed = [];
   const already = [];
   const disabled = [];

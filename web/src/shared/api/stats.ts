@@ -119,9 +119,24 @@ export const getOfficialUsage = (days: number, key: string, signal?: AbortSignal
     key,
   );
 
+export interface CreditHistoryRow {
+  accountId: string;
+  label: string;
+  group?: string | null;
+  /** 上游 consumed_amount 增量（主口径，与官方账单基本吻合） */
+  usedTotal: number;
+  /** 剩余下降量（含权益包到期作废，仅作对照，可能远高于真实消耗） */
+  remainingDelta: number;
+  snapshots: number;
+  latestRemaining: number | null;
+  /** 窗口内是否存在可差分的快照对；false 表示「未覆盖」而非「消耗 0」 */
+  covered: boolean;
+}
+
 export const getCreditHistory = (days: number, key: string, signal?: AbortSignal) =>
-  api<{ days: number; totalUsed: number; data: { label?: string; todayUsed?: number }[] }>(
-    `/v1/admin/credit-history?days=${days}`,
-    { signal },
-    key,
-  );
+  api<{
+    days: number;
+    totalUsed: number;
+    remainingDelta: number;
+    data: CreditHistoryRow[];
+  }>(`/v1/admin/credit-history?days=${days}`, { signal }, key);

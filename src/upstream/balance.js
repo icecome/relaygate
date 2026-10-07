@@ -192,6 +192,52 @@ async function refreshWorkbuddyBalance(stored) {
 }
 
 /**
+ * ZCode 余额：billing/balance（token 计量口径）。
+ * 汇总各 entitlement 的 remaining_units 写入 balance（面板余额列口径）。
+ */
+async function refreshZcodeBalance(stored) {
+  const rewards = require('../zcode/rewards');
+  const r = await rewards.fetchBalance(stored);
+  const totalRemaining = (r.balances || []).reduce((s, b) => s + (Number(b.remaining_units) || 0), 0);
+  const balance = totalRemaining > 0 ? totalRemaining : null;
+  const packs = (r.balances || []).map((b) => ({
+    name: b.show_name || b.entitlement_id,
+    packId: b.bucket_id || null,
+    limit: Number(b.total_units) || null,
+    used: Number(b.used_units) || 0,
+    remaining: Number(b.remaining_units) || 0,
+    expireTime: Number(b.expires_at) || null,
+    planId: b.plan_id || null,
+    meter: b.meter || 'model_usage',
+  }));
+  const snapshot = {
+    updatedAt: new Date().toISOString(),
+    packs,
+    expiring: summarizeExpiry(packs),
+    plans: r.plans,
+  };
+  store.update(stored.id, { balance, entitlementSnapshot: snapshot });
+  try {
+    require('../credentials/credit-history').add(stored.id, {
+      remaining: balance,
+      used: (r.balances || []).reduce((s, b) => s + (Number(b.used_units) || 0), 0) || null,
+      source: 'zcode_billing_balance',
+    });
+  } catch (e) { /* 快照失败不影响余额刷新 */ }
+  return {
+    accountId: stored.id,
+    label: stored.label || stored.id,
+    balance,
+    used: packs.reduce((s, p) => s + p.used, 0) || null,
+    limit: packs.reduce((s, p) => s + (p.limit || 0), 0) || null,
+    isCreditsBilling: false,
+    source: 'zcode_billing_balance',
+    expiring: snapshot.expiring,
+    packs,
+  };
+}
+
+/**
  * 刷新单账号剩余积分并写回 balance（remaining）。
  * 默认 req_source=2（Lite），以包含 Work 专属积分包。
  * 禁用账号也可查询（只读）；批量接口 refreshBalanceAllEnabled 仍只跑 enabled。
@@ -200,7 +246,9 @@ async function refreshWorkbuddyBalance(stored) {
 async function refreshBalance(accountId) {
   const stored = store.get(accountId);
   if (!stored) throw new Error(`account not found: ${accountId}`);
-  if (stored.edition === 'workbuddy') return refreshWorkbuddyBalance(stored);
+  if (variant.isEdition(stored.edition, variant.WORKBUDDY)) return refreshWorkbuddyBalance(stored);
+  // ZCode 账号走自己的 billing/balance（zcode/rewards.js）；这里只做分流
+  if (variant.isEdition(stored.edition, variant.ZCODE)) return refreshZcodeBalance(stored);
 
   const authInfo = await auth.ensureAuth(accountId);
   const acct = { ...stored, ...authInfo };
@@ -313,7 +361,10 @@ async function refreshBalanceAllEnabled(opts = {}) {
 }
 
 async function refreshBatch(opts) {
-  const accounts = store.list().filter((a) => a.enabled);
+  // 只跑「声明了 balance 能力」的启用账号（trae 系 + workbuddy + zcode 均具备；
+  // 未来新增无余额概念的平台在此自动排除）
+  const variant = require('../platform/variant');
+  const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'balance'));
   const ok = [];
   const failed = [];
   const spreadMinutes = Number(opts.spreadMinutes) || 0;

@@ -24,6 +24,7 @@ const os = require('os');
 /** 账号表 edition 字段的取值（也是本模块的键）。 */
 const TRAE = 'trae';
 const WORKBUDDY = 'workbuddy';
+const ZCODE = 'zcode';
 
 /**
  * 平台定义表。
@@ -147,12 +148,93 @@ const VARIANTS = {
       fileName: 'workbuddy-desktop.info',
     },
   },
+
+  // ZCode（智谱 / Z.ai 的官方桌面客户端）。当前只接入「账号运营面」：
+  // 本机凭据导入、限时套餐领取、额度查询、激活上报。转发面（messages）
+  // 刻意留空——上游按设备指纹+追踪头识别客户端，头形态写错会触发 3012
+  // 「unusual activity」，不适合在未充分验证前并入转发池。
+  [ZCODE]: {
+    id: ZCODE,
+    label: 'ZCode',
+    edition: ZCODE,
+    capability: {
+      chat: false,
+      checkin: false,
+      balance: true,
+      growth: false,
+      billing: true,
+      oauthLogin: false,
+      deviceFingerprint: true,
+      // 运营面能力位：限时套餐探测与领取（本平台独有）
+      rewardClaim: true,
+      // 本机客户端凭据导入（~/.zcode/v2/credentials.json）
+      localImport: true,
+    },
+    hosts: {
+      zcode: 'https://zcode.z.ai',
+      zaiApi: 'https://api.z.ai',
+      bigmodel: 'https://open.bigmodel.cn',
+      chat: 'https://chat.z.ai',
+      // 官方客户端 OAuth 授权页与换票端点
+      oauthAuthorize: 'https://chat.z.ai/api/oauth/authorize',
+      oauthToken: 'https://zcode.z.ai/api/v1/oauth/token',
+      // 客户端 CDN 资源
+      cdn: 'https://cdn-zcode.z.ai',
+    },
+    identity: {
+      appId: 'client_P8X5CMWmlaRO9gyO-KSqtg',
+      // X-Title = "Z Code@{sourceTitle}"，桌面端 sourceTitle=electron
+      title: 'Z Code@electron',
+      agent: 'glm',
+      releaseChannel: 'stable',
+      referer: 'https://zcode.z.ai/',
+    },
+    paths: {
+      // 运营面
+      billingPreview: '/api/v1/zcode-plan/billing/preview',
+      billingClaim: '/api/v1/zcode-plan/billing/claim',
+      billingBalance: '/api/v1/zcode-plan/billing/balance',
+      clientConfigs: '/api/v1/client/configs',
+      eventReport: '/api/v1/event/report',
+      marketingTouch: '/api/v1/marketing/touch',
+      incentiveBase: '/api/v1/incentive',
+      oauthToken: '/api/v1/oauth/token',
+      // 转发面（当前未启用；头形态见 zcode/identity.js 的风险说明）
+      messages: '/api/v1/zcode-plan/anthropic/v1/messages',
+      messagesFallback: '/api/anthropic/v1/messages',
+    },
+    errors: {
+      // billing/claim 业务码（对齐 zcode2api claim.py 的实证映射）
+      planNotFound: 1001,
+      campaignEnded: 1002,
+      alreadyClaimed: 1003,
+      ineligible: 1004,
+      quotaExhausted: 1005,
+      paramError: 3001,
+      // 验证码校验失败：换码重试一次
+      captchaFailed: 3007,
+      // 真风控：unusual activity，命中即应隔离账号保护资产
+      riskControl: 3012,
+      // 复用既有的通用分类器语义
+      alreadyCheckedIn: [],
+      alreadyText: ['已经领取', '已领取过'],
+      rateLimitCodes: [429],
+      // 额度类文案（classifyError 的 quota 分支按正则兜底）
+      quotaText: ['名额已用完', '额度不足'],
+    },
+    // 每日限时套餐投放的时段（本地时区，运营面定时任务用）
+    rewardClaimHours: [0, 21],
+    rewardClaimMinute: 30,
+    // 激活事件元素（preview 前的活跃上报，官方客户端首启/日活同源）
+    activationElements: ['app_launch', 'app_daily_active'],
+  },
 };
 
 /** Trae 侧的 edition 历史值（cn/sg/us/manual）归一到 trae。 */
 function normalizeEdition(edition) {
   const e = String(edition || '').toLowerCase();
   if (e === WORKBUDDY) return WORKBUDDY;
+  if (e === ZCODE) return ZCODE;
   return TRAE;
 }
 
@@ -163,6 +245,44 @@ function normalizeEdition(edition) {
  */
 function variantOf(id) {
   return VARIANTS[normalizeEdition(id)] || VARIANTS[TRAE];
+}
+
+/**
+ * 账号 edition 的规范值（转发池分流用）。
+ *
+ * 与 variantOf 的区别：本函数不把未知值兜底成 trae，而是原样返回小写值，
+ * 让调用方能区分「真的是 trae」与「不认识的值」。pool.pick 这类
+ * 会实际发上游请求的地方必须用本函数，否则新增平台会被静默当成 Trae。
+ */
+function editionOf(id) {
+  return String(id || '').toLowerCase();
+}
+
+/** 是否为可进转发池的平台（capability.chat）。 */
+function canChat(platformId) {
+  return variantOf(platformId).capability.chat === true;
+}
+
+/** Trae 侧的 edition 取值全集（含历史值）。 */
+const TRAE_EDITIONS = new Set([TRAE, 'cn', 'sg', 'us', 'manual']);
+
+/**
+ * 是否为 Trae 系账号——显式白名单判定，不做未知值兜底。
+ *
+ * 与 variantOf 的区别：variantOf('__unknown__') 会兜底成 Trae（保持历史行为），
+ * 但「按平台筛账号」的地方绝不能兜底，否则新增平台会被静默抓进 Trae 链路。
+ * 需要按平台过滤账号时一律用本函数 / capability 位。
+ */
+function isTrae(edition) {
+  return TRAE_EDITIONS.has(String(edition || '').toLowerCase());
+}
+
+/** 是否为指定平台的账号（显式比较，不兜底）。 */
+function isEdition(edition, platformId) {
+  const e = String(edition || '').toLowerCase();
+  const want = String(platformId || '').toLowerCase();
+  if (want === TRAE) return isTrae(e);
+  return e === want;
 }
 
 /** 能力查询：调用方据此决定是否发起某类请求，替代散落的 edition 比较。 */
@@ -204,10 +324,16 @@ function clientAuthDir(platformId = WORKBUDDY) {
 module.exports = {
   TRAE,
   WORKBUDDY,
+  ZCODE,
   VARIANTS,
+  TRAE_EDITIONS,
   variantOf,
   normalizeEdition,
+  editionOf,
   can,
+  canChat,
+  isTrae,
+  isEdition,
   hostFor,
   regionOf,
   validRegion,

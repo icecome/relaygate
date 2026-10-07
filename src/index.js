@@ -25,6 +25,7 @@ const dashboard = require('./routes/dashboard');
 const responses = require('./routes/responses');
 const status = require('./routes/status');
 const workbuddy = require('./routes/workbuddy');
+const zcode = require('./routes/zcode'); // ZCode 运营面（凭据导入 / 套餐领取 / 额度）
 const catTrip = require('./routes/cat-trip'); // WorkBuddy 成长活动端点（/v1/workbuddy/growth）
 const apiKeys = require('./routes/api-keys');
 const modelRouterAdmin = require('./routes/model-router');
@@ -94,6 +95,8 @@ if (fs.existsSync(webDist)) {
 app.use('/v1/credentials', credentials);
 app.use('/v1/workbuddy', workbuddy);
 app.use('/v1/workbuddy/growth', catTrip);
+// ZCode 运营面：凭据导入 / 套餐探测领取 / 额度 / 定时任务设置（全部管理鉴权）
+app.use('/v1/zcode', zcode);
 app.use('/v1/admin', adminOverview);
 app.use('/v1/admin', adminTraffic);
 app.use('/v1/admin', adminJobs);
@@ -140,12 +143,14 @@ function listen(port, host, fallbacks = []) {
     scheduler.start();
     // 凭据模块启动初始化（devices 回填；m-38：从 require 期副作用改为显式调用）
     require('./routes/credentials').initCredentials();
-    // 余额自动刷新 / 全量备份（独立定时器，配置驱动）
+    // 余额自动刷新 / 全量备份 / ZCode 奖励定时（独立定时器，配置驱动）
     require('./jobs/balance-refresh').start();
     require('./jobs/backup').start();
+    // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
+    require('./jobs/zcode-rewards').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
     require('./log/retention').pruneAtStartup(config.ROOT);
-    console.log('[relay-gate] periodic jobs started (balance refresh + backup)');
+    console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards)');
   });
   server.on('error', (err) => {
     if (isPortBusy(err) && fallbacks.length) {

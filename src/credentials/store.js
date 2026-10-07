@@ -44,8 +44,8 @@ function bindInt(v, fallback = 0) {
 }
 
 function safeTok(v) {
-  // 对外返回值脱敏：去掉 token / refreshToken 明文
-  const { token, refreshToken, ...rest } = v;
+  // 对外返回值脱敏：去掉 token / refreshToken / apiKey 明文
+  const { token, refreshToken, apiKey, ...rest } = v;
   return rest;
 }
 
@@ -56,6 +56,8 @@ function acctToRow(acct) {
     edition: bindText(acct.edition),
     token_enc: enc(acct.token),
     refresh_token_enc: enc(acct.refreshToken),
+    // ZCode 回退通道凭据（api.z.ai / open.bigmodel 的 key），列级加密
+    api_key_enc: enc(acct.apiKey),
     expired_at: bindText(acct.expiredAt),
     refresh_expired_at: bindText(acct.refreshExpiredAt),
     token_release_at: bindText(acct.tokenReleaseAt),
@@ -63,6 +65,10 @@ function acctToRow(acct) {
     host: bindText(acct.host),
     user_region: bindText(acct.userRegion),
     devices: acct.devices ? JSON.stringify(acct.devices) : null,
+    // ZCode 账号的设备档案（zcode/fingerprint.js 的成套桌面 SKU + device_mid）
+    fingerprint: acct.fingerprint && Object.keys(acct.fingerprint).length ? JSON.stringify(acct.fingerprint) : null,
+    // ZCode 账号类型：jwt（Coding/Start Plan 额度）| apiKey（回退通道）
+    mode: bindText(acct.mode),
     source: bindText(acct.source) || 'import',
     enabled: acct.enabled ? 1 : 0,
     balance: bindNum(acct.balance),
@@ -102,6 +108,8 @@ function rowToDecrypted(r, withSecrets = true) {
     edition: r.edition,
     token: withSecrets && r.token_enc ? crypto.decrypt(r.token_enc) : null,
     refreshToken: withSecrets && r.refresh_token_enc ? crypto.decrypt(r.refresh_token_enc) : null,
+    // ZCode 回退通道凭据
+    apiKey: withSecrets && r.api_key_enc ? crypto.decrypt(r.api_key_enc) : null,
     expiredAt: r.expired_at,
     refreshExpiredAt: r.refresh_expired_at,
     tokenReleaseAt: r.token_release_at,
@@ -109,6 +117,9 @@ function rowToDecrypted(r, withSecrets = true) {
     host: r.host,
     userRegion: r.user_region,
     devices: r.devices ? JSON.parse(r.devices) : null,
+    // ZCode 设备档案与账号类型（其它平台为 null，不影响既有读取方）
+    fingerprint: parseSnapshotJson(r.fingerprint),
+    mode: r.mode || null,
     source: r.source,
     enabled: !!r.enabled,
     balance: r.balance,
@@ -171,15 +182,15 @@ function add(cred, source) {
   const r = acctToRow(acct);
   db().prepare(`
     INSERT INTO accounts (
-      id, label, edition, token_enc, refresh_token_enc, expired_at, refresh_expired_at,
-      token_release_at, user_id, host, user_region, devices, source, enabled,
+      id, label, edition, token_enc, refresh_token_enc, api_key_enc, expired_at, refresh_expired_at,
+      token_release_at, user_id, host, user_region, devices, fingerprint, mode, source, enabled,
       balance, error_count, cool_until, last_picked_at, last_checkin_at, last_checkin_result,
       entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier,
       model_cooldowns, rate_streak, model_cool_streak
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.expired_at,
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
-    r.devices, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
+    r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result, r.entitlement_snapshot,
     r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
     r.model_cooldowns, r.rate_streak, r.model_cool_streak);
@@ -194,17 +205,17 @@ function update(id, patch) {
   const r = acctToRow(merged);
   db().prepare(`
     UPDATE accounts SET
-      label = ?, edition = ?, token_enc = ?, refresh_token_enc = ?, expired_at = ?,
+      label = ?, edition = ?, token_enc = ?, refresh_token_enc = ?, api_key_enc = ?, expired_at = ?,
       refresh_expired_at = ?, token_release_at = ?, user_id = ?, host = ?, user_region = ?,
-      devices = ?, source = ?, enabled = ?, balance = ?, error_count = ?, cool_until = ?,
+      devices = ?, fingerprint = ?, mode = ?, source = ?, enabled = ?, balance = ?, error_count = ?, cool_until = ?,
       last_picked_at = ?, last_checkin_at = ?, last_checkin_result = ?,
       entitlement_snapshot = ?, priority = ?, tags = ?,
       group_name = ?, device_gen = ?, auth_client_id = ?, auth_host = ?, cost_tier = ?,
       model_cooldowns = ?, rate_streak = ?, model_cool_streak = ?
     WHERE id = ?
-  `).run(r.label, r.edition, r.token_enc, r.refresh_token_enc, r.expired_at,
+  `).run(r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
-    r.devices, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
+    r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result, r.entitlement_snapshot,
     r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
     r.model_cooldowns, r.rate_streak, r.model_cool_streak, id);

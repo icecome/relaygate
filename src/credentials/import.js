@@ -163,19 +163,38 @@ function ensureAccountDevices(accountId) {
   return updated;
 }
 
-/** 遍历账号，为 devices 缺失者回填。 */
+/**
+ * 遍历账号，为 devices 缺失者回填。
+ *
+ * 按平台分流：ZCode 账号的设备身份是 accounts.fingerprint（成套桌面 SKU +
+ * device_mid，见 zcode/fingerprint.js），不适用 Trae 的 machineId/devDeviceId
+ * 两件套，给它填 Trae devices 没有意义且会被误当作 Trae 账号。
+ */
 function ensureAllMissingDevices() {
   const list = store.list();
+  const variant = require('../platform/variant');
   let filled = 0;
+  let filledZcode = 0;
   for (const a of list) {
     const full = store.get(a.id);
     if (!full) continue;
+    if (variant.isEdition(full.edition, variant.ZCODE)) {
+      // ZCode：缺 fingerprint 时分配一套成套桌面档案
+      if (require('../zcode/fingerprint').validate(full.fingerprint)) {
+        require('../zcode/fingerprint').profileFor(full, (fp) => {
+          store.update(full.id, { fingerprint: fp });
+        });
+        filled += 1;
+        filledZcode += 1;
+      }
+      continue;
+    }
     const n = normalizeDevices(full.devices);
     if (n && n.machineId && n.devDeviceId) continue;
     ensureAccountDevices(a.id);
     filled += 1;
   }
-  return { total: list.length, filled };
+  return { total: list.length, filled, filledZcode };
 }
 
 /**

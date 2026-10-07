@@ -84,15 +84,18 @@ router.get('/traffic', admin, (req, res) => {
   });
 });
 
-/** 积分快照历史（差分统计各账号消耗，仅 Admin）。 */
+/** 积分快照历史（usedTotal 增量为主口径，remainingDelta 受包到期污染仅作对照）。 */
 router.get('/credit-history', admin, (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days || '1', 10) || 1, 1), 30);
   const data = require('../credentials/credit-history').summary(days);
-  const totalUsed = data.reduce((s, d) => s + (d.todayUsed || 0), 0);
+  const sumBy = (k) => data.reduce((s, d) => s + (d[k] || 0), 0);
   res.json({
     object: 'list',
     days,
-    totalUsed: Math.round(totalUsed * 100) / 100,
+    // usedTotal：上游 consumed_amount 增量，主口径（与官方账单基本吻合）
+    totalUsed: Math.round(sumBy('usedTotal') * 100) / 100,
+    // remainingDelta：剩余下降量，含权益包到期作废，仅作对照
+    remainingDelta: Math.round(sumBy('remainingDelta') * 100) / 100,
     data,
   });
 });
@@ -267,7 +270,15 @@ router.get('/stats/official-usage', admin, async (req, res) => {
 router.post('/stats/official-usage/cache/clear', admin, (req, res) => {
   const okWb = bu.clearCache();
   const okTrae = tu.clearCache();
-  res.json({ ok: okWb && okTrae, dir: bu.cacheDir(), traeDir: tu.cacheDir() });
+  // 分端返回各自结果：ok 仅在两端都成功时为 true，
+  // workbuddy/trae 字段让调用方能区分「全失败」与「部分失败」。
+  res.json({
+    ok: okWb && okTrae,
+    workbuddy: okWb,
+    trae: okTrae,
+    dir: bu.cacheDir(),
+    traeDir: tu.cacheDir(),
+  });
 });
 
 module.exports = router;

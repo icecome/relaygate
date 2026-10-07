@@ -62,6 +62,13 @@ function ensureSchema(db) {
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');
+  // ZCode 运营面（仅 zcode 账号使用，其它平台为 NULL，零影响）：
+  //   api_key_enc   — 回退通道凭据（api.z.ai / open.bigmodel 的 key）
+  //   fingerprint   — 成套桌面设备档案 JSON（zcode/fingerprint.js）
+  //   mode          — 账号类型：jwt（Coding/Start Plan）| apiKey
+  if (!names.has('api_key_enc')) db.exec('ALTER TABLE accounts ADD COLUMN api_key_enc TEXT');
+  if (!names.has('fingerprint')) db.exec('ALTER TABLE accounts ADD COLUMN fingerprint TEXT');
+  if (!names.has('mode')) db.exec("ALTER TABLE accounts ADD COLUMN mode TEXT");
   // 转发面 API Key：必须绑定平台（trae|workbuddy），废弃无平台语义
   // kind: 'access'（转发访问密钥）| 'login'（管理面板登录密钥）
   db.exec(`
@@ -203,6 +210,8 @@ function rowToAcct(r) {
     host: r.host,
     userRegion: r.user_region,
     devices: r.devices ? JSON.parse(r.devices) : null,
+    fingerprint: parseSnapshot(r.fingerprint),
+    mode: r.mode || null,
     source: r.source,
     enabled: !!r.enabled,
     balance: r.balance,
