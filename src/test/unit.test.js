@@ -797,6 +797,80 @@ t('model availability 默认 unknown', () => {
   assert.strictEqual(av.statusOf('no-such-model-xyz'), 'unknown');
 });
 
+/**
+ * 探测路由的平台声明（回归：2026-10-06 wb/* 全量误标 unavailable）。
+ *
+ * 根因是 pool.run 的 edition 缺省语义为「只选非 workbuddy 账号」：
+ * 漏传时 wb 模型被发给 Trae 上游，上游回 PARAM_INVALID，被误判成模型不可用。
+ * 此处直接桩掉 pool.run / store，断言 helper 传出的 edition 与用号平台一致，
+ * 避免将来重构时静默回归（该缺陷不报错、不告警，只表现为面板变红）。
+ */
+t('chatViaPlatform 按 wb/ 前缀声明 edition', async () => {
+  const adminDebug = require('../routes/admin-debug');
+  const poolMod = require('../credentials/pool');
+  const origRun = poolMod.run;
+  const calls = [];
+  poolMod.run = async (fn, opts) => {
+    calls.push(opts);
+    // 桩掉上游：只回一个可判定的聚合结果，不产生真实网络请求
+    return { result: { choices: [{ message: { content: 'pong' } }] }, accountId: 'acct_stub' };
+  };
+  try {
+    const stubStore = require('../credentials/store');
+    const origGet = stubStore.get;
+    stubStore.get = () => ({ edition: calls[calls.length - 1].edition === 'workbuddy' ? 'workbuddy' : 'cn' });
+    const handler = adminDebug.__test.chatViaPlatform;
+    await handler('wb/hy3', { messages: [{ role: 'user', content: 'ping' }] });
+    assert.strictEqual(calls[0].edition, 'workbuddy', 'wb/ 模型必须以 workbuddy 平台取号');
+    await handler('glm-5.3', { messages: [{ role: 'user', content: 'ping' }] });
+    assert.strictEqual(calls[1].edition, 'trae', '非 wb/ 模型以 trae 平台取号');
+    assert.ok(!Object.values(calls).some((o) => o.edition === undefined), '不得出现缺省 edition 的调用');
+    stubStore.get = origGet;
+  } finally {
+    poolMod.run = origRun;
+  }
+});
+
+t('chatViaPlatform 对 wb/ 前缀剥离后再交给上游', async () => {
+  const adminDebug = require('../routes/admin-debug');
+  const poolMod = require('../credentials/pool');
+  const authMod = require('../auth');
+  const wbChat = require('../workbuddy/chat');
+  const origRun = poolMod.run;
+  const origEnsure = authMod.ensureAuth;
+  const origAggregate = wbChat.chatAggregate;
+  let seenModel = null;
+  poolMod.run = async (fn) => {
+    const r = await fn('acct_stub_wb');
+    return { result: r, accountId: 'acct_stub_wb' };
+  };
+  authMod.ensureAuth = async () => ({ id: 'acct_stub_wb', edition: 'workbuddy', token: 't', userId: 'u' });
+  wbChat.chatAggregate = async (acct, body) => { seenModel = body.model; return { choices: [] }; };
+  try {
+    await adminDebug.__test.chatViaPlatform('wb/hy3-x', { messages: [{ role: 'user', content: 'ping' }] });
+    assert.strictEqual(seenModel, 'hy3-x', '上游只接受裸模型 id，wb/ 前缀由网关剥离');
+  } finally {
+    poolMod.run = origRun;
+    authMod.ensureAuth = origEnsure;
+    wbChat.chatAggregate = origAggregate;
+  }
+});
+
+t('platformMismatch 识别跨平台错路由', () => {
+  const adminDebug = require('../routes/admin-debug');
+  const store = require('../credentials/store');
+  const origGet = store.get;
+  try {
+    store.get = (id) => (id === 'wb-acct' ? { edition: 'workbuddy' } : { edition: 'cn' });
+    assert.strictEqual(adminDebug.__test.platformMismatch('wb/hy3', 'wb-acct'), false, '平台一致不算错路由');
+    assert.strictEqual(adminDebug.__test.platformMismatch('wb/hy3', 'trae-acct'), true, 'wb 模型由 Trae 号服务=错路由');
+    assert.strictEqual(adminDebug.__test.platformMismatch('glm-5.3', 'trae-acct'), false, '非 wb/ 模型不参与判定');
+    assert.strictEqual(adminDebug.__test.platformMismatch('wb/hy3', null), false, '账号未知时不阻断（可能池空）');
+  } finally {
+    store.get = origGet;
+  }
+});
+
 t('buildBody 尊重 upstreamFunction 覆盖', () => {
   process.env.TRAE_UPSTREAM_FUNCTION = 'solo_work_lite';
   // config 已加载时不会热更；直接测 options.function 优先级

@@ -24,6 +24,7 @@ const { classifyError, parseRateLimitReset } = require('../upstream/errors');
 const { summarizeExpiry, summarizeFefo } = require('./credits');
 const config = require('../config');
 const { notify } = require('../notify');
+const variant = require('../platform/variant');
 
 const COOL_AUTH_MS = 10 * 60 * 1000;
 const COOL_5XX_MS = 5 * 60 * 1000;
@@ -393,13 +394,18 @@ function groupOk(a) {
  * 平台判定走 variant.canChat（单一事实源）：新增平台（如 zcode）的
  * capability.chat=false，未声明 chat 能力前不可能被误选进转发池。
  * 未知 edition 显式排除——绝不能兜底进任何池。
+ *
+ * 平台归属一律走 variant.isEdition —— 它内部用 isTrae（白名单 cn/sg/us/manual）
+ * 归一化 Trae 系历史值。此前这里用 editionOf(a.edition) === editionOf(wanted)
+ * 直接字符串比较，而 editionOf 只做 toLowerCase 不做归一，导致库里 edition='cn'
+ * 的 Trae 账号永远不等于 wanted='trae'，全部 Trae 账号被静默排除出池
+ * （表现为整池 429 "No account available in pool"）。
  */
 function editionOk(a, wanted) {
-  const variant = require('../platform/variant');
   const edition = variant.editionOf(a.edition);
-  if (wanted) return edition === variant.editionOf(wanted) && variant.canChat(edition);
-  // 未指定目标平台时：取「声明了 chat 能力且不是 workbuddy」的账号
-  // （等价于旧版 isWb 语义，但用能力位判定，避免每加一个平台就改这里）
+  if (wanted) return variant.isEdition(edition, wanted) && variant.canChat(edition);
+  // 未指定目标平台时：保持既有行为——canChat 为真且非 workbuddy
+  // （空 edition 的历史账号视为 Trae 系；显式平台过滤由上面的 wanted 分支负责）
   return variant.canChat(edition) && edition !== variant.WORKBUDDY;
 }
 

@@ -14,13 +14,56 @@ const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 /**
+ * 按模型 id 前缀选择平台并发起一次最小 chat 调用（probe / test-chat 共用）。
+ *
+ * wb/ 前缀 → WorkBuddy（wbChat 聚合，OpenAI 兼容 passthrough）；
+ * 其余    → Trae（llmUtilsChat 转换层）。
+ *
+ * edition 必须显式传给 pool.run：其缺省语义是「只选非 workbuddy 账号」，
+ * 漏传时 wb 模型会被发给 Trae 上游，上游回 PARAM_INVALID 并被误判成
+ * 「模型不可用」写入 7 天状态表（2026-10-06 实际事故的根因）。
+ * 返回 { result, accountId }；pool.run 的换号/冷却语义与转发面一致。
+ */
+async function chatViaPlatform(model, chatBody) {
+  if (model.startsWith('wb/')) {
+    const auth = require('../auth');
+    const wbChat = require('../workbuddy/chat');
+    return pool.run(async (id) => {
+      const acct = await auth.ensureAuth(id);
+      return wbChat.chatAggregate(acct, Object.assign(
+        { stream: true },
+        chatBody.opts || {},
+        { model: model.replace(/^wb\//, ''), messages: chatBody.messages },
+      ));
+    }, { maxSwitches: 1, edition: 'workbuddy' });
+  }
+  const { llmUtilsChat } = require('../upstream/client');
+  const { normalizeTraeMessages } = require('../transform/request');
+  return pool.run((id2) =>
+    llmUtilsChat(normalizeTraeMessages(chatBody.messages), model, false, Object.assign({}, chatBody.opts, { accountId: id2 })),
+  { maxSwitches: 1, edition: 'trae' });
+}
+
+/**
+ * 账号平台一致性校验：wb/ 模型必须由 workbuddy 账号服务。
+ * 返回 true 表示确认发生了跨平台错路由（pool 选号语义变化 / 新调用点漏传
+ * edition），此时上游报错只说明「请求发错了地方」，不是模型结论，禁止写状态表。
+ * 非 wb/ 模型或账号不存在时返回 false（不阻断）。
+ */
+function platformMismatch(model, accountId) {
+  if (!model.startsWith('wb/')) return false;
+  const acctRec = accountId ? require('../credentials/store').get(accountId) : null;
+  if (!acctRec) return false;
+  const acctEdition = require('../platform/variant').normalizeEdition(acctRec.edition);
+  return acctEdition !== 'workbuddy';
+}
+
+/**
  * 模型探活：最小请求打上游（真实调用）。
  *
- * 按模型 id 前缀分流：
- *   - wb/ 前缀是 WorkBuddy-only 模型，必须走 workbuddy/chat 的 OpenAI 兼容
- *     passthrough；若统一走 Trae 的 llmUtilsChat，上游会因模型不存在而报错，
- *     表现为「怎么探测都失败」；
- *   - 其余走 Trae 转换层。
+ * 可用性只以「成功」写表：hasBody=false（HTTP 200 但无内容）不判不可用也不判可用，
+ * 留待下次探测。上游异常一律抛错进入 catch 分支按错误类别处理，此处仅剩
+ * 「上游行为不符合预期」一种中性情况。
  */
 router.post('/models/probe', admin, async (req, res) => {
   const model = String((req.body && req.body.model) || req.query.model || '').trim();
@@ -28,38 +71,29 @@ router.post('/models/probe', admin, async (req, res) => {
     return res.status(400).json({ error: { message: 'model required', type: 'invalid_request_error' } });
   }
   const startedAt = Date.now();
+  // accountId 声明在 try 之外：catch 分支要读它做平台一致性判断（块内 let 在 catch 中不可见）
+  let accountId = null;
 
   try {
-    let accountId = null;
     let hasBody = false;
 
-    if (model.startsWith('wb/')) {
-      // WorkBuddy 链路：与 routes/openai.js 的非流式分支同源
-      const auth = require('../auth');
-      const wbChat = require('../workbuddy/chat');
-      const { result } = await pool.run(async (id) => {
-        const acct = await auth.ensureAuth(id);
-        accountId = id;
-        return wbChat.chatAggregate(
-          acct,
-          Object.assign({ model, messages: [{ role: 'user', content: 'ping' }], stream: true }),
-        );
-      }, { maxSwitches: 1 });
-      hasBody = !!(result && (result.data || result.body || (Array.isArray(result.choices) && result.choices.length)));
-    } else {
-      const { llmUtilsChat } = require('../upstream/client');
-      const { normalizeTraeMessages } = require('../transform/request');
-      const { result, accountId: id } = await pool.run(
-        (id2) =>
-          llmUtilsChat(normalizeTraeMessages([{ role: 'user', content: 'ping' }]), model, false, {
-            accountId: id2,
-          }),
-        { maxSwitches: 1 },
-      );
-      accountId = id;
-      hasBody = !!(result && (result.data || result.body));
+    const { result, accountId: pickedId } = await chatViaPlatform(model, {
+      messages: [{ role: 'user', content: 'ping' }],
+    });
+    accountId = pickedId;
+    hasBody = !!(result && (result.data || result.body || (Array.isArray(result.choices) && result.choices.length)));
+
+    if (platformMismatch(model, accountId)) {
+      return res.status(502).json({
+        ok: false,
+        model,
+        message: `probe aborted: picked account ${accountId} does not serve ${model.startsWith('wb/') ? 'workbuddy' : 'trae'}`,
+        durationMs: Date.now() - startedAt,
+      });
     }
 
+    // wb/auto 是上游真实模型（Auto 档），探测结论允许落盘；仅裸 'auto' 是网关
+    // 本地语义（网关层自动路由），没有对应的上游调用实体，不写状态表。
     if (model !== 'auto') require('../models/availability').markUsable(model);
     res.json({
       ok: true,
@@ -71,7 +105,9 @@ router.post('/models/probe', admin, async (req, res) => {
   } catch (err) {
     if (model !== 'auto') {
       const { isModelConfigError, isPlanLimitError } = require('../upstream/errors');
-      if (isModelConfigError(err) || isPlanLimitError(err)) {
+      // 平台不匹配（跨平台错路由）时上游的报错只说明「请求发错了地方」，
+      // 不是模型结论，绝不写入可用性状态表。
+      if (!platformMismatch(model, accountId) && (isModelConfigError(err) || isPlanLimitError(err))) {
         require('../models/availability').markUnavailable(model, err.message);
       }
     }
@@ -95,15 +131,23 @@ router.post('/test-chat', admin, async (req, res) => {
   if (!model || !message) {
     return res.status(400).json({ error: { message: 'model and message required', type: 'invalid_request_error' } });
   }
-  const { llmUtilsChat } = require('../upstream/client');
-  const { normalizeTraeMessages } = require('../transform/request');
   const startedAt = Date.now();
+  // 与 probe 相同：catch 分支需要 accountId 做平台一致性判断
+  let accountId = null;
   try {
-    const { result, accountId } = await pool.run((accountId) =>
-      llmUtilsChat(
-        normalizeTraeMessages([{ role: 'user', content: message }]),
-        model, false, { accountId, max_tokens: maxTokens },
-      ), { maxSwitches: 1 });
+    const { result, accountId: pickedId } = await chatViaPlatform(model, {
+      messages: [{ role: 'user', content: message }],
+      opts: { max_tokens: maxTokens },
+    });
+    accountId = pickedId;
+    if (platformMismatch(model, accountId)) {
+      return res.status(502).json({
+        ok: false,
+        model,
+        message: `test-chat aborted: picked account ${accountId} does not serve ${model.startsWith('wb/') ? 'workbuddy' : 'trae'}`,
+        durationMs: Date.now() - startedAt,
+      });
+    }
     if (model !== 'auto') require('../models/availability').markUsable(model);
     // 从非流式聚合结果中提取文本
     const choice = result && result.choices && result.choices[0];
@@ -121,7 +165,11 @@ router.post('/test-chat', admin, async (req, res) => {
   } catch (err) {
     if (model !== 'auto') {
       const { isModelConfigError, isPlanLimitError, isModelRateLimitError } = require('../upstream/errors');
-      if (isModelConfigError(err) || isPlanLimitError(err) || isModelRateLimitError(err)) {
+      // 平台不匹配（跨平台错路由）时上游的报错不是模型结论，绝不写入状态表。
+      // 模型级限流同理：6004 说明模型当前被打满而非不可用，标记 unavailable
+      // 会在面板上把「稍后重试」误显示成「不可用」。
+      if (!platformMismatch(model, accountId)
+        && (isModelConfigError(err) || isPlanLimitError(err))) {
         require('../models/availability').markUnavailable(model, err.message);
       }
     }
@@ -227,3 +275,7 @@ router.post('/config/reload', admin, (req, res) => {
 });
 
 module.exports = router;
+
+// 仅测试可见：helper 不进入 Express 路由表，测试通过桩 pool.run / store 验证
+// 「平台声明与用号一致」这一根因约束（见 test/unit.test.js 回归用例）。
+module.exports.__test = { chatViaPlatform, platformMismatch };

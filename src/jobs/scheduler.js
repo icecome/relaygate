@@ -14,8 +14,9 @@ const { checkinAllEnabled } = require('../upstream/checkin');
 const { wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { refreshBalanceAllEnabled } = require('../upstream/balance');
 const { llmUtilsChat } = require('../upstream/client');
-const { isModelConfigError, isPlanLimitError } = require('../upstream/errors');
+const { isModelConfigError, isPlanLimitError, isModelRateLimitError } = require('../upstream/errors');
 const { normalizeTraeMessages } = require('../transform/request');
+const wbChat = require('../workbuddy/chat');
 const { sleep } = require('../lib/util');
 const pool = require('../credentials/pool');
 const availability = require('../models/availability');
@@ -322,57 +323,104 @@ function scheduleRotatePoll() {
 
 /**
  * 定时模型探活：对 unknown 模型发最小请求，更新可用性。
- * 跳过 auto / 自定义模型；每轮最多 modelProbeMaxPerRun 个。
+ *
+ * 覆盖两个平台：Trae 目录（裸 id，走 llmUtilsChat）与 WorkBuddy 目录
+ * （wb/ 前缀 id，走 wbChat 聚合）。此前只探 Trae 目录，导致 wb/* 的 unknown
+ * 永远无法自动收敛——一旦被手动探测误标 unavailable，只能等 7 天 TTL 或人工清理。
+ *
+ * 平台必须显式传给 pool.run：edition 缺省时 pool 只选非 workbuddy 账号，
+ * 把 wb 模型发给 Trae 上游只会拿到 PARAM_INVALID 这类「模型不存在」的假结论。
+ * 跳过 auto（Trae 虚拟档）；每轮最多 modelProbeMaxPerRun 个（两平台共享额度）。
  */
 async function runModelProbe() {
   const maxPerRun = Number(scheduleSettings.getEffective().modelProbeMaxPerRun) || 8;
   if (maxPerRun <= 0) return { probed: 0, usable: 0, unavailable: 0, skipped: 0 };
   console.log(`[scheduler] model probe start (max ${maxPerRun})`);
   try {
-    const cat = await catalog.listWithStatus({ force: false });
-    const targets = cat.models
-      .filter((m) => m.id && m.id !== 'auto' && !m.custom)
-      .filter((m) => availability.statusOf(m.id) === 'unknown')
-      .slice(0, maxPerRun);
+    // 无启用账号时整轮跳过：探测会因池空失败，任何错误归类都是噪音。
+    // 双平台分别判定——只有 Trae 号时不该探 wb，反之亦然。
+    const enabledEditions = new Set(
+      store.list().filter((a) => a.enabled).map((a) => variant.normalizeEdition(a.edition)),
+    );
 
+    const cat = await catalog.listWithStatus({ force: false });
+    const targets = enabledEditions.has('trae')
+      ? cat.models
+        .filter((m) => m.id && m.id !== 'auto' && !m.custom)
+        .filter((m) => availability.statusOf(m.id) === 'unknown')
+        .map((m) => ({ id: m.id, platform: 'trae' }))
+      : [];
+
+    // WorkBuddy 目录：wb 账号存在时才纳入探活
+    if (enabledEditions.has('workbuddy')) {
+      try {
+        let wbModels = await wbChat.modelCatalog(false);
+        if (!wbModels.length) {
+          wbModels = wbChat.WB_MODELS.map((id) => ({ id, name: id }));
+        }
+        for (const m of wbModels) {
+          const id = 'wb/' + m.id;
+          if (availability.statusOf(id) !== 'unknown') continue;
+          targets.push({ id, platform: 'workbuddy' });
+        }
+      } catch (e) {
+        console.warn('[scheduler] wb catalog unavailable, skip wb probe:', e.message);
+      }
+    }
+
+    const picked = targets.slice(0, maxPerRun);
     let usable = 0;
     let unavailable = 0;
-    for (const m of targets) {
+    for (const t of picked) {
       try {
-        // maxSwitches:2 — PlanLimit 等账号级错误应换号再试
-        await pool.run(
-          (accountId) => llmUtilsChat(
-            normalizeTraeMessages([{ role: 'user', content: 'ping' }]),
-            m.id, false, { accountId },
-          ),
-          { maxSwitches: 2 },
-        );
-        availability.markUsable(m.id);
+        if (t.platform === 'workbuddy') {
+          await pool.run(async (accountId) => {
+            const acct = await auth.ensureAuth(accountId);
+            return wbChat.chatAggregate(acct, {
+              model: t.id.replace(/^wb\//, ''),
+              messages: [{ role: 'user', content: 'ping' }],
+              stream: true,
+            });
+          }, { maxSwitches: 2, edition: 'workbuddy' });
+        } else {
+          // maxSwitches:2 — PlanLimit 等账号级错误应换号再试
+          await pool.run(
+            (accountId) => llmUtilsChat(
+              normalizeTraeMessages([{ role: 'user', content: 'ping' }]),
+              t.id, false, { accountId },
+            ),
+            { maxSwitches: 2, edition: 'trae' },
+          );
+        }
+        availability.markUsable(t.id);
         usable += 1;
-        console.log(`[scheduler] probe ok ${m.id}`);
+        console.log(`[scheduler] probe ok ${t.id}`);
       } catch (e) {
-        if (isModelConfigError(e)) {
-          availability.markUnavailable(m.id, e.message);
+        // 池空/限流/网络属「本次没探成」，不是模型结论：不写状态表
+        if (isModelRateLimitError(e) || e.code === 'POOL_UNAVAILABLE') {
+          console.warn(`[scheduler] probe skip ${t.id}: ${e.message}`);
+        } else if (isModelConfigError(e)) {
+          availability.markUnavailable(t.id, e.message);
           unavailable += 1;
-          console.log(`[scheduler] probe unavailable ${m.id}: ${e.message}`);
+          console.log(`[scheduler] probe unavailable ${t.id}: ${e.message}`);
         } else if (isPlanLimitError(e)) {
           // 套餐额度不足：对当前池确实不可用，标明原因（7 天 TTL 后自动重探）
-          availability.markUnavailable(m.id, e.message);
+          availability.markUnavailable(t.id, e.message);
           unavailable += 1;
-          console.log(`[scheduler] probe plan-limit ${m.id}: ${e.message}`);
+          console.log(`[scheduler] probe plan-limit ${t.id}: ${e.message}`);
         } else {
           // 网络/限流等非模型配置错误：不标记，留待下次
-          console.warn(`[scheduler] probe skip ${m.id}: ${e.message}`);
+          console.warn(`[scheduler] probe skip ${t.id}: ${e.message}`);
         }
       }
       await sleep(1500);
     }
     state.lastProbeAt = new Date().toISOString();
     state.lastProbeSummary = {
-      targets: targets.length,
+      targets: picked.length,
       usable,
       unavailable,
-      unknownLeft: Math.max(0, targets.length - usable - unavailable),
+      unknownLeft: Math.max(0, picked.length - usable - unavailable),
     };
     console.log(`[scheduler] model probe done ${JSON.stringify(state.lastProbeSummary)}`);
 
