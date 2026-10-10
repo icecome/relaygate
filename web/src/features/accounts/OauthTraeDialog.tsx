@@ -20,10 +20,12 @@ import { useToast } from '../../shared/ui/Toast';
 
 type Phase = 'idle' | 'authorizing' | 'success' | 'error';
 
-export function OauthTraeDialog({ open, onClose, onDone }: {
+export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
   open: boolean;
   onClose: () => void;
   onDone: () => void;
+  /** 从凭据行「重新登录」进入时的提示上下文 */
+  presetLabel?: string;
 }) {
   const { key } = useAuth();
   const toast = useToast();
@@ -32,6 +34,8 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
   const [group, setGroup] = useState<'default' | 'workbuddy'>('default');
   const [callbackUrl, setCallbackUrl] = useState('');
   const [busy, setBusy] = useState(false);
+  /** 连续轮询失败计数：超过阈值提示用户改用回调 URL 兜底，而不是永远转圈 */
+  const [pollFails, setPollFails] = useState(0);
 
   // 轮询句柄需在关闭时清理，避免后台持续请求
   const pollRef = useRef<number | null>(null);
@@ -62,6 +66,7 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
         void (async () => {
           try {
             const s = await oauthStatus(key);
+            setPollFails(0);
             const cur = s.result ?? null;
             setStatus(cur);
             if (cur?.state === 'success') {
@@ -74,7 +79,9 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
               setPhase('error');
             }
           } catch {
-            // 轮询失败不打断流程，等待下一次
+            // 轮询失败不中断流程，但要计数：连续失败时明确提示改用回调 URL，
+            // 否则面板会永远停在「等待授权结果」而用户以为还在正常等待
+            setPollFails((n) => n + 1);
           }
         })();
       }, 2000);
@@ -119,7 +126,11 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
         onClose();
       }}
       title="Trae OAuth 登录"
-      desc="在上游页面完成授权，本面板仅负责发起流程与等待结果"
+      desc={
+        presetLabel
+          ? `正在为「${presetLabel}」重新获取登录凭据`
+          : '在上游页面完成授权，本面板仅负责发起流程与等待结果'
+      }
       footer={
         <>
           <Button
@@ -173,6 +184,12 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
           <Note>
             等待授权结果…若授权页已关闭，可在下方粘贴回调 URL 手动完成。
           </Note>
+          {pollFails >= 5 && (
+            <Note tone="warn">
+              已连续 {pollFails} 次无法查询授权状态（网络或网关无响应）。
+              如果你已经在授权页点了确认，请直接用下方的回调 URL 手动完成。
+            </Note>
+          )}
           <div>
             <div className="text-aux mb-1.5">回调 URL 兜底</div>
             <textarea

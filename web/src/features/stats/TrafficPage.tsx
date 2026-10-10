@@ -16,6 +16,7 @@ import {
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { markLinkVerified } from '../setup/onboarding';
 import { formatCost, formatDuration, formatNumber, formatTime } from '../../shared/lib/format';
 import {
   Button,
@@ -117,6 +118,8 @@ export default function TrafficPage() {
         content: r.content,
       });
       toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, r.ok ? 'ok' : 'err');
+      // 链路验证成功：推进首登引导的第三步（见 features/setup/onboarding.ts）
+      if (r.ok) markLinkVerified();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '测试请求失败', 'err');
     } finally {
@@ -320,7 +323,7 @@ export default function TrafficPage() {
           )}
         </Panel>
 
-        <Panel title="连通性测试" description="向上游发起一次真实请求">
+        <Panel title="连通性测试" description="向上游发起一次真实请求，验证访问密钥与模型可用">
           <div className="grid grid-cols-2 gap-3">
             <Field
               label="模型"

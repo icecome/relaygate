@@ -6,7 +6,9 @@
  * 明文只出现在「最近生成」区域，避免长期暴露在屏幕上。
  */
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../../shared/api/auth';
+import { getClientConfig } from '../../shared/api/admin';
 import {
   createAccessKey,
   deleteAccessKey,
@@ -27,6 +29,7 @@ import { formatTime } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   LoadingBlock,
   Note,
@@ -37,6 +40,7 @@ import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
 import { LoginKeyDialog } from './LoginKeyDialog';
+import { ClientAccessPanel } from '../ops/ClientAccessPanel';
 
 type Filter = 'all' | 'active' | 'revoked';
 
@@ -57,6 +61,7 @@ export default function AccessKeysPage() {
   const { key } = useAuth();
   const toast = useToast();
   const prompt = usePrompt();
+  const navigate = useNavigate();
 
   const [filter, setFilter] = useState<Filter>('all');
   const [fresh, setFresh] = useState<CreatedKey | null>(null);
@@ -66,6 +71,10 @@ export default function AccessKeysPage() {
   const list = useAsyncData((signal) => listAccessKeys(key, signal), [key], { enabled: !!key });
   // 登录密钥接口返回 { object, data }，是否已配置由列表长度判断
   const loginKeys = useAsyncData((signal) => listLoginKeys(key, signal), [key], { enabled: !!key });
+  // 拿到明文密钥后顺手展示接入配置，避免用户再去运维第 5 分段找
+  const clientConfig = useAsyncData((signal) => getClientConfig(key, signal), [key], {
+    enabled: !!key,
+  });
 
   const rows = useMemo(() => {
     const all = list.data?.data ?? [];
@@ -228,9 +237,11 @@ export default function AccessKeysPage() {
           {list.loading && !list.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无访问密钥
-            </div>
+            <EmptyState
+              label="还没有访问密钥。"
+              hint="IDE 或脚本要调用本网关，需要一把 sk- 开头的访问密钥；管理面板登录用的是另一把登录密钥，两者互不通用。"
+              action={{ label: '创建第一把访问密钥', onClick: create }}
+            />
           ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -314,6 +325,28 @@ export default function AccessKeysPage() {
               <Note>明文仅在创建、轮换、重置与查看时返回，关闭后无法再次获取。</Note>
             </div>
           </Panel>
+        )}
+
+        {/* 下一步：密钥本身不带服务地址，用户拿到明文后必须知道填什么。
+            此前这份接入指引只在「运维 → 网关配置」的最后一个分段里，
+            与 mint 密钥、验证连通性两页之间没有任何链接，形成三页断裂。 */}
+        {fresh && (
+          <>
+            <ClientAccessPanel
+              config={clientConfig.data}
+              loading={clientConfig.loading && !clientConfig.data}
+              error={clientConfig.error}
+              onRetry={clientConfig.reload}
+            />
+            <div className="flex items-center gap-2">
+              <Button size="sm" onClick={() => navigate('/traffic')}>
+                去验证连通性
+              </Button>
+              <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                在「请求日志 → 连通性测试」里发一次真实请求，确认这把密钥可用。
+              </span>
+            </div>
+          </>
         )}
 
         <Panel

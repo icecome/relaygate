@@ -68,6 +68,8 @@ export default function CredentialsPage() {
   const [growthOpen, setGrowthOpen] = useState(false);
   /** 查看权益包的账号；null 表示弹窗关闭 */
   const [packTarget, setPackTarget] = useState<Account | null>(null);
+  /** 需要重新登录的账号；null 表示 OAuth 弹窗关闭 */
+  const [reloginTarget, setReloginTarget] = useState<Account | null>(null);
 
   const list = useAsyncData(
     (signal) => listAccounts(key, signal),
@@ -191,10 +193,25 @@ export default function CredentialsPage() {
     await run(a.id, '删除', () => deleteAccount(a.id, key), '已删除');
   }
 
+  /**
+   * 行内「重新登录」：refreshToken 已过期的账号无法自动续期，
+   * 按平台分发到各自的重新获取凭据入口（Trae 走 OAuth，WorkBuddy 走本机抓取）。
+   */
+  function relogin(a: Account) {
+    const platform = platformOf(a);
+    if (platform === 'workbuddy') {
+      setShowWbImport(true);
+      toast(`WorkBuddy 账号需在「接入 WorkBuddy」里重新抓取本机登录态：${a.label || a.id}`, 'warn');
+      return;
+    }
+    setReloginTarget(a);
+    setShowOauth(true);
+  }
+
   async function resetDevices() {
     const ok = await prompt({
-      title: '重置全部账号的设备标识？',
-      message: '将重置所有凭据的设备标识，不影响凭据本身与路由配置。',
+      title: '重置已启用账号的设备标识？',
+      message: '将对所有「已启用」的凭据重置设备标识（停用账号不受影响），不改动凭据本身与路由配置。',
       okText: '重置',
       danger: true,
     });
@@ -339,6 +356,7 @@ export default function CredentialsPage() {
                   const busy = busyId === a.id;
                   const expiryWorst = worstExpiry(a);
                   const keepalive = keepaliveOf(a);
+                  const keepaliveNeedsRelogin = keepalive.label === '需重新登录';
                   const platform = platformLabel(a);
                   return (
                     <tr key={a.id} className="row-hover">
@@ -443,6 +461,20 @@ export default function CredentialsPage() {
                         </td>
                         <td className="td cell-act">
                           <div className="inline-flex items-center gap-1.5">
+                            {/* 「需重新登录」是 refreshToken 过期，账号自己恢复不了。
+                                此前这一行只有签到/查余额/删除——最需要修的时候没有入口，
+                                修复动作在表格上方另一个 Panel 里（已确认的死胡同）。
+                                这里给行内入口，直接打开该平台的重新登录流程。 */}
+                            {keepaliveNeedsRelogin && (
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                disabled={busy}
+                                onClick={() => relogin(a)}
+                              >
+                                重新登录
+                              </Button>
+                            )}
                             {/* 签到按钮按平台能力显示：ZCode 无签到能力（后端也会拒），
                                 故隐藏；其奖励走 /v1/zcode 的定时任务。
                                 Trae 与 WorkBuddy 都有签到能力，只是端点不同——
@@ -506,7 +538,11 @@ export default function CredentialsPage() {
 
       <OauthTraeDialog
         open={showOauth}
-        onClose={() => setShowOauth(false)}
+        presetLabel={reloginTarget?.label ?? reloginTarget?.id ?? undefined}
+        onClose={() => {
+          setShowOauth(false);
+          setReloginTarget(null);
+        }}
         onDone={list.reload}
       />
       <ImportWbDialog
