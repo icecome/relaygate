@@ -59,6 +59,11 @@ function ensureSchema(db) {
   if (!names.has('model_cooldowns')) db.exec('ALTER TABLE accounts ADD COLUMN model_cooldowns TEXT');
   if (!names.has('rate_streak')) db.exec('ALTER TABLE accounts ADD COLUMN rate_streak INTEGER DEFAULT 0');
   if (!names.has('model_cool_streak')) db.exec('ALTER TABLE accounts ADD COLUMN model_cool_streak INTEGER DEFAULT 0');
+  // 保活结果：每个账号最近一次 keepalive 刷新的时刻与结果（失败时带原因）。
+  // 保活是逐账号调用的（scheduler.runKeepalive），此前只在进程内记一个全局时间戳，
+  // 面板无法回答「这个号上次保活是什么时候、还活着吗」。
+  if (!names.has('last_keepalive_at')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_at TEXT');
+  if (!names.has('last_keepalive_result')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_result TEXT');
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');
@@ -220,6 +225,8 @@ function rowToAcct(r) {
     lastPickedAt: r.last_picked_at,
     lastCheckinAt: r.last_checkin_at,
     lastCheckinResult: r.last_checkin_result,
+    lastKeepaliveAt: r.last_keepalive_at,
+    lastKeepaliveResult: r.last_keepalive_result,
     entitlementSnapshot: parseSnapshot(r.entitlement_snapshot),
   };
 }

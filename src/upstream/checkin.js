@@ -40,6 +40,8 @@ async function postUg(acct, apiPath) {
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,
+    // 版本指纹兜底按登录态选 CN/SG 内置默认值
+    _edition: acct.edition || 'cn',
   });
   const resp = await fetch(url, {
     method: 'POST',
@@ -130,6 +132,11 @@ async function checkinAccount(accountId) {
   const stored = store.get(accountId);
   if (!stored) throw new Error(`account not found: ${accountId}`);
   if (stored.enabled === false) throw new Error('account disabled');
+  // 平台闸门：批量入口已按 isTrae 过滤，单账号入口（面板按钮 / API）也必须挡，
+  // 否则对 ZCode 账号点「签到」会拿它的 JWT 去打 Trae 的签到端点
+  if (!variant.isTrae(stored.edition)) {
+    throw new Error(`not a trae account (edition=${stored.edition || 'null'})`);
+  }
 
   const authInfo = await auth.ensureAuth(accountId);
   let acct = { ...stored, ...authInfo };

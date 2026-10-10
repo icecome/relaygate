@@ -34,7 +34,12 @@ function sanitize(obj, depth = 0) {
   if (Array.isArray(obj)) return obj.map((v) => sanitize(v, depth + 1));
   const out = {};
   for (const [k, v] of Object.entries(obj)) {
-    if (/authorization|token|password|secret|api[_-]?key/i.test(k)) {
+    // 数值不脱敏：totalTokens/promptTokens 等计量字段的键名含 "token"，
+    // 曾被下方正则整批打成 "***"，统计层把字符串当 0，token 与费用恒为 0。
+    // 敏感值只可能是字符串（Authorization 头、JWT、apiKey），数字原样保留。
+    if (typeof v === 'number' || typeof v === 'boolean' || v == null) {
+      out[k] = v;
+    } else if (/authorization|token|password|secret|api[_-]?key/i.test(k)) {
       out[k] = maskSecret(v);
     } else if (typeof v === 'object') {
       out[k] = sanitize(v, depth + 1);
@@ -62,7 +67,10 @@ function logRequest(entry) {
     if (base.estimatedCost == null && (base.promptTokens || base.completionTokens || base.totalTokens)) {
       const pt = Number(base.promptTokens) || 0;
       const ct = Number(base.completionTokens) || 0;
-      const c = estimateCost(base.model, pt, ct);
+      const c = estimateCost(base.model, pt, ct, {
+        cacheRead: Number(base.cacheReadTokens) || 0,
+        platform: base.platform,
+      });
       if (c != null) base.estimatedCost = c;
     }
     const line = sanitize(base);
@@ -100,6 +108,11 @@ function logRequest(entry) {
  * 上游 usage → 日志字段。无 usage 或全 0 时返回空对象，
  * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
  * 兼容 OpenAI 蛇形与 Trae 驼峰两种键名。
+ *
+ * cacheReadTokens（缓存读）单独抽出：标定费率对「未缓存输入 / 输出 / 缓存读」
+ * 三类 token 分别计价，缺这个字段就只能按全量输入估，会系统性高估。
+ * 上游键名实测三套：prompt_tokens_details.cached_tokens（OpenAI）、
+ * inputTokensDetails[0].cached_tokens（WB 客户端）、cache_read_input_tokens（Anthropic）。
  */
 function usageToLogFields(u) {
   if (!u || typeof u !== 'object') return {};
@@ -107,7 +120,31 @@ function usageToLogFields(u) {
   const ct = Number(u.completion_tokens ?? u.outputTokens) || 0;
   const tt = Number(u.total_tokens ?? u.totalTokens) || (pt + ct);
   if (!pt && !ct && !tt) return {};
-  return { promptTokens: pt, completionTokens: ct, totalTokens: tt };
+  const fields = { promptTokens: pt, completionTokens: ct, totalTokens: tt };
+  const cr = Number(u.cached_tokens) > 0
+    ? Number(u.cached_tokens) // dispatch.peekUsageDetail 已抽出的扁平字段
+    : cacheReadOf(u);
+  if (cr > 0) fields.cacheReadTokens = Math.min(cr, pt);
+  const cw = Number(u.cache_write_input_tokens ?? u.cacheWriteTokens
+    ?? u.prompt_cache_write_tokens ?? (u.usage && u.usage.cacheWriteTokens)) || 0;
+  if (cw > 0) fields.cacheWriteTokens = cw;
+  return fields;
 }
 
-module.exports = { logRequest, sanitize, usageToLogFields };
+/** 从 usage 的多种细节形态里取缓存读 token；取不到返回 0。 */
+function cacheReadOf(u) {
+  const d = u.prompt_tokens_details ?? u.inputTokensDetails ?? u.input_tokens_details;
+  if (Array.isArray(d) && d.length) {
+    const first = d[0] || {};
+    const v = Number(first.cached_tokens ?? first.cachedTokens);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  if (d && typeof d === 'object') {
+    const v = Number(d.cached_tokens ?? d.cache_read_input_tokens ?? d.cachedTokens);
+    if (Number.isFinite(v) && v > 0) return v;
+  }
+  const flat = Number(u.cache_read_input_tokens ?? u.cacheReadTokens ?? u.cached_tokens);
+  return Number.isFinite(flat) && flat > 0 ? flat : 0;
+}
+
+module.exports = { logRequest, sanitize, usageToLogFields, cacheReadOf };

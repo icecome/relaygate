@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js",
+    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js && node src/test/protocol.test.js",
     "lint": "npm --prefix web run lint && npx biome check src scripts",
     "test:unit": "node src/test/unit.test.js",
     "test:growth": "node src/test/growth.test.js",

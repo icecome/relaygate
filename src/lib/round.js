@@ -20,4 +20,18 @@ function round4(n) {
   return Number.isFinite(n) ? Math.round(n * 10000) / 10000 : 0;
 }
 
-module.exports = { round2, round4 };
+/** 保留 6 位小数（token 费率量级为 1e-5，round4 会抹掉有效位）。 */
+function round6(n) {
+  return Number.isFinite(n) ? Math.round(n * 1000000) / 1000000 : 0;
+}
+
+/**
+ * 保留 8 位小数。
+ * 用于「积分/千 token」这类跨 4 个数量级的比值：实测账单侧该值约 0.0103，
+ * round6 会把末位有效数字抹掉（0.01034799 → 0.010348 尚可，但再窄就归零）。
+ */
+function round8(n) {
+  return Number.isFinite(n) ? Math.round(n * 100000000) / 100000000 : 0;
+}
+
+module.exports = { round2, round4, round6, round8 };

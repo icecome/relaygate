@@ -13,42 +13,17 @@
  */
 const { v4: uuidv4 } = require('./uuid');
 const { hashDeviceId } = require('./util');
-const { DEFAULT_IDE_VERSION_CN, DEFAULT_IDE_VERSION_SG, DEFAULT_IDE_VERSION_CODE } = require('./version-defaults');
-// client-meta 是零业务依赖的叶子模块，顶部 require 无加载环风险
-const clientMeta = require('./client-meta');
+// m-35 拆分回归修复：版本指纹（getIdeVersion/getAppVersion/getIdeVersionCode）
+// 实现下沉 version-defaults.js。这三个函数此前只存在于本模块，而 lib/auth.js 的
+// exchangeToken 也在调用它们 → 运行时 ReferenceError，Trae 账号无法续期。
+// 放在 version-defaults 里，auth 与 headers 各自 require 同一实现，无加载环。
+const {
+  getIdeVersion, getAppVersion, getIdeVersionCode,
+} = require('./version-defaults');
 
 /** auth 相关兜底依赖在调用期解析（见文件头依赖方向说明）。 */
 function authRef() {
   return require('./auth');
-}
-
-/** 版本指纹：真实客户端 manifest 优先，env 覆盖次之，内置默认兜底。 */
-function getIdeVersion() {
-  if (process.env.TRAE_IDE_VERSION) return process.env.TRAE_IDE_VERSION;
-  const meta = clientMeta.readRealClientMeta();
-  if (meta && meta.appVersion) return meta.appVersion;
-  try {
-    const authInfo = authRef().getAuthInfo();
-    if (authInfo._edition === 'cn') return DEFAULT_IDE_VERSION_CN;
-    return DEFAULT_IDE_VERSION_SG;
-  } catch (e) {
-    return DEFAULT_IDE_VERSION_CN;
-  }
-}
-
-/** x-app-version：真实客户端 appVersion，绝不回退到 'default'。 */
-function getAppVersion() {
-  if (process.env.TRAE_APP_VERSION) return process.env.TRAE_APP_VERSION;
-  const meta = clientMeta.readRealClientMeta();
-  if (meta && meta.appVersion) return meta.appVersion;
-  return getIdeVersion();
-}
-
-function getIdeVersionCode() {
-  if (process.env.TRAE_IDE_VERSION_CODE) return process.env.TRAE_IDE_VERSION_CODE;
-  const meta = clientMeta.readRealClientMeta();
-  if (meta && meta.buildVersion) return meta.buildVersion;
-  return DEFAULT_IDE_VERSION_CODE;
 }
 
 function getDeviceInfo(deviceOverrides) {
@@ -83,6 +58,8 @@ function getDeviceInfo(deviceOverrides) {
 function buildCommonHeaders(authInfo) {
   // 优先使用账号自带设备信息（免本机登录：每账号携带 telemetry，脱离本机 storage.json）
   const deviceInfo = getDeviceInfo(authInfo && authInfo.devices);
+  // edition 取自登录态：CN/SG 内置默认指纹不同（0.1.50 当前一致，声明仍分开）
+  const edition = authInfo && authInfo._edition;
   // trace 头形态对齐 Trae 官方客户端（TTNet）：
   //   x-tt-trace-id = "00-<id>-<id>-01"，x-custom-trace-id 取其前 16 字符，
   //   x-flow-traceparent = "04-<id32>-<id>-01"
@@ -95,8 +72,8 @@ function buildCommonHeaders(authInfo) {
     'x-ide-token': authInfo.token,
     'user-agent': 'TraeClient/TTNet',
     'x-app-id': process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8',
-    'x-app-version': getAppVersion(),
-    'app-version': getIdeVersion(),
+    'x-app-version': getAppVersion(edition),
+    'app-version': getIdeVersion(edition),
     'x-ide-version-code': getIdeVersionCode(),
     'x-app-version-code': getIdeVersionCode(),
     'x-custom-trace-id': traceId.slice(0, 16),
@@ -108,7 +85,7 @@ function buildCommonHeaders(authInfo) {
     'x-machine-id': deviceInfo.machine_id,
     'x-os-version': deviceInfo.os_version,
     'x-device-type': deviceInfo.os_name,
-    'x-ide-version': getIdeVersion(),
+    'x-ide-version': getIdeVersion(edition),
     'x-ide-version-type': 'stable',
     'request-traffic-type': 'prod',
     'package-type': 'stable_cn',

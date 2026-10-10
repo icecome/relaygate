@@ -267,7 +267,10 @@ async function scanAccount(acctId, days = 30) {
 
 /** 扫描全部启用 Trae 账号并汇总。 */
 async function scanAll(days = 30) {
-  const accounts = credStore.list().filter((a) => a.enabled && a.edition !== 'workbuddy');
+  // 显式 Trae 白名单：不能写 edition !== 'workbuddy'，否则新平台（zcode）账号
+  // 会被误抓进 Trae 会话用量扫描（对它的上游端点发无效请求）
+  const variant = require('../platform/variant');
+  const accounts = credStore.list().filter((a) => a.enabled && variant.isTrae(a.edition));
   const results = [];
   for (const a of accounts) results.push(await scanAccount(a.id, days));
   return { object: 'trae_session_usage', days, accounts: results };

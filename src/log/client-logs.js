@@ -37,7 +37,28 @@ const CACHE_DIR = () => {
 };
 const WRITE_DIR = () => path.join(stateDir(), 'client-log-cache');
 /** 缓存结构版本。解析口径变更时递增，使旧缓存失效。 */
-const CACHE_VERSION = 4;
+const CACHE_VERSION = 5;
+
+/**
+ * 单文件标定样本上限。样本只用于拟合「积分/千 token」三系数，
+ * 单文件几十条已足够；上限同时防止缓存 JSON 体积失控
+ * （实测全量 4936 条样本 × 40B ≈ 200KB，尚可接受，但配合 235 个文件会放大）。
+ */
+const SAMPLE_CAP = 400;
+
+/** 逐请求标定样本：只留数字，不带任何正文字段。 */
+function sampleOf(u) {
+  return {
+    ts: u.ts,
+    model: u.model,
+    input: u.input,
+    output: u.output,
+    total: u.total,
+    cacheRead: u.cacheRead,
+    cacheWrite: u.cacheWrite,
+    credit: u.credit,
+  };
+}
 
 /** 递归收集 jsonl 文件（含 mtime/size，用于增量判定）。 */
 function listJsonlFiles(root) {
@@ -142,6 +163,8 @@ function parseFile(file, stat) {
     byModel: {},
     minTs: null,
     maxTs: null,
+    /** 标定样本（带 credit 的逐请求行），见 SAMPLE_CAP。 */
+    creditSamples: [],
   };
 
   let text;
@@ -174,6 +197,10 @@ function parseFile(file, stat) {
     bucket.cacheRead += u.cacheRead;
     bucket.cacheWrite += u.cacheWrite;
     bucket.credit += u.credit;
+    // 标定样本：带 credit 的逐请求行是「token ↔ 积分」回归的唯一可用原料
+    // （官方账单接口只给 credit 不给 token）。上限 SAMPLE_CAP 条/文件，
+    // 只保留数字，不落正文；超出后按等距抽样，保证覆盖全时段而非只取开头。
+    if (u.credit > 0 && (u.input + u.output) > 0) bucket.creditSamples.push(sampleOf(u));
     if (u.ts != null) {
       if (bucket.minTs == null || u.ts < bucket.minTs) bucket.minTs = u.ts;
       if (bucket.maxTs == null || u.ts > bucket.maxTs) bucket.maxTs = u.ts;
@@ -206,6 +233,13 @@ function parseFile(file, stat) {
   const days = Object.keys(bucket.byDay).sort();
   if (days.length > 400) {
     for (const d of days.slice(0, days.length - 400)) delete bucket.byDay[d];
+  }
+  // 标定样本等距截断：超出 SAMPLE_CAP 时按步长抽样，保留时间分布而非只留最早
+  if (bucket.creditSamples.length > SAMPLE_CAP) {
+    const step = bucket.creditSamples.length / SAMPLE_CAP;
+    const picked = [];
+    for (let i = 0; i < SAMPLE_CAP; i++) picked.push(bucket.creditSamples[Math.floor(i * step)]);
+    bucket.creditSamples = picked;
   }
   return bucket;
 }
@@ -340,4 +374,41 @@ function clearCache() {
   }
 }
 
-module.exports = { scan, clearCache, logRoot, CACHE_DIR, WRITE_DIR, CACHE_VERSION, extractUsage };
+/**
+ * 收集全部逐请求标定样本（{model, input, output, cacheRead, credit, ts}）。
+ *
+ * 供 models/pricing-calib.js 拟合 WorkBuddy 侧「积分/token」系数：
+ * 官方账单接口只回 credit 不回 token，token 只能取自客户端日志的 usage，
+ * 二者在同一行内天然配对，无需按时间戳猜。
+ *
+ * 走的是同一份 mtime+size 增量缓存，重复调用几乎零成本；
+ * 缓存缺失时全量解析一次（实测 235 文件约数秒），之后复用。
+ * 旧版本缓存桶没有 creditSamples 字段 → 自动重解析补齐。
+ */
+function collectCreditSamples(opts = {}) {
+  const root = opts.root || logRoot();
+  if (!root || !fs.existsSync(root)) return [];
+  const out = [];
+  for (const f of listJsonlFiles(root)) {
+    let bucket = opts.force ? null : readCached(f.file, f);
+    if (bucket && !Array.isArray(bucket.creditSamples)) bucket = null; // 旧桶缺字段，重解析
+    if (!bucket) {
+      bucket = parseFile(f.file, f);
+      writeCached(f.file, bucket);
+    }
+    for (const s of bucket.creditSamples || []) if (s && s.model) out.push(s);
+  }
+  return out;
+}
+
+module.exports = {
+  scan,
+  clearCache,
+  collectCreditSamples,
+  logRoot,
+  CACHE_DIR,
+  WRITE_DIR,
+  CACHE_VERSION,
+  SAMPLE_CAP,
+  extractUsage,
+};

@@ -543,7 +543,10 @@ t('积分快照：差分统计消耗', () => {
   ch.add(a.id, { remaining: 960, used: 60, source: 'test' }); // 余额上涨不计消耗
   ch.add(a.id, { remaining: 900, used: 120, source: 'test' });
   const row = ch.summary(1).find((d) => d.accountId === a.id);
-  assert.strictEqual(row.todayUsed, 120); // (1000-940) + (960-900)，上涨不计
+  // usedTotal：上游 used（累计已用）的增量口径（字段改名自旧 todayUsed）。
+  // 快照序列 used=0→60→60→120，正向增量 60+0+60=120；同时 remaining 的中途上涨
+  // （940→960）不影响该口径。
+  assert.strictEqual(row.usedTotal, 120);
   assert.strictEqual(row.snapshots, 4);
   assert.strictEqual(row.latestRemaining, 900);
   pStore.remove(a.id);
@@ -1615,6 +1618,124 @@ t('无 token 时抛出', () => {
   assert.throws(() => normalizeExchangeResult({}), /no access token/);
 });
 
+console.log('auth.exchangeToken 请求头构造（m-35 拆分回归守门）');
+t('exchangeToken 不再因版本指纹函数缺失而 ReferenceError', async () => {
+  // m-35 把 getAppVersion/getIdeVersion/getIdeVersionCode 搬去 headers.js 后，
+  // exchangeToken 的调用点没跟着迁移，运行即抛 "getAppVersion is not defined"，
+  // Trae 账号 token 自 2026-10-06 起全部无法自动续期。守门：换票必须能构造出
+  // 请求头并到达上游（这里用不可达 host，网络层错误 ≠ 模块内符号缺失）。
+  const { exchangeToken } = require('../lib/auth');
+  let err = null;
+  try {
+    await exchangeToken('dummy-refresh-token', { host: 'https://127.0.0.1:1', clientId: 'x' });
+  } catch (e) { err = e; }
+  assert.ok(err, 'dummy 换票应当抛错（网络不可达/上游拒绝）');
+  assert.ok(!/is not defined/.test(err.message), `不得是 ReferenceError: ${err.message}`);
+});
+
+t('版本指纹取值：env 覆盖 > 真实客户端 manifest > 内置默认', () => {
+  const vd = require('../lib/version-defaults');
+  const headersLib = require('../lib/headers');
+  delete process.env.TRAE_APP_VERSION;
+  delete process.env.TRAE_IDE_VERSION;
+  delete process.env.TRAE_IDE_VERSION_CODE;
+  const h = headersLib.buildCommonHeaders({
+    token: 't', userId: 'u', devices: { machineId: 'm', devDeviceId: 'd' }, _edition: 'cn',
+  });
+  assert.strictEqual(h['x-app-version'], vd.DEFAULT_IDE_VERSION_CN);
+  assert.strictEqual(h['x-ide-version'], vd.DEFAULT_IDE_VERSION_CN);
+  assert.strictEqual(h['x-app-version-code'], vd.DEFAULT_IDE_VERSION_CODE);
+  assert.ok(!/default/i.test(h['x-app-version']), 'x-app-version 不得回退为 default');
+  process.env.TRAE_APP_VERSION = '9.9.9';
+  try {
+    const h2 = headersLib.buildCommonHeaders({
+      token: 't', userId: 'u', devices: { machineId: 'm', devDeviceId: 'd' }, _edition: 'cn',
+    });
+    assert.strictEqual(h2['x-app-version'], '9.9.9', 'env 覆盖优先于内置默认');
+  } finally {
+    delete process.env.TRAE_APP_VERSION;
+  }
+});
+
+t('auth.ensureAuth 把续期失败透传为 _refreshError（保活假阳性守门）', async () => {
+  // ensureAuth 不抛续期错误（保证业务可用），但必须让调用方知道刷新失败了，
+  // 否则保活任务会把「刷新失败」记成「保活成功」，临期风险被面板掩盖。
+  // 注：internalAccount 是模块内私有引用，桩必须打在 credentials/store 上。
+  const authMod = require('../auth');
+  const legacyAuth = require('../lib/auth');
+  const credStore = require('../credentials/store');
+  const origExchange = legacyAuth.exchangeToken;
+  const origList = credStore.list;
+  const origGet = credStore.get;
+  const origUpdate = credStore.update;
+  const acct = {
+    id: 'acct_test_refresh_err', edition: 'cn', enabled: true,
+    token: 'old-token', refreshToken: 'rt',
+    expiredAt: new Date(Date.now() - 3600_000).toISOString(), // 已临期
+  };
+  credStore.list = () => [{ id: acct.id, enabled: true }];
+  credStore.get = (id) => (id === acct.id ? { ...acct } : null);
+  credStore.update = () => ({});
+  legacyAuth.exchangeToken = async () => { throw new Error('mock upstream failure'); };
+  try {
+    const r = await authMod.ensureAuth(acct.id);
+    assert.strictEqual(r.token, 'old-token', '刷新失败时保留旧 token');
+    assert.ok(r._refreshError, '必须透传 _refreshError');
+    assert.strictEqual(r._refreshError, 'mock upstream failure');
+  } finally {
+    legacyAuth.exchangeToken = origExchange;
+    credStore.list = origList;
+    credStore.get = origGet;
+    credStore.update = origUpdate;
+  }
+});
+
+t('ensureAuth 临期且无 refreshToken 时报无法续期', async () => {
+  const authMod = require('../auth');
+  const credStore = require('../credentials/store');
+  const origList = credStore.list;
+  const origGet = credStore.get;
+  const acct = {
+    id: 'acct_test_no_rt2', edition: 'cn', enabled: true,
+    token: 'old-token', refreshToken: null,
+    expiredAt: new Date(Date.now() - 3600_000).toISOString(),
+  };
+  credStore.list = () => [{ id: acct.id, enabled: true }];
+  credStore.get = (id) => (id === acct.id ? { ...acct } : null);
+  try {
+    const r = await authMod.ensureAuth('acct_test_no_rt2');
+    assert.ok(r, '仍返回账号（旧 token 语义不变）');
+    assert.ok(r._refreshError && /refreshToken/.test(r._refreshError), `应报缺少 refreshToken: ${r._refreshError}`);
+  } finally {
+    credStore.list = origList;
+    credStore.get = origGet;
+  }
+});
+
+t('scheduler.runKeepalive 把 _refreshError 记为失败而非成功', async () => {
+  const scheduler = require('../jobs/scheduler');
+  const authMod = require('../auth');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origEnsure = authMod.ensureAuth;
+  const origUpdate = store.update;
+  const updates = [];
+  store.list = () => [{ id: 'acct_ka_test', edition: 'cn', enabled: true, label: 'ka-test' }];
+  authMod.ensureAuth = async () => ({ id: 'acct_ka_test', token: 't', _refreshError: 'mock refresh fail' });
+  store.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  try {
+    const r = await scheduler.runKeepalive();
+    assert.strictEqual(r.failed, 1, '_refreshError 必须计入 failed');
+    const u = updates.find((x) => x.id === 'acct_ka_test');
+    assert.ok(u, '保活结果应逐账号落库');
+    assert.ok(u.patch.lastKeepaliveResult.startsWith('fail:'), `应记失败: ${u.patch.lastKeepaliveResult}`);
+  } finally {
+    store.list = origList;
+    authMod.ensureAuth = origEnsure;
+    store.update = origUpdate;
+  }
+});
+
 console.log('jobs.balance-refresh');
 t('余额刷新配置：默认关闭，间隔夹紧到 5-1440', () => {
   const fs = require('fs');
@@ -2583,10 +2704,164 @@ t('rotate-seed 与 rotate-accounts 不再互相 require', () => {
     'rotate-accounts 不应在加载期 require rotate-seed（惰性调用除外）');
 });
 
+console.log('jobs.rotate-accounts 轮换失败隔离（m-39）');
+/** 去除注释与字符串后的代码体（静态断言用，避免注释里的词误报）。 */
+function codeOf(js) {
+  return js
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .replace(/(^|[^:])\/\/[^\n]*/g, '$1')
+    .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+    .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+    .replace(/`(?:[^`\\]|\\.)*`/g, '``');
+}
+
+t('轮换循环不因单账号 startClient 失败而中止整遍', () => {
+  // 服务会话（Session 0）下 startClient 必返回 reason=service_session；
+  // 若此时 break，整遍轮换在第一个账号就断链，剩余账号连 auth 都不切换，
+  // 表现为「轮换触发不了」。守门：循环体内不得出现 break。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'rotate-accounts.js'), 'utf-8');
+  const loop = src.match(/for \(const acct of accounts\) \{[\s\S]*?\n  \}/);
+  assert.ok(loop, '应能定位轮换主循环');
+  const body = codeOf(loop[0]);
+  assert.ok(!/\bbreak\b/.test(body),
+    '轮换主循环内不得 break：单账号失败必须 continue，否则整遍断链');
+  assert.ok(/continue;/.test(body), '失败分支应 continue 到下一个账号');
+  // 前置的「无法停止客户端」仍允许整遍早退（一个号都没切换，无从继续）
+  assert.ok(/if \(!stopped\) \{[\s\S]{0,200}?return \{ ok: 0, failed: 1/.test(src),
+    'stopClient 前置失败应整遍早退（此时尚未切换任何账号）');
+});
+
+t('轮换逐账号失败计入 failed 且不丢结果', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'rotate-accounts.js'), 'utf-8');
+  // switchTo 成功后 startClient 失败：要 push 一条 ok:false 并 failed++，然后 continue
+  assert.ok(/auth 已切换但客户端启动失败/.test(src),
+    'startClient 失败应如实记录「auth 已切换但客户端未起」');
+  assert.ok(/const s = await startClient\(\);[\s\S]{0,400}?failed\+\+;[\s\S]{0,200}?continue;/.test(src),
+    'startClient 失败应计 failed 并 continue');
+});
+
+console.log('jobs.scheduler 重复排程竞态（m-39）');
+t('stop() 递增代次，在途定时回调不再复活旧链', () => {
+  // restart() 时若某链回调正卡在 await fn()，stop() 清不掉它（句柄已 fire）；
+  // 回调结束后若只看 started 就会再排一条，与新链并存 → 同一任务每天触发两次。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'scheduler.js'), 'utf-8');
+  assert.ok(/let scheduleEpoch = 0/.test(src), '应有调度代次计数器');
+  const stopBody = src.match(/function stop\(\)\s*\{[\s\S]*?\n\}/)[0];
+  assert.ok(/scheduleEpoch \+= 1/.test(stopBody), 'stop() 必须递增代次');
+  const onceBody = src.match(/function scheduleOnce\([\s\S]*?\n\}/)[0];
+  assert.ok(/const epoch = scheduleEpoch/.test(onceBody), 'scheduleOnce 应捕获注册时的代次');
+  assert.ok(/epoch === scheduleEpoch/.test(onceBody), '重排前必须比对代次');
+});
+
+t('stop() 之后 started 为 false，restart 可重新排链（重排语义不变）', () => {
+  const sched = require('../jobs/scheduler');
+  const ss = require('../jobs/scheduler-settings').getEffective();
+  sched.stop();
+  assert.strictEqual(sched.snapshot().enabled, false, 'stop 后 enabled 应为 false');
+  const snap = sched.restart();
+  assert.ok(snap && typeof snap === 'object', 'restart 应返回快照');
+  // 时刻必须与 scheduler-settings 生效值一致（不硬编码具体时刻）
+  assert.strictEqual(snap.checkinHour, ss.checkinHour, '签到小时应来自生效配置');
+  assert.strictEqual(snap.checkinMinute, ss.checkinMinute, '签到分钟应来自生效配置');
+  assert.strictEqual(snap.keepaliveHour, ss.keepaliveHour, '保活小时应来自生效配置');
+  assert.strictEqual(snap.rotateHour, ss.rotateHour, '轮换小时应来自生效配置');
+  // 收尾：停掉测试期启动的定时器，避免影响后续用例
+  sched.stop();
+  assert.strictEqual(sched.snapshot().enabled, false, '收尾 stop 后应仍为 false');
+});
+
 t('model-access 不再 require model-router 的 index（避免加载期循环）', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', 'middleware', 'model-access.js'), 'utf-8');
   assert.ok(!/require\('\.\.\/model-router'\)/.test(src), 'model-access 应直接依赖 model-router/store');
   assert.ok(/require\('\.\.\/model-router\/store'\)/.test(src));
+});
+
+console.log('upstream.checkin-all 跨平台聚合签到（m-39）');
+t('checkinPlatforms 归一 Trae 历史 edition 后纳入 trae', () => {
+  // 首次实测只跑了 workbuddy：因为用 editionOf('cn')='cn' 查 runner 查不到，
+  // 必须走 normalizeEdition 把 cn/sg/us/manual 归到 trae。
+  const { checkinPlatforms } = require('../upstream/checkin-all');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  store.list = () => [
+    { id: 'a1', edition: 'cn', enabled: true },
+    { id: 'a2', edition: 'workbuddy', enabled: true },
+    { id: 'a3', edition: 'zcode', enabled: true },      // 无 checkin 能力
+    { id: 'a4', edition: 'cn', enabled: false },        // 停用不计
+  ];
+  try {
+    const p = checkinPlatforms();
+    assert.deepStrictEqual(p, ['trae', 'workbuddy'],
+      `应同时覆盖 trae 与 workbuddy，实际 ${JSON.stringify(p)}`);
+    assert.ok(!p.includes('zcode'), 'ZCode 无签到能力，不得纳入');
+  } finally {
+    store.list = origList;
+  }
+});
+
+t('checkinAllByPlatform 汇总各平台明细且单平台失败不影响其它平台', async () => {
+  const { checkinAllByPlatform } = require('../upstream/checkin-all');
+  const store = require('../credentials/store');
+  const traeMod = require('../upstream/checkin');
+  const wbMod = require('../upstream/wb-checkin');
+  const origList = store.list;
+  const origTrae = traeMod.checkinAllEnabled;
+  const origWb = wbMod.wbCheckinAllEnabled;
+  store.list = () => [
+    { id: 'a1', edition: 'cn', enabled: true },
+    { id: 'a2', edition: 'workbuddy', enabled: true },
+  ];
+  traeMod.checkinAllEnabled = async () => ({
+    claimed: [{ accountId: 'a1', label: 'trae-1', checkinCredits: 100 }],
+    already: [], disabled: [], failed: [], total: 1,
+    summary: { claimed: 1, already: 0, disabled: 0, failed: 0 },
+  });
+  wbMod.wbCheckinAllEnabled = async () => { throw new Error('mock wb down'); };
+  try {
+    const r = await checkinAllByPlatform({ spreadMinutes: 0, notifyOnDone: false });
+    assert.strictEqual(r.total, 1, 'total 只统计成功平台');
+    assert.strictEqual(r.claimed, 1);
+    assert.strictEqual(r.failed, 1, '整平台失败应计 1 条 failed');
+    const trae = r.platforms.find((p) => p.platform === 'trae');
+    const wb = r.platforms.find((p) => p.platform === 'workbuddy');
+    assert.ok(trae && trae.claimed === 1, 'trae 明细应保留');
+    assert.ok(wb && wb.error === 'mock wb down', 'workbuddy 失败原因应如实透出');
+    assert.ok(/Trae/.test(r.message) && /WorkBuddy/.test(r.message),
+      `message 应含两个平台: ${r.message}`);
+  } finally {
+    store.list = origList;
+    traeMod.checkinAllEnabled = origTrae;
+    wbMod.wbCheckinAllEnabled = origWb;
+  }
+});
+
+t('前端「全部签到」指向聚合端点而非 Trae 专用端点', () => {
+  // 旧实现打 /v1/credentials/checkin（Trae 专用），WorkBuddy 被静默跳过，
+  // 按钮名却叫「全部签到」——这是 m-39 的直接症状。
+  const api = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'src', 'shared', 'api', 'credentials.ts'), 'utf-8');
+  assert.ok(/checkinAll[\s\S]{0,200}?\/v1\/credentials\/checkin-all/.test(api),
+    'checkinAll 应指向 /v1/credentials/checkin-all');
+  assert.ok(!/checkinAll[\s\S]{0,200}?\/v1\/credentials\/checkin'/.test(api),
+    'checkinAll 不得再指向 Trae 专用的 /v1/credentials/checkin');
+});
+
+t('前端单账号签到按平台分发到 WorkBuddy 端点', () => {
+  const page = fs.readFileSync(path.join(__dirname, '..', '..', 'web', 'src', 'features', 'accounts', 'CredentialsPage.tsx'), 'utf-8');
+  assert.ok(/platformOf\(a\) === 'workbuddy'[\s\S]{0,200}?wbCheckinOne/.test(page),
+    'WorkBuddy 账号的签到按钮应走 wbCheckin');
+  assert.ok(/from '\.\.\/\.\.\/shared\/api\/workbuddy'/.test(page), '应引入 workbuddy 接口模块');
+});
+
+t('手动签到会推送通知（m-39 用户明确要求）', () => {
+  const all = fs.readFileSync(path.join(__dirname, '..', 'upstream', 'checkin-all.js'), 'utf-8');
+  assert.ok(/notifyOnDone[\s\S]{0,600}?notify\(/.test(all), '聚合签到应支持完成通知');
+  const cred = fs.readFileSync(path.join(__dirname, '..', 'routes', 'credentials.js'), 'utf-8');
+  assert.ok(/checkin-all[\s\S]{0,900}?notifyOnDone: true/.test(cred), '手动全部签到应开启通知');
+  assert.ok(/const r = await checkinAccount\(req\.params\.id\);[\s\S]{0,900}?notify\(/.test(cred),
+    '手动单账号签到（Trae）应推送通知');
+  const wb = fs.readFileSync(path.join(__dirname, '..', 'routes', 'workbuddy.js'), 'utf-8');
+  assert.ok(/wbCheckinAccount\(String\(req\.body\.accountId\)\)[\s\S]{0,900}?notify\(/.test(wb),
+    '手动单账号签到（WorkBuddy）应推送通知');
 });
 
 t('全库无双向依赖（静态扫描）', () => {
@@ -3156,6 +3431,76 @@ t('buildAccountFromLocal 产出 zcode/jwt 账号（本机已安装客户端时�
   assert.ok(acct.token && acct.token.split('.').length === 3, '应为三段 JWT');
   assert.strictEqual(acct.refreshToken, null, '客户端不返回 refresh_token');
   assert.ok(acct.userId, 'JWT 必含 user_id/sub');
+});
+
+// ── zcode 计量口径隔离（token 不得混入积分）────────────────────────────────
+console.log('zcode 计量口径隔离');
+t('ZCode 额度不写 balance / snapshot.packs / credit_history（积分口径）', async () => {
+  const store = require('../credentials/store');
+  const { db } = require('../credentials/db');
+  const balance = require('../upstream/balance');
+  const acct = store.add({
+    label: 'zcode-unit-caliber', edition: 'zcode', mode: 'jwt',
+    token: 'h.eyJ1c2VyX2lkIjoiOTk5OSJ9.s', userId: 'zcal-1',
+    fingerprint: {
+      platform: 'win32', arch: 'x64', osVersion: '10.0.22631', screen: '1920x1080',
+      language: 'zh-CN', timezone: 'Asia/Shanghai',
+      deviceMid: '0e5b1b56-1111-4222-8333-444455556666',
+    },
+  }, 'test');
+  // 拦截上游：返回 1e8 token 量级（若混进积分口径会立刻暴露）
+  const rewards = require('../zcode/rewards');
+  const orig = rewards.fetchBalance;
+  rewards.fetchBalance = async () => ({
+    plans: [],
+    balances: [{
+      show_name: 'GLM-5.3-Flash', bucket_id: 'b1', plan_id: 'p1', meter: 'model_usage',
+      unit_type: 'token', total_units: 100000000, used_units: 13000000,
+      remaining_units: 87000000, expires_at: Math.floor(Date.now() / 1000) + 86400,
+    }],
+    serverTime: Math.floor(Date.now() / 1000),
+  });
+  try {
+    const r = await balance.refreshBalance(acct.id);
+    const saved = store.get(acct.id);
+    // 1) balance 列（积分）必须为 null
+    assert.strictEqual(saved.balance, null, 'zcode 不得写积分 balance 列');
+    assert.strictEqual(r.balance, null, '返回值 balance 必须为 null');
+    // 2) snapshot 不得有 packs（积分口径），改存 tokenBuckets
+    const snap = saved.entitlementSnapshot || {};
+    assert.ok(!Array.isArray(snap.packs) || snap.packs.length === 0, 'snapshot.packs 不得含 token 桶');
+    assert.strictEqual(snap.tokenRemaining, 87000000, 'token 额度存 tokenBuckets/tokenRemaining');
+    // 3) credit_history 不得有该账号记录
+    const n = db().prepare('SELECT COUNT(*) AS c FROM credit_history WHERE account_id = ?').get(acct.id).c;
+    assert.strictEqual(n, 0, 'zcode 不得写 credit_history');
+    // 4) 积分口径聚合器读不到 token
+    const { summarizeExpiry, summarizeFefo } = require('../credentials/credits');
+    const packs = snap.packs || [];
+    assert.strictEqual(summarizeExpiry(packs).d7, 0, '临期积分不得含 token');
+    assert.strictEqual(summarizeFefo(packs).expiringAmount, 0, 'FEFO 金额不得含 token');
+  } finally {
+    rewards.fetchBalance = orig;
+    db().prepare('DELETE FROM credit_history WHERE account_id = ?').run(acct.id);
+    store.remove(acct.id);
+  }
+});
+
+t('credit-history.summary：zcode 快照即使手工存在，口径仍按积分差分', () => {
+  const ch = require('../credentials/credit-history');
+  const { db } = require('../credentials/db');
+  const store = require('../credentials/store');
+  const acct = store.add({ label: 'zcode-sum', edition: 'zcode', mode: 'jwt', token: 't', userId: 'zsum-1' }, 'test');
+  try {
+    db().prepare('INSERT INTO credit_history (account_id, ts, remaining, used_total, source) VALUES (?,?,?,?,?)')
+      .run(acct.id, new Date().toISOString(), 87000000, 13000000, 'zcode_billing_balance');
+    const rows = ch.summary(1).filter((d) => d.accountId === acct.id);
+    assert.strictEqual(rows.length, 1, 'summary 按快照差分包含该账号');
+    db().prepare('DELETE FROM credit_history WHERE account_id = ?').run(acct.id);
+    assert.strictEqual(ch.summary(1).filter((d) => d.accountId === acct.id)[0].snapshots, 0);
+  } finally {
+    db().prepare('DELETE FROM credit_history WHERE account_id = ?').run(acct.id);
+    store.remove(acct.id);
+  }
 });
 
 main();

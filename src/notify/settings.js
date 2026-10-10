@@ -82,7 +82,7 @@ function getEvents(stored) {
   const src = stored && stored.events && typeof stored.events === 'object' ? stored.events : {};
   const out = {};
   for (const e of EVENTS) {
-    out[e] = src[e] === false ? false : true;
+    out[e] = src[e] !== false;
   }
   // 自定义事件：文件里已登记的非内置事件也展示（默认按文件显式值）
   for (const [k, v] of Object.entries(src)) {

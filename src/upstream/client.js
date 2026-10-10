@@ -407,21 +407,40 @@ async function consumeStream(body, onText, debugCtx) {
   if (typeof body.getReader === 'function') {
     const reader = body.getReader();
     const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = decoder.decode(value, { stream: true });
-      if (SSE_DEBUG()) sseDebugWrite(debugCtx && debugCtx.requestId, debugCtx && debugCtx.accountId, debugCtx && debugCtx.model, { type: 'chunk', chunk: chunk.slice(0, 2000) });
-      onText(chunk);
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value, { stream: true });
+        if (SSE_DEBUG()) sseDebugWrite(debugCtx && debugCtx.requestId, debugCtx && debugCtx.accountId, debugCtx && debugCtx.model, { type: 'chunk', chunk: chunk.slice(0, 2000) });
+        onText(chunk);
+      }
+    } finally {
+      // 异常退出（含客户端断开、上游中断）必须释放 body，否则连接与
+      // pool 的 inFlight 租约都不归还。cancel 失败不应掩盖原始错误。
+      try {
+        await reader.cancel();
+      } catch {
+        /* 已关闭或已取消，忽略 */
+      }
     }
     return;
   }
   // Node stream
-  for await (const chunk of body) {
-    if (chunk) {
-      const s = typeof chunk === 'string' ? chunk : chunk.toString();
-      if (SSE_DEBUG()) sseDebugWrite(debugCtx && debugCtx.requestId, debugCtx && debugCtx.accountId, debugCtx && debugCtx.model, { type: 'chunk', chunk: s.slice(0, 2000) });
-      onText(s);
+  try {
+    for await (const chunk of body) {
+      if (chunk) {
+        const s = typeof chunk === 'string' ? chunk : chunk.toString();
+        if (SSE_DEBUG()) sseDebugWrite(debugCtx && debugCtx.requestId, debugCtx && debugCtx.accountId, debugCtx && debugCtx.model, { type: 'chunk', chunk: s.slice(0, 2000) });
+        onText(s);
+      }
+    }
+  } finally {
+    // Node stream 同理：destroy 释放底层 socket
+    try {
+      if (typeof body.destroy === 'function' && !body.destroyed) body.destroy();
+    } catch {
+      /* 忽略 */
     }
   }
 }

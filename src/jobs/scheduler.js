@@ -29,6 +29,14 @@ const { appendCheckinTaskLog } = require('./checkin-log');
 
 let timers = [];
 let started = false;
+/**
+ * 调度代次：每次 stop() 递增。scheduleOnce 的 setTimeout 回调闭包持有自己
+ * 注册时的代次，重排前先比对 —— 不一致说明这条链属于上一代（stop 前注册、
+ * 回调已 fire 在途），必须丢弃，否则 restart()（面板保存设置/恢复备份触发）
+ * 后旧回调复活，与新链并存，同一任务每天被触发两次（m-39：日志实测 15 个
+ * 进程周期出现重复 next checkin/keepalive 排程）。
+ */
+let scheduleEpoch = 0;
 const state = {
   lastRefreshAt: null,
   lastCheckinAt: null,
@@ -246,9 +254,34 @@ async function runKeepalive() {
     const gapMax = 2500;
     for (const a of accounts) {
       try {
-        await auth.ensureAuth(a.id);
+        // ensureAuth 不抛「续期失败」：它吞错后照常返回旧凭据（保证业务可用）。
+        // 因此这里以返回值里的 _refreshError 为准判定保活结果——只凭「没抛错」
+        // 记 ok 会把刷新失败伪装成保活成功（m-35 回归正是这样掩盖了 3 天）。
+        const ensured = await auth.ensureAuth(a.id);
+        const refreshError = ensured && ensured._refreshError;
+        if (refreshError) failed += 1;
+        // 保活结果逐账号落库：面板「保活时间」列据此回答
+        // 「这个号上次刷新是什么时候、结果如何」，而不是只有一个全局时间戳
+        store.update(a.id, {
+          lastKeepaliveAt: new Date().toISOString(),
+          lastKeepaliveResult: refreshError
+            ? `fail: ${String(refreshError).slice(0, 112)}`
+            : 'ok',
+        });
+        if (refreshError) {
+          console.error(`[scheduler] keepalive fail ${a.id}: ${refreshError}`);
+          notify('refresh_fail', {
+            accountId: a.id,
+            label: a.label,
+            message: `keepalive: ${refreshError}`,
+          }).catch(() => {});
+        }
       } catch (e) {
         failed += 1;
+        store.update(a.id, {
+          lastKeepaliveAt: new Date().toISOString(),
+          lastKeepaliveResult: e.message ? `fail: ${e.message}`.slice(0, 120) : 'fail',
+        });
         console.error(`[scheduler] keepalive fail ${a.id}: ${e.message}`);
         notify('refresh_fail', {
           accountId: a.id,
@@ -448,11 +481,13 @@ function scheduleOnce(hour, minute, label, fn) {
   if (label === 'keepalive') state.nextKeepaliveAt = at.toISOString();
   if (label === 'rotate') state.nextRotateAt = at.toISOString();
   const delay = Math.max(1000, at.getTime() - Date.now());
+  const epoch = scheduleEpoch;
   const t = setTimeout(async () => {
     try {
       await fn();
     } catch { /* logged inside */ }
-    if (started) scheduleOnce(hour, minute, label, fn);
+    // 代次不符：本回调属于 stop() 之前的那一代调度，不得复活成新链
+    if (started && epoch === scheduleEpoch) scheduleOnce(hour, minute, label, fn);
   }, delay);
   t.unref?.();
   timers.push(t);
@@ -594,6 +629,8 @@ function start() {
 
 function stop() {
   started = false;
+  // 递增代次：所有已注册链（含回调已 fire、仍在 await 的在途链）就此作废
+  scheduleEpoch += 1;
   if (growthTimer) {
     clearInterval(growthTimer);
     growthTimer = null;

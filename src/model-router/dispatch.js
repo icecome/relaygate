@@ -112,7 +112,7 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
       if (!payload || payload === '[DONE]') return;
       try {
         const ev = JSON.parse(payload);
-        if (ev && ev.usage) usage = ev.usage;
+        if (ev && ev.usage) usage = peekUsageDetail(ev.usage);
       } catch { /* 非 JSON 帧忽略 */ }
     });
     for (;;) {
@@ -129,7 +129,7 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
   return {
     streamed: true,
     durationMs: Date.now() - (opts.startedAt || Date.now()),
-    usage: sanitizeUsage(usage),
+    usage,
   };
 }
 
@@ -297,7 +297,7 @@ async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
  *   （tool_calls / 截断优先）与聚合出口 writeCompletionChunks 保持等价。
  *   上游失败时抛错，交由 handleChat 切换候选或补错误帧（与旧聚合行为一致）。
  */
-async function dispatchStream(provider, remoteModel, body, res, opts = {}) {
+function dispatchStream(provider, remoteModel, body, res, opts = {}) {
   if (provider.type === 'openai') {
     return dispatchOpenAIStream(provider, remoteModel, body, res, opts);
   }
@@ -305,6 +305,24 @@ async function dispatchStream(provider, remoteModel, body, res, opts = {}) {
     return dispatchWorkBuddyStream(provider, remoteModel, body, res, opts);
   }
   return dispatchTraeStream(provider, remoteModel, body, res, opts);
+}
+
+/**
+ * 流式透传路径的 usage 窥探：保留官方三字段给客户端，同时抽出
+ * 缓存读 token（prompt_tokens_details.cached_tokens 等）供计费日志使用。
+ * 原实现 sanitizeUsage 把细节字段整段丢弃，标定费率只能按全量输入计价，
+ * 系统性高估积分消耗（缓存读单价约为未缓存输入的 1/4~1/8）。
+ */
+function peekUsageDetail(u) {
+  if (!u || typeof u !== 'object') return null;
+  const usage = sanitizeUsage(u);
+  if (!usage) return null;
+  const d = u.prompt_tokens_details;
+  const cached = Number(d && (d.cached_tokens ?? d.cachedTokens))
+    || Number(u.cache_read_input_tokens)
+    || 0;
+  if (cached > 0) usage.cached_tokens = Math.min(cached, usage.prompt_tokens);
+  return usage;
 }
 
 /**
@@ -403,7 +421,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
 
     ensureStart();
     // usage 合并进末帧（官方三字段），与 WB 直通路径同形
-    const usage = sanitizeUsage(lastUsage);
+    const usage = peekUsageDetail(lastUsage);
     outUsage = usage;
     const finalChunk = {
       id: completionId,
@@ -481,7 +499,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
       }
       // 裁剪 usage 到官方三字段；记录后合并进末帧
       if (ev.usage) {
-        usage = sanitizeUsage(ev.usage);
+        usage = peekUsageDetail(ev.usage);
         delete ev.usage;
       }
       // 去掉可能触发客户端校验的非标字段；并记录 tool_calls / finish_reason
