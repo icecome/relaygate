@@ -140,6 +140,22 @@ function listen(port, host, fallbacks = []) {
     if (host === '::') {
       console.warn('[relay-gate] 仅绑定 IPv6；请使用 localhost 或 [::1] 访问（127.0.0.1 可能被其他进程占用，如 VMware NAT）。');
     }
+
+    // ---- 优雅停机链（P0-002）----
+    // 顺序：停止接受新连接 → 停定时器 → flush 日志 → 关 DB → 退出。
+    // 信号处理器（log/crash.js 的 onShutdown）按注册顺序执行这些钩子，
+    // 任何钩子失败不阻断后续，5 秒兜底强制退出。
+    const { onShutdown } = require('./log/crash');
+    const dbModule = require('./credentials/db');
+    onShutdown('http-server', () => {
+      server.close();
+    });
+    onShutdown('scheduler', () => scheduler.stop());
+    onShutdown('balance-refresh', () => require('./jobs/balance-refresh').stop());
+    onShutdown('backup', () => require('./jobs/backup').stop());
+    onShutdown('zcode-rewards', () => require('./jobs/zcode-rewards').stop());
+    onShutdown('sqlite', () => dbModule.close());
+
     scheduler.start();
     // 凭据模块启动初始化（devices 回填；m-38：从 require 期副作用改为显式调用）
     require('./routes/credentials').initCredentials();
@@ -149,6 +165,7 @@ function listen(port, host, fallbacks = []) {
     // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
     require('./jobs/zcode-rewards').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
+    // 必须在调度器启动**之前**执行：先清出干净目录再排程，且它是同步阻塞的
     require('./log/retention').pruneAtStartup(config.ROOT);
     console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards)');
   });

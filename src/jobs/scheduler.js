@@ -26,6 +26,7 @@ const variant = require('../platform/variant');
 const { checkCreditAlerts } = require('./credit-alerts');
 const { appendTaskLog } = require('./task-log');
 const { appendCheckinTaskLog } = require('./checkin-log');
+const schedulerLock = require('./scheduler-lock');
 
 let timers = [];
 let started = false;
@@ -607,6 +608,16 @@ function start() {
     if (!config.schedulerEnabled) console.log('[scheduler] disabled');
     return;
   }
+  // 跨进程单实例：两个进程并行调度会让非幂等任务（备份/轮换）重复执行。
+  // 拿不到锁时本进程不排程，但 HTTP 服务继续提供（避免整机不可用）。
+  const lock = schedulerLock.acquire();
+  if (!lock.acquired) {
+    console.warn(
+      `[scheduler] 另一个实例持有调度锁（pid=${lock.holderPid ?? '?'}，${lock.reason || 'held'}），` +
+        '本进程不启动定时任务。若确认那个进程已异常退出，请删除 .trae-api/scheduler.lock 后重启。',
+    );
+    return;
+  }
   started = true;
   const eff = scheduleSettings.getEffective();
   state.schedule = { ...eff };
@@ -644,6 +655,12 @@ function stop() {
     clearInterval(t);
   }
   timers = [];
+  // 释放跨进程锁：让其它实例可以接管调度
+  try {
+    schedulerLock.release();
+  } catch (e) {
+    console.error('[scheduler] lock release failed:', e.message);
+  }
 }
 
 /** 配置变更后重排定时（保留 started 状态）。 */

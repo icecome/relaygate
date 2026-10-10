@@ -44,6 +44,50 @@ function writeEvent(entry) {
 }
 
 let installed = false;
+/**
+ * 优雅停机钩子，由 index.js 在启动时注册（registerShutdown）。
+ * 信号处理在调用这些钩子后、force-exit 兜底计时器之前执行。
+ * @type {{label:string, fn:()=>void|Promise<void>}[]}
+ */
+const shutdownHooks = [];
+let shuttingDown = false;
+
+/**
+ * 注册一个停机钩子。按注册顺序执行；任何一个钩子抛错都不阻断后续钩子。
+ * @param {string} label 便于排查卡在哪个钩子的名字
+ * @param {()=>void|Promise<void>} fn
+ */
+function onShutdown(label, fn) {
+  shutdownHooks.push({ label, fn });
+}
+
+/**
+ * 执行停机链并退出。
+ * @param {string} reason 触发原因（信号名 / 手动调用说明）
+ */
+async function runShutdown(reason) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  writeEvent({ tag: 'lifecycle', event: 'shutdown_begin', reason });
+  // 5 秒兜底：钩子挂死也要退，服务管理器还需要进程真的退出去
+  const force = setTimeout(() => {
+    writeEvent({ tag: 'lifecycle', event: 'shutdown_timeout' });
+    process.exit(1);
+  }, 5000);
+  try {
+    for (const { label, fn } of shutdownHooks) {
+      try {
+        await fn();
+      } catch (e) {
+        writeEvent({ tag: 'lifecycle', event: 'shutdown_hook_error', hook: label, error: serializeError(e) });
+      }
+    }
+    writeEvent({ tag: 'lifecycle', event: 'shutdown_done', reason });
+  } finally {
+    clearTimeout(force);
+    process.exit(0);
+  }
+}
 
 /**
  * 注册全局兜底。应在任何业务模块 require 之前调用，以便捕获加载期异常。
@@ -78,7 +122,7 @@ function install(opts = {}) {
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.on(sig, () => {
       writeEvent({ tag: 'lifecycle', event: 'signal', signal: sig });
-      process.exit(0);
+      void runShutdown(sig);
     });
   }
 
@@ -87,4 +131,4 @@ function install(opts = {}) {
   });
 }
 
-module.exports = { install, writeEvent, serializeError };
+module.exports = { install, writeEvent, serializeError, onShutdown, runShutdown };

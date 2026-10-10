@@ -206,6 +206,23 @@ function db() {
   return _db;
 }
 
+/**
+ * 关闭连接（优雅停机链调用）。
+ * 幂等：未打开时是空操作；重复调用安全。
+ * node:sqlite 的 DatabaseSync 在进程退出时通常也能释放，但显式关闭能让
+ * journal 落盘完成，并让第二个进程立刻拿到写锁（否则要等 busy_timeout）。
+ */
+function close() {
+  if (!_db) return false;
+  try {
+    _db.close();
+  } catch {
+    /* 已关闭或底层报错都不应阻断停机 */
+  }
+  _db = null;
+  return true;
+}
+
 /** 将数据库密文行还原为账号对象（解密敏感字段）。 */
 function rowToAcct(r) {
   return {
@@ -245,4 +262,4 @@ function parseSnapshot(raw) {
   }
 }
 
-module.exports = { db, rowToAcct, DB_FILE };
+module.exports = { db, close, rowToAcct, DB_FILE };
