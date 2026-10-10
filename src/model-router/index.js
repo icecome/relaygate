@@ -252,6 +252,7 @@ async function handleChat(req, res, ctx) {
         tool_choice: ctx.tool_choice || undefined,
       };
       let result;
+      let rawUsageForLog = null; // 裁剪前的原始 usage（含缓存读细节），仅用于计费日志
       if (ctx.stream !== false) {
         result = await dispatch.dispatchStream(provider, cand.model, body, res, {
           startedAt: t0,
@@ -264,6 +265,8 @@ async function handleChat(req, res, ctx) {
           stickyKey: ctx.stickyKey,
           stickyAccountId: ctx.stickyAccountId,
         });
+        // 计费日志用原始 usage（含缓存读细节）；回写客户端前再裁到官方三字段
+        if (result && typeof result === 'object' && result.usage) rawUsageForLog = result.usage;
         if (result && typeof result === 'object') {
           // 回写请求中的虚拟模型 ID，便于客户端校验 model 字段
           result.model = virtualId;
@@ -277,9 +280,9 @@ async function handleChat(req, res, ctx) {
         || (result && result.choices && result.choices[0] && result.choices[0].finish_reason)
         || null;
       // usage 提取：流式来自 dispatch 返回值（末帧合并前已捕获），
-      // 非流式来自 completion 对象的 usage 字段（上面已 sanitizeUsage）。
+      // 非流式优先用裁剪前的原始 usage（保留缓存读细节，标定费率需要它）。
       // 无 usage 时不写字段，统计层据此区分「未计量」与「消耗 0」。
-      let usageFields = usageToLogFields(result && result.usage);
+      let usageFields = usageToLogFields(rawUsageForLog || (result && result.usage));
       // 上游未回传 usage 时用真实分词器补算（结果仍属估算，日志标 tokensEstimated）。
       // 补算口径见 lib/token-precise.js：分词器与上游不完全一致，只作趋势参考。
       let tokensEstimated = false;
@@ -296,8 +299,13 @@ async function handleChat(req, res, ctx) {
       }
       // 费率按真实命中的上游模型（cand.model）计，而不是虚拟 ID——
       // 虚拟 ID 在费率表里没有条目，曾导致估算恒为 null。
+      // platform 一并传：标定系数按平台分表（同名模型跨平台费率不同）。
+      const platformTag = provider.type === 'openai' ? `openai:${cand.provider}` : provider.builtin;
       const estCost = usageFields.totalTokens
-        ? estimateCost(cand.model, usageFields.promptTokens, usageFields.completionTokens)
+        ? estimateCost(cand.model, usageFields.promptTokens, usageFields.completionTokens, {
+          cacheRead: Number(usageFields.cacheReadTokens) || 0,
+          platform: platformTag,
+        })
         : null;
       logRequest({
         endpoint: '/v1/chat/completions',
@@ -309,11 +317,13 @@ async function handleChat(req, res, ctx) {
         toolsIn: ctx.tools ? ctx.tools.length : 0,
         durationMs: Date.now() - startedAt,
         error: null,
-        platform: provider.type === 'openai' ? `openai:${cand.provider}` : provider.builtin,
+        platform: platformTag,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
         ...usageFields,
         ...(tokensEstimated ? { tokensEstimated: true } : {}),
+        // 计费模型：统计层按它查费率/标定表；model 是虚拟 ID，查不到任何费率
+        ...(cand.model ? { pricedModel: cand.model } : {}),
         ...(estCost != null ? { estimatedCost: estCost } : {}),
         ...(fr ? { finishReason: fr, truncated: dispatch.isTruncatedFinish(fr) } : {}),
       });

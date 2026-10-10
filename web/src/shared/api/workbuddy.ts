@@ -50,13 +50,6 @@ export interface WbCheckinOne {
   reason?: string;
 }
 
-export interface WbCheckinBatch {
-  ok?: number;
-  failed?: number;
-  total?: number;
-  results?: { accountId?: string; ok?: boolean; msg?: string }[];
-}
-
 export const wbLocal = (key: string, signal?: AbortSignal) =>
   api<WbLocalInfo>('/v1/workbuddy/local', { signal }, key);
 
@@ -73,24 +66,5 @@ export const wbImport = (
 export const wbVerify = (body: { accountId?: string }, key: string) =>
   api<WbVerifyResult>('/v1/workbuddy/verify', { method: 'POST', body }, key);
 
-/** 手动触发 token 刷新。 */
-export const wbRefresh = (accountId: string, key: string) =>
-  api<{ ok: boolean; expiredAt?: string; accessToken?: string }>(
-    '/v1/workbuddy/refresh',
-    { method: 'POST', body: { accountId } },
-    key,
-  );
-
-/** 签到状态查询（只读，不消耗）。 */
-export const wbCheckinStatus = (body: { accountId?: string }, key: string) =>
-  api<{ ok?: boolean; checkedIn?: boolean; streakDays?: number; rewardCredit?: number; reason?: string }>(
-    '/v1/workbuddy/checkin-status',
-    { method: 'POST', body },
-    key,
-  );
-
 export const wbCheckin = (body: { accountId?: string }, key: string) =>
   api<WbCheckinOne>('/v1/workbuddy/checkin', { method: 'POST', body }, key);
-
-export const wbCheckinAll = (key: string) =>
-  api<WbCheckinBatch>('/v1/workbuddy/checkin-all', { method: 'POST' }, key);

@@ -1,12 +1,13 @@
 {
   "name": "relay-gate-web",
   "private": true,
-  "version": "1.0.0",
+  "version": "3.1.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
+    "check:tokens": "node scripts/check-css-tokens.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

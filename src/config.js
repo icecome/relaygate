@@ -24,7 +24,22 @@ const modelConfig = readJson(path.join(ROOT, 'model-config.json'), {
   models: {}, settings: {}
 });
 
-const fallbackConfig = readJson(path.join(ROOT, 'model-fallback.json'), {});
+/**
+ * 已移除：model-fallback.json 的读取。
+ *
+ * 该文件声明了 autoFallback / queueThreshold 与十余组模型降级映射，看起来
+ * 像「配置降级策略」，但自 v3.0 全功能重构提交（5908f8f）加入后从未被任何
+ * 业务代码消费 —— 全库对 fallbackConfig 的读写只有 config.js 内部的
+ * 读入/挂载/reload 三处，没有一处参与选型或降级决策。
+ *
+ * 也就是说：主人花时间配的降级策略**从未生效过**，而且面板上也没有任何
+ * 入口能看出它不生效。这比没有这个文件更糟。
+ * 若将来要实现模型降级，应作为新功能从零设计（并接入面板），而不是
+ * 复用一份从未被读过的配置。
+ *
+ * 遗留文件检查在 index.js 启动流程里做：文件仍存在就打印警告，
+ * 让升级的用户立刻知道自己的配置没被用上。
+ */
 
 // 模型映射：key(对外模型名) -> { function, config_name, scene, reasoning }
 function buildModelMap(modelConfig) {
@@ -108,7 +123,6 @@ const config = {
   // 是否写旧格式逐请求 JSON 文件（默认关；默认写 traffic.jsonl + 控制台一行）
   legacyTrafficFiles: process.env.LEGACY_TRAFFIC_FILES === 'true',
   modelConfig,
-  fallbackConfig,
   resolveModelOptions,
 
   // 重试/限流
@@ -124,6 +138,9 @@ const config = {
   markIncompleteToolArgs: process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true',
 
   // 工具调用协议：'native'(默认) | 'text'
+  // 注意：当前**仅用于展示**（/v1/admin/config 与运维面板的「工具协议」行），
+  // 没有任何行为分支消费它。工具调用形态由上游返回决定（见 transform/sse.js 的
+  // 三种形态归一化）。如需真正切换协议，必须先在 openai.js 的请求构造处接入。
   toolProtocol: process.env.TOOL_PROTOCOL || 'native',
 
   // 上游未回传 usage 时，是否用 tiktoken（cl100k_base）补算 token 写入日志。
@@ -167,19 +184,17 @@ const config = {
 };
 
 /**
- * 热重载 model-config.json / model-fallback.json 与 .env 可热更项（T4）。
+ * 热重载 model-config.json 与 .env 可热更项（T4）。
  * 仅更新内存中的模型映射与可变运行参数；不重启进程。
  * 端口/host/密钥等监听或鉴权级配置不热更（需重启生效）。
  */
 config.reload = function reload() {
   // 重新读取 model-config.json
   const freshModelConfig = readJson(path.join(ROOT, 'model-config.json'), { models: {}, settings: {} });
-  const freshFallback = readJson(path.join(ROOT, 'model-fallback.json'), {});
   // 重新加载 .env（不覆盖已存在的环境变量，仅刷新可热更项）
   try { require('dotenv').config(); } catch { /* ignore */ }
   // 更新可热更的运行参数
   config.modelConfig = freshModelConfig;
-  config.fallbackConfig = freshFallback;
   // 用同一构造函数重建解析器，保证与初始加载的返回形态一致
   config.resolveModelOptions = makeResolveModelOptions(buildModelMap(freshModelConfig));
   // 调度与节流参数

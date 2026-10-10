@@ -122,6 +122,10 @@ router.post('/v1/chat/completions', async (req, res) => {
   let requestError = null;
   let requestStatus = 200;
   let lastUsage = null; // 上游 token_usage 事件（流式/非流式均捕获）
+  let resolvedPlatformTag = null; // 命中的平台（'trae'|'workbuddy'），供费率标定选表
+  // 计费模型名：直连路径下 model 就是物理模型；WB 路径会剥掉 wb/ 前缀后另存。
+  // 必须与 model 分开——费率表/标定表按物理模型名建键，别名查不到条目。
+  let pricedModel = model;
   let finalFinishReason = null; // 实际下发给客户端的结束原因（可观测性：能直接查出截断）
   let continueCount = 0; // 截断自动续写的实际轮数
   const finishFields = () => {
@@ -140,13 +144,15 @@ router.post('/v1/chat/completions', async (req, res) => {
     return upstreamFinish || 'stop';
   };
   const usageFields = () => {
-    const pt = lastUsage ? (lastUsage.prompt_tokens || 0) : 0;
-    const ct = lastUsage ? (lastUsage.completion_tokens || 0) : 0;
-    const tt = lastUsage ? (lastUsage.total_tokens || 0) : 0;
-    const base = lastUsage ? { promptTokens: pt, completionTokens: ct, totalTokens: tt } : {};
-    // 费用估算：有 token 用量时按模型费率估算积分（T5）
-    if (pt || ct || tt) {
-      const c = estimateCost(model, pt, ct);
+    // 统一走 usageToLogFields：兼容蛇形/驼峰键名，并抽出缓存读/写 token
+    // （标定费率对三类 token 分别计价，缺缓存字段会系统性高估积分消耗）。
+    const base = usageToLogFields(lastUsage);
+    // 费用估算：有 token 用量时按模型费率估算积分（标定系数优先）
+    if (base.promptTokens || base.completionTokens || base.totalTokens) {
+      const c = estimateCost(pricedModel, base.promptTokens, base.completionTokens, {
+        cacheRead: Number(base.cacheReadTokens) || 0,
+        platform: resolvedPlatformTag || undefined,
+      });
       if (c != null) base.estimatedCost = c;
     }
     return base;
@@ -233,6 +239,7 @@ router.post('/v1/chat/completions', async (req, res) => {
 
   if (resolved.platform === 'workbuddy') {
     const wbModel = resolved.modelId;
+    resolvedPlatformTag = 'workbuddy';
     const wbBody = {
       model: wbModel,
       messages,
@@ -318,7 +325,10 @@ router.post('/v1/chat/completions', async (req, res) => {
       // 费率按真实模型 wbModel 计（model 可能是 WB 别名，费率表里没有条目）
       const wbUsageFields = usageToLogFields(wbUsage);
       const wbCost = wbUsageFields.totalTokens
-        ? estimateCost(wbModel, wbUsageFields.promptTokens, wbUsageFields.completionTokens)
+        ? estimateCost(wbModel, wbUsageFields.promptTokens, wbUsageFields.completionTokens, {
+          cacheRead: Number(wbUsageFields.cacheReadTokens) || 0,
+          platform: 'workbuddy',
+        })
         : null;
       logRequest({
         endpoint: '/v1/chat/completions', method: 'POST', model,
@@ -329,6 +339,7 @@ router.post('/v1/chat/completions', async (req, res) => {
         error: requestError,
         platform: 'workbuddy',
         wbModel,
+        pricedModel: wbModel,
         routedTo: `workbuddy/${wbModel}`,
         ...wbUsageFields,
         ...(wbCost != null ? { estimatedCost: wbCost } : {}),
@@ -352,6 +363,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     seed: typeof seed === 'number' ? seed : undefined,
     stop: Array.isArray(stop) ? stop : undefined,
   };
+  resolvedPlatformTag = resolved.platform;
 
   if (stream !== false) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -511,6 +523,8 @@ router.post('/v1/chat/completions', async (req, res) => {
         toolsIn: tools ? tools.length : 0,
         durationMs: Date.now() - startedAt,
         error: requestError,
+        platform: resolvedPlatformTag || undefined,
+        pricedModel,
         ...usageFields(),
         ...finishFields(),
       });
@@ -598,6 +612,8 @@ router.post('/v1/chat/completions', async (req, res) => {
         toolCalls,
         toolsIn: tools ? tools.length : 0,
         durationMs: Date.now() - startedAt,
+        platform: resolvedPlatformTag || undefined,
+        pricedModel,
         ...usageFields(),
         ...finishFields(),
       });
@@ -614,6 +630,8 @@ router.post('/v1/chat/completions', async (req, res) => {
       toolCalls,
       toolsIn: tools ? tools.length : 0,
       durationMs: Date.now() - startedAt,
+      platform: resolvedPlatformTag || undefined,
+      pricedModel,
       ...usageFields(),
       ...finishFields(),
     });

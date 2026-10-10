@@ -1,32 +1,24 @@
 /**
- * 总览页：凭据池健康度 + 运行时状态。
- * 数据源为SummaryProvider（单一 /summary）与 /v1/admin/runtime。
+ * 总览页：今天的额度、账号健康与待处理事项。
+ *
+ * 约束（勿违背）：本页不复制凭据池的账号表格，也不复制运维页的运行状态——
+ * 两者在各自页面都是完整版本。发现异常请链接过去处理。
  */
 import { useCallback, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import type { Account } from '../../shared/api/types';
 import { useAuth } from '../../shared/api/auth';
-import { getRuntime } from '../../shared/api/admin';
 import { getCreditHistory } from '../../shared/api/stats';
 import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
-import { creditTotals } from '../accounts/accountPacks';
-import {
-  accountState,
-  coolRemaining,
-  formatBoolean,
-  formatNumber,
-  formatTime,
-  formatUptime,
-  STATE_DOT_CLASS,
-  STATE_LABEL,
-  STATE_PILL_CLASS,
-} from '../../shared/lib/format';
+import { creditTotals, keepaliveOf } from '../accounts/accountPacks';
+import { accountState, formatNumber } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
-  KeyValue,
   LoadingBlock,
   MetricGrid,
   Panel,
@@ -35,13 +27,8 @@ import { PageShell, Stack } from '../../shared/ui/PageShell';
 
 export default function OverviewPage() {
   const { key } = useAuth();
+  const navigate = useNavigate();
   const { data: summary, loading, error, reload } = useSummaryStore();
-
-  const runtime = useAsyncData(
-    (signal) => getRuntime(key, signal),
-    [key],
-    { enabled: !!key },
-  );
 
   const credits = useAsyncData(
     (signal) => getCreditHistory(1, key, signal),
@@ -49,7 +36,7 @@ export default function OverviewPage() {
     { enabled: !!key },
   );
 
-  // 页面可见时每60 秒触发一次真实余额查询，刷新后重读汇总与消耗统计。
+  // 页面可见时每 60 秒触发一次真实余额查询，刷新后重读汇总与消耗统计。
   // reload 均为 useCallback 稳定引用，因此本回调只随它们变化。
   const { reload: reloadCredits } = credits;
   const refreshAll = useCallback(() => {
@@ -58,18 +45,26 @@ export default function OverviewPage() {
   }, [reload, reloadCredits]);
   useBalanceAutoRefresh(key, refreshAll);
 
-  // 派生值不落state，随 summary 变化即时算出
+  // 派生值不落 state，随 summary 变化即时算出
   const accounts = useMemo<Account[]>(() => summary?.accounts ?? [], [summary]);
   const credit = useMemo(() => creditTotals(accounts), [accounts]);
-  // 逐账号额度预先算好，避免在表格每行里重复遍历权益包
-  const perAccountCredits = useMemo(() => {
-    const map = new Map<string, ReturnType<typeof creditTotals>>();
-    for (const a of accounts) map.set(a.id, creditTotals([a]));
-    return map;
+
+  /** 需要主人处理的异常：需要重新登录、冷却中、已停用。 */
+  const issues = useMemo(() => {
+    let needLogin = 0;
+    let cooling = 0;
+    let disabled = 0;
+    for (const a of accounts) {
+      if (keepaliveOf(a).tone === 'danger') needLogin += 1;
+      const st = accountState(a);
+      if (st === 'cool') cooling += 1;
+      else if (st === 'off') disabled += 1;
+    }
+    return { needLogin, cooling, disabled, total: needLogin + cooling + disabled };
   }, [accounts]);
 
   const metrics = [
-    { key: '凭据总数', value: formatNumber(summary?.total), delta: '含 Trae 与 WorkBuddy' },
+    { key: '凭据总数', value: formatNumber(summary?.total), delta: '含 Trae / WorkBuddy / ZCode' },
     { key: '可用账号', value: formatNumber(summary?.enabled) },
     { key: '冷却中', value: formatNumber(summary?.cooling) },
     {
@@ -83,10 +78,8 @@ export default function OverviewPage() {
   return (
     <PageShell
       title="总览"
-      description="凭据池健康度与网关运行状态"
-      actions={
-        <Button onClick={() => { reload(); runtime.reload(); }}>刷新</Button>
-      }
+      description="今天的额度、账号健康与待处理事项"
+      actions={<Button onClick={refreshAll}>刷新</Button>}
     >
       <Stack>
         <MetricGrid items={metrics} />
@@ -95,23 +88,21 @@ export default function OverviewPage() {
 
         <Panel
           title="积分额度"
-          description="来自各账号权益包快照，已用尽与已过期的包不计入"
+          description="来自各账号权益包快照；已用尽与已过期的包不计入"
           actions={
             <>
               <Chip tone="brand" dot="dot-ok">
                 每 60 秒自动刷新
               </Chip>
-              <Button
-                size="sm"
-                onClick={refreshAll}
-                disabled={credits.loading}
-              >
+              <Button size="sm" onClick={refreshAll} disabled={credits.loading}>
                 {credits.loading ? '刷新中…' : '立即刷新'}
               </Button>
             </>
           }
         >
-          <div className="flex flex-col gap-4">
+          {credits.loading && !credits.data ? (
+            <LoadingBlock />
+          ) : (
             <div className="grid gap-4 grid-cols-2 items-start">
               <div
                 className="rounded-lg border px-3.5 py-3 min-w-0"
@@ -128,6 +119,7 @@ export default function OverviewPage() {
                 </div>
                 <div className="mt-1 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
                   覆盖 {credit.accounts} 个账号 · {credit.packs} 个可用权益包
+                  {credit.unlimited > 0 ? ` · 另有 ${credit.unlimited} 个不限量包` : ''}
                 </div>
               </div>
 
@@ -150,118 +142,89 @@ export default function OverviewPage() {
                   {formatNumber(credits.data?.totalUsed)}
                 </div>
                 <div className="mt-1 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                  {credit.unlimited > 0
-                    ? `另有 ${credit.unlimited} 个不限量包`
-                    : '按各账号快照差分统计'}
+                  按各账号余额刷新时写入的快照差分统计
                 </div>
               </div>
             </div>
-
-            <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              不限量包不计入金额，仅按个数统计；消耗量来自余额刷新时写入的快照差分，未刷新过的账号不计入。
-            </div>
+          )}
+          <div className="mt-3 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+            不限量包不计入金额，仅按个数统计；ZCode 的 token 额度与积分是两套口径，不并入本页。
           </div>
         </Panel>
 
-        <Panel title="账号池" description="按账号标识与最近操作排序" flush>
-          {loading && !summary ? (
+        {loading && !summary ? (
+          <Panel title="待处理">
             <LoadingBlock />
-          ) : accounts.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无账号数据
-            </div>
-          ) : (
-            <table className="w-full border-collapse text-[13px]">
-              <thead>
-                <tr>
-                  <th className="th">账号</th>
-                  <th className="th">状态</th>
-                  <th className="th">来源</th>
-                  <th className="th cell-num">可用积分</th>
-                  <th className="th">最近选用</th>
-                  <th className="th">最近签到</th>
-                  <th className="th cell-num">错误数</th>
-                </tr>
-              </thead>
-              <tbody>
-                {accounts.map((a) => {
-                  const state = accountState(a);
-                  const cooling = state === 'cool' ? coolRemaining(a.coolUntil) : null;
-                  // 单账号可用额度：与上方汇总同口径（已用尽/已过期不计），无包时回退 balance
-                  const perAccount = perAccountCredits.get(a.id);
-                  const hasPacks = !!perAccount && (perAccount.packs > 0 || perAccount.unlimited > 0);
-                  return (
-                    <tr key={a.id} className="row-hover">
-                      <td className="td font-mono text-[12px]">{a.label || a.id}</td>
-                      <td className="td">
-                        <Chip tone="neutral" dot={STATE_DOT_CLASS[state]}>
-                          {STATE_LABEL[state]}
-                        </Chip>
-                        {cooling && (
-                          <span className="ml-1.5 text-[11px] font-mono" style={{ color: 'var(--rg-state-warning)' }}>
-                            {cooling}
-                          </span>
-                        )}
-                      </td>
-                      <td className="td">{a.source || a.edition || '—'}</td>
-                      <td className="td cell-num">
-                        {hasPacks ? (
-                          <>
-                            {formatNumber(perAccount.total)}
-                            {perAccount.unlimited > 0 && (
-                              <span className="ml-1 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                +{perAccount.unlimited}不限量
-                              </span>
-                            )}
-                          </>
-                        ) : (
-                          formatNumber(a.balance)
-                        )}
-                      </td>
-                      <td className="td font-mono text-[12px]">{formatTime(a.lastPickedAt)}</td>
-                      <td className="td font-mono text-[12px]">{formatTime(a.lastCheckinAt)}</td>
-                      <td className="td cell-num">{formatNumber(a.errorCount)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          )}
-        </Panel>
-
-        <Panel title="运行状态" description="来自 /v1/admin/runtime">
-          {runtime.error ? (
-            <ErrorState message={runtime.error} onRetry={runtime.reload} />
-          ) : !runtime.data ? (
-            <LoadingBlock />
-          ) : (
-            <KeyValue
-              rows={[
-                {
-                  k: '调度器',
-                  v: (
-                    <span className="inline-flex items-center gap-1.5">
-                      <i className={`dot ${runtime.data.status?.scheduler?.enabled ? 'dot-ok' : 'dot-off'}`} />
-                      {runtime.data.status?.scheduler?.enabled ? '开启' : '关闭'}
-                    </span>
-                  ),
-                },
-                { k: '下次签到', v: <span className="font-mono">{formatTime(runtime.data.status?.scheduler?.nextCheckinAt)}</span> },
-                { k: '粘性条目', v: <span className="font-mono">{formatNumber(runtime.data.status?.sticky?.entries)}</span> },
-                { k: '不可用模型', v: <span className="font-mono">{formatNumber(runtime.data.status?.models?.unavailable)}</span> },
-                { k: '运行时长', v: <span className="font-mono">{formatUptime(runtime.data.status?.uptimeSec)}</span> },
-                { k: '节点', v: <span className="font-mono">{runtime.data.status?.node || '—'}</span> },
-                { k: '池化策略', v: <span className="font-mono">{runtime.data.status?.pool?.strategy || '—'}</span> },
-                { k: '通知', v: formatBoolean(runtime.data.notify?.enabled) },
-                { k: '管理密钥分离', v: formatBoolean(runtime.data.keys?.adminSeparated) },
-              ]}
+          </Panel>
+        ) : accounts.length === 0 ? (
+          <Panel title="待处理">
+            <EmptyState
+              label="还没有接入任何账号。"
+              hint="接入至少一个上游账号后，这里会显示需要处理的事项。"
+              action={{ label: '接入第一个账号', onClick: () => navigate('/credentials') }}
             />
-          )}
-        </Panel>
+          </Panel>
+        ) : (
+          <Panel
+            title="待处理"
+            description={issues.total === 0 ? '当前没有需要处理的异常' : undefined}
+            actions={
+              <>
+                {issues.needLogin > 0 && (
+                  <Chip tone="danger" dot="dot-error">
+                    {issues.needLogin} 个账号需重新登录
+                  </Chip>
+                )}
+                {issues.cooling > 0 && (
+                  <Chip tone="warn" dot="dot-cool">
+                    {issues.cooling} 个账号冷却中
+                  </Chip>
+                )}
+                {issues.disabled > 0 && (
+                  <Chip tone="neutral" dot="dot-off">
+                    {issues.disabled} 个账号已停用
+                  </Chip>
+                )}
+                <Button size="sm" onClick={() => navigate('/credentials')}>
+                  去凭据池处理
+                </Button>
+              </>
+            }
+          >
+            {issues.total === 0 ? (
+              <EmptyState
+                label={`全部 ${accounts.length} 个账号都在正常调度。`}
+                hint="账号掉线或额度临期时会在这里出现提示。"
+              />
+            ) : (
+              <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+                「需重新登录」的账号无法自动恢复，需要重新导入凭据或重新登录；
+                冷却中的账号会在冷却结束后自动回到调度池。
+              </div>
+            )}
+          </Panel>
+        )}
+
+        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <button
+            type="button"
+            className="underline"
+            style={{ color: 'var(--rg-brand-600)' }}
+            onClick={() => navigate('/ops')}
+          >
+            查看运行状态
+          </button>
+          <span>·</span>
+          <button
+            type="button"
+            className="underline"
+            style={{ color: 'var(--rg-brand-600)' }}
+            onClick={() => navigate('/token-stats')}
+          >
+            查看用量与成本
+          </button>
+        </div>
       </Stack>
     </PageShell>
   );
 }
-
-/** 供其他模块复用的状态映射，避免各处重复定义映射表。 */
-export { STATE_PILL_CLASS };

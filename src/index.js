@@ -66,15 +66,40 @@ app.use((req, res, next) => {
 
 const startT = Date.now();
 
+/**
+ * 启动期健康快照。由 runStartupChecks() 在 listen 之前填充，
+ * /health 读它返回真实状态而不是硬编码 'ok'。
+ * @type {{checks: object[], warnings: string[]}}
+ */
+let startupHealth = { checks: [], warnings: [] };
+
+/**
+ * /health：真实健康检查（此前 status 是硬编码 'ok' 字符串，
+ * 只反映「进程还在」，DB 坏了也返回 ok，服务管理器无法据此重启）。
+ *
+ * 语义：
+ *   200 + status:'ok'        —— 全部检查通过
+ *   503 + status:'unhealthy' —— 有检查未通过（checks 里能看到是哪一项）
+ * 免鉴权，因此 checks 只返回布尔与简短文案，不泄露路径或密钥材料。
+ */
 app.get('/health', (req, res) => {
-  const s = status.buildStatus();
-  res.json({
-    status: 'ok',
-    uptime: s.uptimeSec,
-    accounts: s.accounts,
-    scheduler: s.scheduler.enabled,
-    nextCheckinAt: s.scheduler.nextCheckinAt,
-    poolStrategy: s.pool.strategy,
+  let s = null;
+  try {
+    s = status.buildStatus();
+  } catch {
+    s = null;
+  }
+  const failing = startupHealth.checks.filter((c) => !c.ok);
+  const healthy = failing.length === 0 && s != null;
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'unhealthy',
+    checks: startupHealth.checks.map((c) => ({ name: c.name, ok: !!c.ok, detail: c.detail })),
+    warnings: startupHealth.warnings,
+    uptime: s ? s.uptimeSec : null,
+    accounts: s ? s.accounts : null,
+    scheduler: s ? s.scheduler.enabled : null,
+    nextCheckinAt: s ? s.scheduler.nextCheckinAt : null,
+    poolStrategy: s ? s.pool.strategy : null,
   });
 });
 
@@ -140,6 +165,22 @@ function listen(port, host, fallbacks = []) {
     if (host === '::') {
       console.warn('[relay-gate] 仅绑定 IPv6；请使用 localhost 或 [::1] 访问（127.0.0.1 可能被其他进程占用，如 VMware NAT）。');
     }
+
+    // ---- 优雅停机链（P0-002）----
+    // 顺序：停止接受新连接 → 停定时器 → flush 日志 → 关 DB → 退出。
+    // 信号处理器（log/crash.js 的 onShutdown）按注册顺序执行这些钩子，
+    // 任何钩子失败不阻断后续，5 秒兜底强制退出。
+    const { onShutdown } = require('./log/crash');
+    const dbModule = require('./credentials/db');
+    onShutdown('http-server', () => {
+      server.close();
+    });
+    onShutdown('scheduler', () => scheduler.stop());
+    onShutdown('balance-refresh', () => require('./jobs/balance-refresh').stop());
+    onShutdown('backup', () => require('./jobs/backup').stop());
+    onShutdown('zcode-rewards', () => require('./jobs/zcode-rewards').stop());
+    onShutdown('sqlite', () => dbModule.close());
+
     scheduler.start();
     // 凭据模块启动初始化（devices 回填；m-38：从 require 期副作用改为显式调用）
     require('./routes/credentials').initCredentials();
@@ -149,6 +190,7 @@ function listen(port, host, fallbacks = []) {
     // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
     require('./jobs/zcode-rewards').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
+    // 必须在调度器启动**之前**执行：先清出干净目录再排程，且它是同步阻塞的
     require('./log/retention').pruneAtStartup(config.ROOT);
     console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards)');
   });
@@ -181,6 +223,52 @@ try {
 } catch (e) {
   console.error('[api-keys] bootstrap failed:', e.message);
 }
+
+// 已废弃配置的启动期提醒：model-fallback.json 从未被任何业务代码消费
+// （详见 config.js 的说明）。文件若还在，明确告知用户「你的配置没生效」，
+// 否则他会一直以为系统有降级兜底。
+try {
+  if (fs.existsSync(path.join(config.ROOT, 'model-fallback.json'))) {
+    console.warn(
+      '[relay-gate] 警告：检测到 model-fallback.json，但本版本不实现模型降级，' +
+        '该文件不会被读取。其中的 autoFallback / mappings 不会生效，可安全删除。',
+    );
+  }
+} catch {
+  /* 检查失败不影响启动 */
+}
+
+// ---- 启动期健康校验（把「静默降级」变成「明确失败」）----
+// 顺序要求：必须先打开 DB 拿到密文行信息，才能判断 encrypt.key 是否可用。
+try {
+  const startupChecks = require('./lib/startup-checks');
+  const cryptoMod = require('./lib/crypto');
+  const dbMod = require('./credentials/db');
+  const result = startupChecks.runAll({
+    config,
+    cryptoMod,
+    getDb: () => dbMod.db(),
+    fsMod: fs,
+    pathMod: path,
+  });
+  startupHealth = { checks: result.checks, warnings: result.warnings };
+  if (result.fatal) {
+    console.error(`[relay-gate] 启动检查未通过：${result.fatal.name} — ${result.fatal.detail}`);
+    require('./log/crash').writeEvent({
+      tag: 'lifecycle',
+      event: 'startup_fatal',
+      check: result.fatal.name,
+      detail: result.fatal.detail,
+    });
+    process.exit(1);
+  }
+  for (const w of result.warnings) console.warn(`[relay-gate] 启动检查告警：${w}`);
+} catch (e) {
+  // 校验自身出错不应阻断启动，但要留痕且 /health 会体现为无检查项
+  console.error(`[relay-gate] 启动检查执行失败：${e.message}`);
+  startupHealth = { checks: [], warnings: [`启动检查本身失败：${e.message}`] };
+}
+
 listen(config.port, config.host, ['::', '127.0.0.1']);
 
 module.exports = app;

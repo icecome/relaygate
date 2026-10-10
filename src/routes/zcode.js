@@ -232,15 +232,31 @@ router.post('/accounts/:id/balance', admin, async (req, res) => {
   try {
     const r = await rewards.fetchBalance(acct);
     try {
+      // 额度只写 tokenBuckets（token 计量），与积分口径隔离。
+      // 不写 packs / balance / credit_history：那三处是「积分」语义
+      // （credit 单位、量级 1e3），混入 token 数会污染总积分与今日消耗。
+      const tokenBuckets = (r.balances || []).map((b) => ({
+        name: b.show_name || b.entitlement_id,
+        bucketId: b.bucket_id || null,
+        planId: b.plan_id || null,
+        meter: b.meter || 'model_usage',
+        unit: b.unit_type || 'token',
+        limit: Number(b.total_units) || 0,
+        used: Number(b.used_units) || 0,
+        remaining: Number(b.remaining_units) || 0,
+        expireTime: Number(b.expires_at) || null,
+      }));
       store.update(acct.id, {
         entitlementSnapshot: {
           ...(acct.entitlementSnapshot || {}),
           lastBalanceAt: new Date().toISOString(),
+          tokenBuckets,
+          tokenRemaining: tokenBuckets.reduce((s, b) => s + b.remaining, 0),
           balances: r.balances,
           plans: r.plans,
         },
-        // 汇总剩余 token 作为 balance（面板余额列显示口径）
-        balance: (r.balances || []).reduce((s, b) => s + (Number(b.remaining_units) || 0), 0) || null,
+        // balance 列保持积分语义：ZCode 无积分概念，恒为 null
+        balance: null,
       });
     } catch { /* 快照失败不影响响应 */ }
     res.json(r);

@@ -10,7 +10,7 @@
  */
 const { Router } = require('express');
 const { authenticateAdmin } = require('../middleware/auth');
-const { readTrafficLines, dailyStats, modelStats, accountStats } = require('../log/stats');
+const { readTrafficLines, dailyStats, modelStats, accountStats, numTok, isMasked } = require('../log/stats');
 const { loadRateMap } = require('../models/rates');
 const bu = require('../workbuddy/billing-usage');
 const tu = require('../upstream/trae-usage');
@@ -27,12 +27,14 @@ router.get('/traffic', admin, (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days || '1', 10) || 1, 1), 7);
   const account = req.query.account ? String(req.query.account) : null;
   const status = req.query.status ? String(req.query.status) : null;
+  const model = req.query.model ? String(req.query.model) : null;
 
   // 复用 stats.readTrafficLines（已按新→旧合并），避免内联重复读文件逻辑
   const lines = readTrafficLines(days);
 
   let rows = lines;
   if (account) rows = rows.filter((r) => r.account === account);
+  if (model) rows = rows.filter((r) => (r.model || 'unknown') === model);
   if (status) {
     rows = rows.filter((r) => {
       if (status === 'error') return !!r.error || (r.status && r.status >= 400);
@@ -61,6 +63,7 @@ router.get('/traffic', admin, (req, res) => {
   const byAccount = {};
   const byStatus = {};
   let tokensTotal = 0;
+  let tokensMasked = 0;
   for (const r of lines) {
     const m = r.model || 'unknown';
     byModel[m] = (byModel[m] || 0) + 1;
@@ -68,7 +71,11 @@ router.get('/traffic', admin, (req, res) => {
     byAccount[a] = (byAccount[a] || 0) + 1;
     const s = r.error ? 'error' : String(r.status || 'ok');
     byStatus[s] = (byStatus[s] || 0) + 1;
-    tokensTotal += Number(r.totalTokens) || 0;
+    // 只累加可还原的数值（含数字字符串）：被脱敏成 "***" 的行无法还原，
+    // 单列 tokensMasked 计数，界面据此提示「总量是下界」
+    const t = numTok(r.totalTokens);
+    if (t != null) tokensTotal += t;
+    else if (isMasked(r.totalTokens)) tokensMasked++;
   }
 
   res.json({
@@ -79,7 +86,11 @@ router.get('/traffic', admin, (req, res) => {
     page,
     pageSize,
     totalPages,
-    summary: { byModel, byAccount, byStatus, tokens: tokensTotal },
+    summary: {
+      byModel, byAccount, byStatus, tokens: tokensTotal,
+      // 被历史脱敏破坏、无法还原 token 的行数：界面据此提示「总量偏小」
+      tokensMasked,
+    },
     data,
   });
 });
@@ -101,19 +112,45 @@ router.get('/credit-history', admin, (req, res) => {
 });
 
 /** 按日聚合：requests / tokens / estimatedCost（含 per-model 拆分）。 */
+/**
+ * 按日聚合：requests / tokens / estimatedCost（含 per-model 拆分）。
+ *
+ * 额外合入官方账单的按日积分（officialCredit），让「网关计量」与「上游账单」
+ * 在同一行对照——历史日期网关侧 token 因脱敏缺陷丢失时，账单侧仍是完整真值。
+ */
 router.get('/stats/daily', admin, async (req, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), 90);
     await loadRateMap();
-    if (statsCacheEnabled()) {
-      const { cachedDailyStats } = require('../log/stats-cache');
-      const data = cachedDailyStats(days);
-      const totalRequests = data.reduce((s, d) => s + d.requests, 0);
-      return res.json({ object: 'list', days, totalRequests, data, cached: true });
-    }
-    const lines = readTrafficLines(days);
-    const data = dailyStats(lines);
-    res.json({ object: 'list', days, totalRequests: lines.length, data });
+    const data = statsCacheEnabled()
+      ? require('../log/stats-cache').cachedDailyStats(days)
+      : dailyStats(readTrafficLines(days));
+    const totalRequests = data.reduce((s, d) => s + d.requests, 0);
+
+    // 官方账单按日积分（读本地缓存，不打上游）
+    let official = null;
+    try {
+      const od = require('../models/official-daily').dailyCredits(days);
+      const map = new Map(od.byDay.map((x) => [x.date, x]));
+      official = {
+        traeCreditTotal: od.traeCreditTotal,
+        wbCreditTotal: od.wbCreditTotal,
+        totalCredit: Math.round((od.traeCreditTotal + od.wbCreditTotal) * 100) / 100,
+      };
+      for (const d of data) {
+        const o = map.get(d.date);
+        if (!o) continue;
+        d.officialCredit = o.totalCredit;
+        d.officialTraeCredit = o.traeCredit;
+        d.officialWbCredit = o.wbCredit;
+        d.officialTokens = o.traeTokens; // 仅 Trae 账单带 token
+        d.officialSessions = o.traeSessions;
+        d.officialRequests = o.wbRequests;
+        d.officialCovered = o.covered;
+      }
+    } catch { /* 账单聚合失败不影响网关口径 */ }
+
+    res.json({ object: 'list', days, totalRequests, data, official, cached: statsCacheEnabled() });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }
@@ -161,6 +198,29 @@ router.get('/stats/accounts', admin, async (req, res) => {
 router.get('/stats/cache', admin, (req, res) => {
   const sc = require('../log/stats-cache');
   res.json({ object: 'stats_cache', enabled: statsCacheEnabled(), dir: sc.CACHE_DIR() });
+});
+
+/**
+ * 积分/token 标定系数（官方账单回归结果）。
+ * 每模型给出 uncached/output/cacheRead 三个「积分/token」系数与拟合质量
+ * （n=样本数，R²=1 表示逐会话账单可被三系数精确还原）。面板据此展示
+ * 「估算积分」的可信度；系数为 null 的模型回退 tier 倍率口径。
+ */
+router.get('/stats/pricing-calibration', admin, (req, res) => {
+  const pc = require('../models/pricing-calib');
+  if (req.query.refresh === '1') pc.clearCache();
+  res.json({
+    object: 'pricing_calibration',
+    ...pc.snapshot(),
+    // 换算比：账单实测的「积分 ↔ token」均值（无账单数据时为 null）
+    ratio: pc.summarizeRatio(),
+  });
+});
+
+router.post('/stats/pricing-calibration/clear', admin, (req, res) => {
+  const pc = require('../models/pricing-calib');
+  pc.clearCache();
+  res.json({ ok: true });
 });
 
 router.post('/stats/cache/clear', admin, (req, res) => {
@@ -249,11 +309,16 @@ router.get('/stats/official-usage', admin, async (req, res) => {
     if (accountId) {
       const acct = credStore.get(accountId);
       if (!acct) return res.status(404).json({ error: { message: `account not found: ${accountId}`, type: 'invalid_request_error' } });
-      const one = acct.edition === 'workbuddy'
-        ? await bu.scanAccount(accountId, days)
-        : await tu.scanAccount(accountId, days);
-      wb = acct.edition === 'workbuddy' ? { accounts: [one] } : { accounts: [] };
-      trae = acct.edition === 'workbuddy' ? { accounts: [] } : { accounts: [one] };
+      // 显式平台分流（isEdition 不兜底）：ZCode 等新平台两侧账单都不适用，
+      // 返回空集合而不是误投给 Trae/WB 的账单端点
+      const variant = require('../platform/variant');
+      const isWb = variant.isEdition(acct.edition, variant.WORKBUDDY);
+      const isTrae = variant.isEdition(acct.edition, variant.TRAE);
+      const one = isWb ? await bu.scanAccount(accountId, days)
+        : isTrae ? await tu.scanAccount(accountId, days)
+          : { accountId, label: acct.label || accountId, days, available: false, credit: 0, requests: 0, tokens: 0, byDay: [], byModel: [], unavailableReason: '平台不提供官方账单' };
+      wb = isWb ? { accounts: [one] } : { accounts: [] };
+      trae = isTrae ? { accounts: [one] } : { accounts: [] };
     } else {
       [wb, trae] = await Promise.all([bu.scanAll(days), tu.scanAll(days)]);
     }

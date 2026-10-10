@@ -12,12 +12,23 @@ import { api } from './http';
 
 /* ------------------------------------------------------------ 汇总视图 */
 
+/**
+ * 上游 travel/status 的 location 是结构化对象
+ * （见 src/workbuddy/cat-trip.js normalizeStatus），idle 时为 null。
+ */
+export interface GrowthLocation {
+  id?: number | null;
+  code?: string | null;
+  name?: string | null;
+  durationHours?: number | null;
+}
+
 export interface GrowthStatusRow {
   accountId: string;
   label: string;
   ok: boolean;
   state?: string;
-  location?: string;
+  location?: GrowthLocation | null;
   departAt?: string;
   arriveAt?: string;
   serverNow?: string;
@@ -55,76 +66,12 @@ export const growthOverview = (key: string, signal?: AbortSignal) =>
   );
 
 /* -------------------------------------------------------------- 单账号 */
-
-export interface GrowthStatus {
-  ok?: boolean;
-  state?: string;
-  location?: string;
-  departAt?: string;
-  arriveAt?: string;
-  rewardCredit?: number;
-  dailyLimitReached?: boolean;
-  reason?: string;
-}
-
-export interface GrowthStreak {
-  ok?: boolean;
-  days?: number;
-  makeupCards?: number;
-  reason?: string;
-}
-
-export interface GrowthLotteryChances {
-  ok?: boolean;
-  balance?: number;
-}
-
-const single = <T>(name: string) => (accountId: string, key: string, signal?: AbortSignal) =>
-  api<T & { object: string; accountId: string }>(
-    `/v1/workbuddy/growth/${name}`,
-    { method: 'POST', signal, body: { accountId } },
-    key,
-  );
-
-export const growthStatus = single<GrowthStatus>('status');
-export const growthStreak = single<GrowthStreak>('streak');
-export const growthChances = single<GrowthLotteryChances>('chances');
-
-/** 领取旅行奖励。返回 rewardCredit 表示到账额度。 */
-export const growthClaim = (accountId: string, key: string) =>
-  api<{ ok?: boolean; rewardCredit?: number; reason?: string }>(
-    '/v1/workbuddy/growth/claim',
-    { method: 'POST', body: { accountId } },
-    key,
-  );
-
-/** 出发（开始旅行）。 */
-export const growthDepart = (
-  accountId: string,
-  body: { location?: string },
-  key: string,
-) =>
-  api<{ ok?: boolean; reason?: string }>(
-    '/v1/workbuddy/growth/depart',
-    { method: 'POST', body: { accountId, ...body } },
-    key,
-  );
-
-/** 连登兑换。 */
-export const growthRedeemTier = (accountId: string, tier: string, key: string) =>
-  api<{ ok?: boolean; credit?: number; reason?: string }>(
-    '/v1/workbuddy/growth/redeem-tier',
-    { method: 'POST', body: { accountId, tier } },
-    key,
-  );
-
-/** 抽奖。 */
-export const growthDraw = (accountId: string, key: string) =>
-  api<{ ok?: boolean; prize?: string; reason?: string }>(
-    '/v1/workbuddy/growth/draw',
-    { method: 'POST', body: { accountId } },
-    key,
-  );
+/*
+ * 说明：单账号写操作（claim / draw / redeem-tier / depart 等）只在后台定时任务里
+ * 使用，管理面板不再暴露 —— 面板只做只读展示。因此这里不导出对应的前端封装，
+ * 避免出现「有函数但没人调用」的死代码（此前有 4 个零引用导出）。
+ * 后端端点仍然保留，供 jobs/growth-auto.js 与 CLI 使用。
+ */
 
 /* -------------------------------------------------------------- 后台任务 */
 
@@ -138,24 +85,13 @@ export interface GrowthProgress {
   finishedAt?: string;
 }
 
-export const growthAuto = (body: { accountId?: string }, key: string) =>
-  api<{ object: string; taskId: string; startedAt: string; progressUrl: string }>(
-    '/v1/workbuddy/growth/auto',
-    { method: 'POST', body },
-    key,
-  );
-
-export const growthProgress = (taskId: string, key: string, signal?: AbortSignal) =>
-  api<GrowthProgress & { object: string }>(
-    `/v1/workbuddy/growth/progress?taskId=${encodeURIComponent(taskId)}`,
-    { method: 'POST', signal, body: {} },
-    key,
-  );
-
 export interface GrowthLastRun {
   ranAt?: string | null;
-  ok?: number;
-  failed?: number;
+  total?: number;
+  okCount?: number;
+  failCount?: number;
+  /** 成功动作摘要，形如 "acct-1: 领取旅行奖励 +200" */
+  actions?: string[];
   durationMs?: number;
 }
 

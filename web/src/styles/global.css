@@ -145,6 +145,39 @@
     @apply text-[12px] leading-[1.5];
   }
 
+  /* ---- 布局外壳：移动端由 @media 接管 ----
+     桌面（≥768px）下侧栏常驻；窄屏下 .layout-aside 变抽屉、
+     .layout-menu-btn 出现、.layout-nav-scrim 起遮罩作用。 */
+  .layout-aside {
+    width: 216px;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .layout-menu-btn {
+    display: none;
+    position: fixed;
+    top: 10px;
+    left: 12px;
+    z-index: 60;
+    width: 44px;
+    height: 44px;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    border: 1px solid var(--rg-border-strong);
+    background: var(--rg-bg-base);
+    color: var(--rg-text-primary);
+    cursor: pointer;
+  }
+  .layout-nav-scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: rgba(0, 0, 0, 0.3);
+  }
+
   /* ---- 按钮 ---- */
   .btn {
     @apply inline-flex items-center justify-center gap-1.5 h-8 px-3 rounded-md border text-[13px]
@@ -246,6 +279,14 @@
   .panel-body-flush {
     @apply p-0;
   }
+  /*
+   * 表格贴边铺满时的横向滚动兜底。
+   * .table-fixed 的列宽是显式的，视口窄于列宽总和时表格会溢出容器；
+   * 这里让它横向滚动，而不是把最右侧的「操作」列裁掉。
+   */
+  .panel-body-flush:has(> table) {
+    overflow-x: auto;
+  }
   .panel-foot {
     @apply px-4 py-2.5 border-t text-aux;
     border-color: var(--rg-border);
@@ -271,6 +312,11 @@
   .metric-delta {
     @apply text-[11px] leading-4 mt-1;
     color: var(--rg-text-tertiary);
+  }
+  /* 区块小标题（面板内分组标题、接入说明标题等） */
+  .text-label {
+    @apply text-[12px] leading-[18px] font-medium tracking-wide;
+    color: var(--rg-text-secondary);
   }
 
   /* ---- 徽标 / 状态：仅表达真实业务状态 ---- */
@@ -341,6 +387,59 @@
   }
 
   /* ---- 表格 ---- */
+
+  /*
+   * 列宽稳定容器。
+   *
+   * 背景：表格默认是 auto 布局，列宽由**当前渲染出的内容**反推。筛选/切换分类后
+   * 内容变化（例如「来源」列从 import+workbuddy 混排变成单一值），浏览器会重新
+   * 分配全部列宽，整表横向位移。
+   *
+   * 做法：容器固定 table-layout: fixed，列宽只由「表头 + 首行」与显式宽度类决定，
+   * 与后续行的内容无关，因此筛选前后列位置完全一致。
+   * 由此带来两个必须遵守的约束：
+   *   1. 列宽类（.col-*）声明在 th 上，不要写在 td 上；
+   *   2. 单元格内容必须自己处理溢出（.td 的 break-words / 省略号），
+   *      否则长文本会溢出格子，而 fixed 布局不会像 auto 那样为它扩列。
+   */
+  .table-fixed {
+    table-layout: fixed;
+  }
+
+  /* 列宽：仅用于 .table-fixed 表格，数值取自各表最长内容 + 换行余量 */
+  .col-toggle {
+    width: 64px;
+  }
+  .col-account {
+    width: 176px;
+  }
+  .col-state {
+    width: 88px;
+  }
+  /* 容得下 "WorkBuddy" 不折行（最长平台名） */
+  .col-source {
+    width: 104px;
+  }
+  .col-pack {
+    width: 80px;
+  }
+  .col-expiry {
+    width: 100px;
+  }
+  .col-token {
+    width: 124px;
+  }
+  .col-balance {
+    width: 116px;
+  }
+  .col-cool {
+    width: 92px;
+  }
+  /* 三个行内按钮（签到/查余额/删除）+ 间距，不折行所需宽度 */
+  .col-actions {
+    width: 208px;
+  }
+
   .th {
     @apply text-left text-[12px] font-semibold px-3 py-2 border-b whitespace-nowrap;
     color: var(--rg-text-secondary);
@@ -351,6 +450,14 @@
     @apply px-3 py-2.5 border-b align-middle text-[13px];
     border-color: var(--rg-border);
     color: var(--rg-text-primary);
+  }
+  /* fixed 布局下长内容不再撑列，必须显式截断，否则会溢出到相邻列 */
+  .table-fixed .td {
+    @apply break-words;
+  }
+  .table-fixed .cell-num,
+  .table-fixed .col-actions {
+    @apply whitespace-nowrap;
   }
   /* 末行不画线：避免与面板底边形成双线 */
   tbody tr:last-child > .td,
@@ -487,5 +594,90 @@
     animation-iteration-count: 1 !important;
     animation-delay: -0.01ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* ==========================================================================
+   移动端适配（<768px）
+   布局策略：侧栏收纳为抽屉、表格降级为卡片、触控目标放大到 44px。
+   桌面端（≥768px）完全不受本块影响。
+   ========================================================================== */
+
+@media (max-width: 767px) {
+  /* ---- 抽屉侧栏 ---- */
+  .layout-aside {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: 240px;
+    z-index: 50;
+    transform: translateX(-100%);
+    transition: transform 0.18s ease-out;
+    box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
+  }
+  .layout-aside-open {
+    transform: translateX(0);
+  }
+  .layout-menu-btn {
+    display: inline-flex;
+  }
+  .layout-nav-scrim {
+    display: block;
+  }
+
+  /* ---- 主区与触控 ---- */
+  main > div {
+    padding: 12px !important;
+  }
+  .btn-sm {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .btn-danger {
+    border-color: var(--rg-state-error);
+    border-width: 1.5px;
+  }
+
+  /* ---- 表格卡片化：thead 隐藏，tr 成卡，td 变「label: value」行 ---- */
+  .card-table thead {
+    display: none;
+  }
+  .card-table tr {
+    display: block;
+    border: 1px solid var(--rg-border);
+    border-radius: 8px;
+    padding: 8px 10px;
+    margin-bottom: 8px;
+    background: var(--rg-bg-base);
+  }
+  .card-table td {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 3px 0;
+  }
+  .card-table td::before {
+    content: attr(data-label);
+    color: var(--rg-text-tertiary);
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  /* 操作列不显示「操作:」前缀 */
+  .card-table td.cell-act::before,
+  .card-table td.cell-num-act::before {
+    content: none;
+  }
+  /* 单元格内的多行内容（账号名 + id）保持块状 */
+  .card-table td > div {
+    min-width: 0;
+  }
+}
+
+@media (min-width: 768px) {
+  .layout-menu-btn {
+    display: none;
+  }
+  .layout-nav-scrim {
+    display: none;
   }
 }

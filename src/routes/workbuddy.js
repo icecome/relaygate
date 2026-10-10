@@ -207,6 +207,21 @@ router.post('/checkin', admin, async (req, res) => {
   try {
     if (req.body && req.body.accountId) {
       const r = await wbCheckinAccount(String(req.body.accountId));
+      // 手动单账号签到也要推送提醒（m-39）：此前 WorkBuddy 签到从不通知，
+      // 用户点了没有任何反馈，也看不出上游是否真的发分。
+      try {
+        const { notify } = require('../notify');
+        const label = r.label || String(req.body.accountId);
+        const already = r.result === 'already';
+        notify('checkin_ok', {
+          accountId: r.accountId,
+          label,
+          claimed: r.claimed ? 1 : 0,
+          message: already
+            ? `今日已签到（连续 ${r.streakDays ?? '-'} 天）`
+            : (r.claimed ? `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）` : '未签到成功'),
+        }, already ? `今日已签到：${label}` : `签到完成：${label}`).catch(() => {});
+      } catch { /* 通知失败不影响签到结果 */ }
       return res.json(r);
     }
     // 无 accountId：本机登录态（无库记录，不写 store）

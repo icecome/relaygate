@@ -15,21 +15,27 @@ import {
   refreshOneBalance,
   resetAllDevices,
 } from '../../shared/api/credentials';
-import { ApiError, isBusinessFailure } from '../../shared/api/http';
+import { wbCheckin as wbCheckinOne } from '../../shared/api/workbuddy';
+import { ApiError } from '../../shared/api/http';
+import { runAction, summarizeBatch } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import {
   accountState,
   coolRemaining,
+  formatDate,
   formatNumber,
   formatQuota,
   formatTime,
+  platformLabel,
+  platformOf,
   STATE_DOT_CLASS,
   STATE_LABEL,
 } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   Field,
   LoadingBlock,
@@ -43,7 +49,7 @@ import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
 import { GrowthPanel } from './GrowthPanel';
-import { ExpiryChip, expirySummary, worstExpiry } from './accountPacks';
+import { ExpiryChip, expirySummary, keepaliveOf, packsOf, worstExpiry } from './accountPacks';
 import { PackDialog } from './PackDialog';
 
 type StateFilter = 'all' | 'ok' | 'cool' | 'off';
@@ -64,6 +70,8 @@ export default function CredentialsPage() {
   const [growthOpen, setGrowthOpen] = useState(false);
   /** 查看权益包的账号；null 表示弹窗关闭 */
   const [packTarget, setPackTarget] = useState<Account | null>(null);
+  /** 需要重新登录的账号；null 表示 OAuth 弹窗关闭 */
+  const [reloginTarget, setReloginTarget] = useState<Account | null>(null);
 
   const list = useAsyncData(
     (signal) => listAccounts(key, signal),
@@ -89,9 +97,10 @@ export default function CredentialsPage() {
       const st = accountState(a);
       if (stateFilter !== 'all' && st !== stateFilter) return false;
       if (sourceFilter !== 'all') {
-        const raw = String(a.edition || a.source || '');
-        const isWb = raw === 'workbuddy' || raw.startsWith('wb');
-        if (sourceFilter === 'workbuddy' ? !isWb : isWb) return false;
+        const platform = platformOf(a);
+        if (sourceFilter === 'workbuddy' ? platform !== 'workbuddy' : platform === 'workbuddy') {
+          return false;
+        }
       }
       if (q) {
         const hay = `${a.label ?? ''} ${a.id}`.toLowerCase();
@@ -104,7 +113,7 @@ export default function CredentialsPage() {
   // 到期汇总只用于工具条提示，明细在行内展开，不占页面主体空间
   const expiry = useMemo(() => expirySummary(rows), [rows]);
 
-  /** 统一包装写操作：错误必须落到 UI，不能只console。 */
+  /** 统一包装写操作：错误必须落到 UI，不能只 console。（实现见 shared/api/action） */
   async function run(
     id: string,
     label: string,
@@ -113,20 +122,13 @@ export default function CredentialsPage() {
   ) {
     setBusyId(id);
     try {
-      const result = await fn();
-      // 业务层失败（HTTP 成功但 ok:false）要与请求异常分开提示
-      if (isBusinessFailure(result)) {
-        const reason = (result as { reason?: string }).reason;
-        toast(`${label}未成功：${reason ?? '后端未给出原因'}`, 'err');
-        return false;
-      }
-      toast(successMsg, 'ok');
-      list.reload();
-      return true;
-    } catch (e) {
-      const msg = e instanceof ApiError ? e.message : `${label}失败`;
-      toast(msg, 'err');
-      return false;
+      return await runAction({
+        label,
+        fn,
+        successMsg,
+        toast,
+        onDone: list.reload,
+      });
     } finally {
       setBusyId(null);
     }
@@ -137,17 +139,47 @@ export default function CredentialsPage() {
   }
 
   async function checkin(a: Account) {
-    await run(a.id, '签到', () => checkinOne(a.id, key), '签到完成');
+    // 按平台分发：WorkBuddy 走它自己的签到端点（/v1/workbuddy/checkin），
+    // Trae 系走通用端点。此前统一打到 /v1/credentials/:id/checkin，
+    // 后端平台闸门对 WorkBuddy 直接抛「not a trae account」——按钮是坏的（m-39）。
+    if (platformOf(a) === 'workbuddy') {
+      await run(a.id, '签到', () => wbCheckinOne({ accountId: a.id }, key), '签到完成');
+    } else {
+      await run(a.id, '签到', () => checkinOne(a.id, key), '签到完成');
+    }
   }
 
   async function checkinEveryOne() {
     setBusyId('__all__');
     try {
-      await checkinAll(key);
-      toast('已触发全部签到', 'ok');
+      // 跨平台聚合签到：同时覆盖 Trae + WorkBuddy（而非旧接口只签 Trae），
+      // toast 如实展示分平台明细，让「全部」名副其实（m-39）。
+      const r = await checkinAll(key);
+      const claimed = r.claimed ?? 0;
+      const already = r.already ?? 0;
+      const failed = r.failed ?? 0;
+      if (failed > 0) {
+        // 分平台结果里有逐账号的原因，取前几条展示，不能只报一个计数
+        const reasons = (r.platforms ?? [])
+          .flatMap((p) => p.accounts.filter((x) => !x.result || /fail|error|未/i.test(x.result)))
+          .slice(0, 3)
+          .map((x) => [x.label, x.reason].filter(Boolean).join('：'))
+          .filter(Boolean)
+          .join('；');
+        toast(
+          `签到完成（${claimed} 新签 / ${already} 已签 / ${failed} 失败）：${r.message ?? ''}${
+            reasons ? `；${reasons}` : ''
+          }`,
+          'err',
+        );
+      } else if (claimed > 0) {
+        toast(`签到完成：${claimed} 个新签，${already} 个今日已签`, 'ok');
+      } else {
+        toast(`今日均已签到（${already} 个账号）`, 'ok');
+      }
       list.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '批量签到失败', 'err');
+      toast(e instanceof ApiError ? e.message : '批量签到请求失败', 'err');
     } finally {
       setBusyId(null);
     }
@@ -168,18 +200,32 @@ export default function CredentialsPage() {
     await run(a.id, '删除', () => deleteAccount(a.id, key), '已删除');
   }
 
+  /**
+   * 行内「重新登录」：refreshToken 已过期的账号无法自动续期，
+   * 按平台分发到各自的重新获取凭据入口（Trae 走 OAuth，WorkBuddy 走本机抓取）。
+   */
+  function relogin(a: Account) {
+    const platform = platformOf(a);
+    if (platform === 'workbuddy') {
+      setShowWbImport(true);
+      toast(`WorkBuddy 账号需在「接入 WorkBuddy」里重新抓取本机登录态：${a.label || a.id}`, 'warn');
+      return;
+    }
+    setReloginTarget(a);
+    setShowOauth(true);
+  }
+
   async function resetDevices() {
     const ok = await prompt({
-      title: '重置全部账号的设备标识？',
-      message: '将重置所有凭据的设备标识，不影响凭据本身与路由配置。',
+      title: '重置已启用账号的设备标识？',
+      message: '将对所有「已启用」的凭据重置设备标识（停用账号不受影响），不改动凭据本身与路由配置。',
       okText: '重置',
       danger: true,
     });
     if (ok !== true) return;
     setBusyId('__dev__');
     try {
-      const r = await resetAllDevices(key);
-      toast(`重置完成：成功 ${r.ok?.length ?? 0}，失败 ${r.failed?.length ?? 0}`, r.failed?.length ? 'warn' : 'ok');
+      summarizeBatch('设备标识重置', await resetAllDevices(key), toast);
       list.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '重置失败', 'err');
@@ -191,7 +237,7 @@ export default function CredentialsPage() {
   return (
     <PageShell
       title="凭据池"
-      description="账号凭据的启用、签到、余额与设备标识管理"
+      description="接入、启用与排查上游账号凭据"
       actions={
         <>
           <Chip tone="brand" dot="dot-ok">
@@ -243,13 +289,15 @@ export default function CredentialsPage() {
             <Button size="sm" onClick={() => setGrowthOpen((v) => !v)}>
               {growthOpen ? '收起成长中心' : '成长中心'}
             </Button>
+            {/* 这两个 Chip 是**账号数**口径；总览页的「3日内到期积分」是**额度**
+                口径（后端 summary.expiring3d）。文案已写明「个账号」以示区分。 */}
             {expiry.expired > 0 ? (
               <Chip tone="danger" dot="dot-error">
-                {expiry.expired} 个账号已到期
+                {expiry.expired} 个账号额度已到期
               </Chip>
             ) : expiry.expiring > 0 ? (
               <Chip tone="warn" dot="dot-cool">
-                {expiry.expiring} 个账号 7 日内到期
+                {expiry.expiring} 个账号额度 7 日内到期
               </Chip>
             ) : null}
             <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -281,42 +329,61 @@ export default function CredentialsPage() {
           title="凭据列表"
           actions={
             <Button size="sm" onClick={resetDevices} disabled={busyId === '__dev__'}>
-              重置全部设备标识
+              重置已启用账号的设备标识
             </Button>
           }
           flush
         >
           {list.loading && !list.data ? (
             <LoadingBlock />
+          ) : (list.data?.length ?? 0) === 0 ? (
+            <EmptyState
+              label="还没有接入任何账号。"
+              hint="接入上游账号后才能转发请求；总览页也会开始显示待处理事项。"
+              action={{ label: '接入第一个账号', onClick: () => setShowOauth(true) }}
+            />
           ) : rows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              没有符合条件的账号
-            </div>
+            <EmptyState
+              label="当前筛选条件下没有匹配账号。"
+              hint={`库中共有 ${list.data?.length ?? 0} 个账号。`}
+              action={{
+                label: '清除筛选',
+                onClick: () => {
+                  setQuery('');
+                  setStateFilter('all');
+                  setSourceFilter('all');
+                },
+              }}
+            />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table table-fixed w-full border-collapse text-[13px]">
               <thead>
                 <tr>
-                  <th className="th">启用</th>
-                  <th className="th">账号</th>
-                  <th className="th">状态</th>
-                  <th className="th">来源</th>
-                  <th className="th">权益包</th>
-                  <th className="th">到期</th>
-                  <th className="th cell-num">余额</th>
-                  <th className="th">冷却至</th>
-                  <th className="th cell-act">操作</th>
+                  <th className="th col-toggle">启用</th>
+                  <th className="th col-account">账号</th>
+                  <th className="th col-state">状态</th>
+                  <th className="th col-source">平台</th>
+                  <th className="th col-pack">权益包</th>
+                  <th className="th col-expiry">权益到期</th>
+                  <th className="th col-token">账号到期</th>
+                  <th className="th col-balance cell-num">余额 / 额度</th>
+                  <th className="th col-cool">冷却至</th>
+                  <th className="th col-actions cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((a) => {
                   const st = accountState(a);
                   const cooling = coolRemaining(a.coolUntil);
-                  const pack = a.packs?.[0];
+                  const rowPack = packsOf(a)[0] ?? null;
                   const busy = busyId === a.id;
                   const expiryWorst = worstExpiry(a);
+                  const keepalive = keepaliveOf(a);
+                  const keepaliveNeedsRelogin = keepalive.label === '需重新登录';
+                  const platform = platformLabel(a);
                   return (
                     <tr key={a.id} className="row-hover">
-                        <td className="td">
+                        <td className="td" data-label="启用">
                           <Button
                             size="sm"
                             variant={a.enabled ? 'primary' : 'default'}
@@ -327,22 +394,32 @@ export default function CredentialsPage() {
                             {a.enabled ? '开' : '关'}
                           </Button>
                         </td>
-                        <td className="td">
-                          <div className="font-mono text-[12px]">{a.label || a.id}</div>
-                          <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        <td className="td" data-label="账号">
+                          <div className="font-mono text-[12px] truncate" title={a.label || a.id}>
+                            {a.label || a.id}
+                          </div>
+                          <div
+                            className="font-mono text-[11px] truncate"
+                            style={{ color: 'var(--rg-text-tertiary)' }}
+                            title={a.id}
+                          >
                             {a.id}
                           </div>
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="状态">
                           <Chip tone="neutral" dot={STATE_DOT_CLASS[st]}>
                             {STATE_LABEL[st]}
                           </Chip>
                         </td>
-                        <td className="td">{a.source || a.edition || '—'}</td>
-                        <td className="td font-mono text-[12px]">
-                          {pack ? formatQuota(pack.unlimited, pack.remaining) : '—'}
+                        {/* 平台而非 source：source 是「凭据怎么进来的」（import/oauth/local），
+                            Trae 账号一律是 import，显示成 import 会被误读为平台 */}
+                        <td className="td whitespace-nowrap" data-label="平台">{platform}</td>
+                        <td className="td font-mono text-[12px]" data-label="权益包">
+                          {/* 与 PackDialog 同源：取 packsOf 排序后的第一个可用包，
+                              而不是后端原序的 packs[0]（那只是「任意一个包」） */}
+                          {rowPack ? formatQuota(rowPack.unlimited, rowPack.remaining) : '—'}
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="权益到期">
                           <button
                             type="button"
                             className="inline-flex items-center"
@@ -353,8 +430,54 @@ export default function CredentialsPage() {
                             <ExpiryChip item={expiryWorst} />
                           </button>
                         </td>
-                        <td className="td cell-num">{formatNumber(a.balance)}</td>
-                        <td className="td font-mono text-[12px]">
+                        {/* 账号到期 = 登录 token 有效期，与左侧「权益到期」是两套口径。
+                            hover 提示里带上 refreshToken 到期时间（它过期就无法再换新） */}
+                        <td className="td" data-label="账号到期">
+                          <span
+                            className="font-mono text-[12px]"
+                            title={
+                              keepalive.expiresMs == null
+                                ? keepalive.label
+                                : `登录 token 到期：${formatTime(a.expiredAt)}${
+                                    keepalive.refreshExpiresMs == null
+                                      ? ''
+                                      : `；refreshToken 到期：${formatTime(a.refreshExpiredAt)}`
+                                  }`
+                            }
+                          >
+                            {keepalive.expiresMs == null ? (
+                              <span style={{ color: 'var(--rg-text-tertiary)' }}>{keepalive.label}</span>
+                            ) : (
+                              <>
+                                {formatDate(a.expiredAt)}
+                                <span
+                                  className="ml-1.5 text-[11px]"
+                                  style={{
+                                    color:
+                                      keepalive.tone === 'warn'
+                                        ? 'var(--rg-state-warning)'
+                                        : keepalive.tone === 'danger'
+                                          ? 'var(--rg-state-error)'
+                                          : 'var(--rg-text-tertiary)',
+                                  }}
+                                >
+                                  {keepalive.label}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        </td>
+                        <td className="td cell-num" data-label="余额 / 额度">
+                          {typeof a.tokenRemaining === 'number' ? (
+                            // ZCode：token 计量，与积分列分开标注单位（不并入积分口径）
+                            <span title="ZCode token 计量额度，不计入积分">
+                              {formatNumber(a.tokenRemaining)} <span className="text-[11px]">tok</span>
+                            </span>
+                          ) : (
+                            formatNumber(a.balance)
+                          )}
+                        </td>
+                        <td className="td font-mono text-[12px]" data-label="冷却至">
                           {st === 'cool' && cooling ? (
                             <span style={{ color: 'var(--rg-state-warning)' }}>{cooling}</span>
                           ) : (
@@ -363,9 +486,29 @@ export default function CredentialsPage() {
                         </td>
                         <td className="td cell-act">
                           <div className="inline-flex items-center gap-1.5">
-                            <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
-                              签到
-                            </Button>
+                            {/* 「需重新登录」是 refreshToken 过期，账号自己恢复不了。
+                                此前这一行只有签到/查余额/删除——最需要修的时候没有入口，
+                                修复动作在表格上方另一个 Panel 里（已确认的死胡同）。
+                                这里给行内入口，直接打开该平台的重新登录流程。 */}
+                            {keepaliveNeedsRelogin && (
+                              <Button
+                                size="sm"
+                                variant="primary"
+                                disabled={busy}
+                                onClick={() => relogin(a)}
+                              >
+                                重新登录
+                              </Button>
+                            )}
+                            {/* 签到按钮按平台能力显示：ZCode 无签到能力（后端也会拒），
+                                故隐藏；其奖励走 /v1/zcode 的定时任务。
+                                Trae 与 WorkBuddy 都有签到能力，只是端点不同——
+                                checkin() 内部按 platformOf 分发（m-39）。 */}
+                            {platformOf(a) !== 'zcode' && (
+                              <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
+                                签到
+                              </Button>
+                            )}
                             <Button size="sm" disabled={busy} onClick={() => checkBalance(a)}>
                               查余额
                             </Button>
@@ -383,26 +526,32 @@ export default function CredentialsPage() {
         </Panel>
 
         <Panel
-          title="最近操作时间"
-          description="用于判断凭据是否仍在被调度"
+          title="最近操作与保活"
+          description="用于判断凭据是否仍在被调度与保活"
           flush
         >
-          <table className="w-full border-collapse text-[13px]">
+          <table className="card-table table-fixed w-full border-collapse text-[13px]">
             <thead>
               <tr>
-                <th className="th">账号</th>
+                <th className="th col-account">账号</th>
                 <th className="th">最近选用</th>
                 <th className="th">最近签到</th>
                 <th className="th">签到结果</th>
+                <th className="th">最近保活</th>
+                <th className="th">保活结果</th>
               </tr>
             </thead>
             <tbody>
               {rows.slice(0, 8).map((a) => (
                 <tr key={a.id} className="row-hover">
-                  <td className="td font-mono text-[12px]">{a.label || a.id}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(a.lastPickedAt)}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(a.lastCheckinAt)}</td>
-                  <td className="td font-mono text-[12px]">{a.lastCheckinResult || '—'}</td>
+                  <td className="td font-mono text-[12px]" data-label="账号">{a.label || a.id}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近选用">{formatTime(a.lastPickedAt)}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近签到">{formatTime(a.lastCheckinAt)}</td>
+                  <td className="td font-mono text-[12px]" data-label="签到结果">{a.lastCheckinResult || '—'}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近保活">{formatTime(a.lastKeepaliveAt)}</td>
+                  <td className="td font-mono text-[12px] truncate" title={a.lastKeepaliveResult || undefined} data-label="保活结果">
+                    {a.lastKeepaliveResult || '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -414,7 +563,11 @@ export default function CredentialsPage() {
 
       <OauthTraeDialog
         open={showOauth}
-        onClose={() => setShowOauth(false)}
+        presetLabel={reloginTarget?.label ?? reloginTarget?.id ?? undefined}
+        onClose={() => {
+          setShowOauth(false);
+          setReloginTarget(null);
+        }}
         onDone={list.reload}
       />
       <ImportWbDialog

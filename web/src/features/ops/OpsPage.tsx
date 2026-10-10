@@ -8,6 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { OPS_TABS } from '../../app/nav';
 import { useAuth } from '../../shared/api/auth';
 import {
   clearTaskLog,
@@ -21,6 +22,7 @@ import {
   getSchedulerSettings,
   getSticky,
   getTaskLog,
+  triggerScheduler,
   reloadConfig,
   runRotate,
   saveBalanceRefresh,
@@ -31,6 +33,7 @@ import {
   type RotateHeatmapRow,
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
+import { summarizeBatch } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import {
   formatBoolean,
@@ -42,6 +45,7 @@ import {
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   FieldRow,
   KeyCardGroups,
@@ -58,19 +62,16 @@ import { usePrompt } from '../../shared/ui/Prompt';
 import { ClientAccessPanel } from './ClientAccessPanel';
 import { NotifyBackupPanel } from './NotifyBackupPanel';
 
-type Tab = 'runtime' | 'jobs' | 'rotate' | 'notify' | 'config';
-
 /** 任务日志单页条数与向后端请求的上限（后端 clamp 到 500）。 */
 const LOG_PAGE_SIZE = 20;
 const LOG_LIMIT = 200;
 
-const TABS: readonly { value: Tab; label: string; path: string }[] = [
-  { value: 'runtime', label: '运行状态', path: '/ops' },
-  { value: 'jobs', label: '定时任务', path: '/ops/jobs' },
-  { value: 'rotate', label: '账号轮换', path: '/ops/rotate' },
-  { value: 'notify', label: '通知与备份', path: '/ops/notify' },
-  { value: 'config', label: '网关配置', path: '/ops/config' },
-];
+/** 分段定义来自导航侧栏的运维组，两处不再各声明一份。 */
+const TABS: readonly { value: string; label: string; path: string }[] = OPS_TABS.map((t) => ({
+  value: t.id,
+  label: t.label,
+  path: t.to,
+}));
 
 export default function OpsPage() {
   const { key } = useAuth();
@@ -277,15 +278,9 @@ const rotateRows = useMemo(() => {
     setBusy('rotate');
     try {
       const r = await runRotate(key);
-      // 业务层失败：请求成功但轮换未全部成功
-      if (r.failed > 0 || (r.skipped ?? 0) > 0 || r.reason) {
-        toast(
-          `轮换完成但有异常：成功 ${r.ok}，失败 ${r.failed}，跳过 ${r.skipped ?? 0}${r.reason ? `；${r.reason}` : ''}`,
-          'warn',
-        );
-      } else {
-        toast(`轮换成功：共 ${r.ok} 个账号`, 'ok');
-      }
+      // 业务层失败：请求成功但轮换未全部成功。失败明细尽量带出，
+      // 否则用户只知道「失败 N」却不知道该去查哪个账号。
+      summarizeBatch('账号轮换', r, toast);
       rotateStatus.reload();
       taskLog.reload();
     } catch (e) {
@@ -298,8 +293,8 @@ const rotateRows = useMemo(() => {
   async function doSeed() {
     setBusy('seed');
     try {
-      const r = await seedRotate(key);
-      toast(`种子生成：成功 ${r.ok?.length ?? 0}，跳过 ${r.skipped?.length ?? 0}`, 'ok');
+      // 失败账号的原因原来被丢弃（只显示计数），现在统一走 summarizeBatch 带出前几条
+      summarizeBatch('种子生成', await seedRotate(key), toast);
       rotateStatus.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '种子生成失败', 'err');
@@ -313,7 +308,7 @@ const rotateRows = useMemo(() => {
     setBusy(`switch-${uid}`);
     try {
       const r = await switchRotate(uid, key);
-      if (!r.ok) toast(`切换未成功：${r.msg ?? '后端未给出原因'}`, 'err');
+      if (!r.ok) toast(`切换未成功：${r.msg ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       else toast(`已切换到 ${label}`, 'ok');
       rotateStatus.reload();
     } catch (e) {
@@ -367,6 +362,29 @@ const rotateRows = useMemo(() => {
     }
   }
 
+  /** 手动触发一次定时任务（后端 /scheduler/:action：checkin | keepalive | probe）。 */
+  async function runSchedulerAction(action: 'checkin' | 'keepalive' | 'probe') {
+    setBusy(`job-${action}`);
+    try {
+      const r = await triggerScheduler(action, key);
+      // 三种动作的返回形状不同，统一给出可读摘要；失败明细不吞掉
+      const detail =
+        typeof r.ok === 'number'
+          ? `成功 ${r.ok}${r.failed ? `，失败 ${r.failed}` : ''}`
+          : r.ok === true
+            ? '已完成'
+            : '已完成（无计数返回）';
+      toast(`手动${action === 'checkin' ? '签到' : action === 'keepalive' ? '保活' : '探测'}：${detail}`, 'ok');
+      taskLog.reload();
+      runtime.reload();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '触发失败，请稍后重试', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 重载配置是破坏性操作（重建模型池与路由），保留确认框。 */
   async function doReload() {
     const ok = await prompt({
       title: '重载网关配置？',
@@ -420,7 +438,7 @@ const rotateRows = useMemo(() => {
   return (
     <PageShell
       title="运维中心"
-      description="运行状态、定时任务、账号轮换、通知备份与网关配置"
+      description="网关运行状态、定时任务与账号调度策略"
       actions={<Button onClick={reloadAll}>刷新</Button>}
       toolbar={
         <Segmented
@@ -530,14 +548,19 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="账号池快照"
-              description="含在途请求、模型级冷却与 FEFO 到期信号"
+              description="含在途请求、模型级冷却与最近到期信号"
               flush
             >
-              {(runtime.data?.pool?.accounts ?? []).length === 0 ? (
+              {runtime.loading && !runtime.data ? (
                 <LoadingBlock />
+              ) : (runtime.data?.pool?.accounts ?? []).length === 0 ? (
+                <EmptyState
+                  label="当前没有账号进入调度池。"
+                  hint="请先在凭据池接入并启用账号；若已接入，请检查调度器是否开启。"
+                />
               ) : (
                 <div className="scroll-y" style={{ maxHeight: 420 }}>
-                  <table className="w-full border-collapse text-[13px]">
+                  <table className="card-table w-full border-collapse text-[13px]">
                     <thead
                       className="sticky top-0 z-10"
                       style={{ background: 'var(--rg-bg-secondary)' }}
@@ -556,7 +579,7 @@ const rotateRows = useMemo(() => {
                     <tbody>
                       {(runtime.data?.pool?.accounts ?? []).map((a) => (
                         <tr key={a.id} className="row-hover">
-                          <td className="td">
+                          <td className="td" data-label="账号">
                             <div className="font-mono text-[12px]">{a.label || a.id}</div>
                             <div
                               className="font-mono text-[11px]"
@@ -565,7 +588,7 @@ const rotateRows = useMemo(() => {
                               {a.id}
                             </div>
                           </td>
-                          <td className="td">
+                          <td className="td" data-label="可用">
                             {a.usable ? (
                               <Chip tone="ok" dot="dot-ok">
                                 可用
@@ -576,22 +599,22 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num">{formatNumber(a.inFlight)}</td>
-                          <td className="td cell-num">{formatNumber(a.balance)}</td>
-                          <td className="td cell-num">{a.priority ?? 0}</td>
-                          <td className="td font-mono text-[12px]">
+                          <td className="td cell-num" data-label="在途">{formatNumber(a.inFlight)}</td>
+                          <td className="td cell-num" data-label="余额">{formatNumber(a.balance)}</td>
+                          <td className="td cell-num" data-label="优先级">{a.priority ?? 0}</td>
+                          <td className="td font-mono text-[12px]" data-label="最近到期">
                             {a.fefo?.never
                               ? '不过期'
                               : a.fefo?.hasExpiry && a.fefo.soonestDays != null
                                 ? `${a.fefo.soonestDays} 天`
                                 : '—'}
                           </td>
-                          <td className="td cell-num">
+                          <td className="td cell-num" data-label="模型冷却">
                             {a.modelCooldowns
                               ? Object.keys(a.modelCooldowns).length
                               : 0}
                           </td>
-                          <td className="td cell-num">{formatNumber(a.errorCount)}</td>
+                          <td className="td cell-num" data-label="错误数">{formatNumber(a.errorCount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -610,7 +633,7 @@ const rotateRows = useMemo(() => {
                   当前没有粘性会话
                 </div>
               ) : (
-                <table className="w-full border-collapse text-[13px]">
+                <table className="card-table w-full border-collapse text-[13px]">
                   <thead>
                     <tr>
                       <th className="th">会话键</th>
@@ -621,9 +644,9 @@ const rotateRows = useMemo(() => {
                   <tbody>
                     {stickyRows.map((s, i) => (
                       <tr key={`${s?.key ?? i}`} className="row-hover">
-                        <td className="td font-mono text-[11px] break-all">{s?.key || '—'}</td>
-                        <td className="td font-mono text-[12px]">{s?.accountId || '—'}</td>
-                        <td className="td font-mono text-[12px]">{formatTime(s?.expiresAt)}</td>
+                        <td className="td font-mono text-[11px] break-all" data-label="会话键">{s?.key || '—'}</td>
+                        <td className="td font-mono text-[12px]" data-label="绑定账号">{s?.accountId || '—'}</td>
+                        <td className="td font-mono text-[12px]" data-label="过期时间">{formatTime(s?.expiresAt)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -639,14 +662,39 @@ const rotateRows = useMemo(() => {
               title="调度设置"
               description="保存后会重启调度器使新配置立即生效"
               actions={
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={saveScheduler}
-                  disabled={busy === 'scheduler' || !schedulerDirty}
-                >
-                  {busy === 'scheduler' ? '保存中…' : '保存'}
-                </Button>
+                <>
+                  {/* 手动触发：后端 POST /v1/admin/scheduler/:action 早已实现，
+                      但 UI 一直没有入口 —— 排障时「不等定时器、现在跑一次」是刚需 */}
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('checkin')}
+                    disabled={busy === 'job-checkin'}
+                  >
+                    {busy === 'job-checkin' ? '签到中…' : '立即签到'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('keepalive')}
+                    disabled={busy === 'job-keepalive'}
+                  >
+                    {busy === 'job-keepalive' ? '保活中…' : '立即保活'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('probe')}
+                    disabled={busy === 'job-probe'}
+                  >
+                    {busy === 'job-probe' ? '探测中…' : '立即探测'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={saveScheduler}
+                    disabled={busy === 'scheduler' || !schedulerDirty}
+                  >
+                    {busy === 'scheduler' ? '保存中…' : '保存'}
+                  </Button>
+                </>
               }
             >
               {scheduler.loading && !scheduler.data ? (
@@ -1067,7 +1115,7 @@ const rotateRows = useMemo(() => {
               ) : (
                 <>
                   <div className="scroll-y" style={{ maxHeight: 420 }}>
-                    <table className="w-full border-collapse text-[13px]">
+                    <table className="card-table w-full border-collapse text-[13px]">
                       {/* 表头吸顶：翻页时列名始终可见 */}
                       <thead
                         className="sticky top-0 z-10"
@@ -1090,20 +1138,20 @@ const rotateRows = useMemo(() => {
                           const okCount = t.ok ?? 0;
                           return (
                             <tr key={`${t.ts ?? i}`} className="row-hover">
-                              <td className="td font-mono text-[12px]">{formatTime(t.ts)}</td>
-                              <td className="td font-mono text-[12px]">{t.task || '—'}</td>
-                              <td className="td font-mono text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <td className="td font-mono text-[12px]" data-label="时间">{formatTime(t.ts)}</td>
+                              <td className="td font-mono text-[12px]" data-label="任务">{t.task || '—'}</td>
+                              <td className="td font-mono text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }} data-label="触发">
                                 {t.trigger || '—'}
                               </td>
-                              <td className="td cell-num font-mono text-[12px]">{formatNumber(okCount)}</td>
-                              <td className="td cell-num font-mono text-[12px]">
+                              <td className="td cell-num font-mono text-[12px]" data-label="成功">{formatNumber(okCount)}</td>
+                              <td className="td cell-num font-mono text-[12px]" data-label="失败">
                                 {failed > 0 ? (
                                   <span style={{ color: 'var(--rg-state-error)' }}>{failed}</span>
                                 ) : (
                                   '0'
                                 )}
                               </td>
-                              <td className="td font-mono text-[11px] break-all">
+                              <td className="td font-mono text-[11px] break-all" data-label="详情">
                                 {t.error ? (
                                   <span style={{ color: 'var(--rg-state-error)' }}>{t.error}</span>
                                 ) : t.acted != null ? (
@@ -1368,7 +1416,7 @@ const rotateRows = useMemo(() => {
                   本机 auth 目录里没有可用账号备份，可先点「生成种子」写入。
                 </div>
               ) : (
-                <table className="w-full border-collapse text-[13px]">
+                <table className="card-table w-full border-collapse text-[13px]">
                   <thead>
                     <tr>
                       <th className="th">账号</th>
@@ -1385,9 +1433,9 @@ const rotateRows = useMemo(() => {
                       const busyThis = busy === `switch-${r.uid}`;
                       return (
                         <tr key={r.uid} className="row-hover">
-                          <td className="td font-mono text-[12px] break-all">{r.label || '—'}</td>
-                          <td className="td font-mono text-[11px] break-all">{r.uid}</td>
-                          <td className="td">
+                          <td className="td font-mono text-[12px] break-all" data-label="账号">{r.label || '—'}</td>
+                          <td className="td font-mono text-[11px] break-all" data-label="uid">{r.uid}</td>
+                          <td className="td" data-label="状态">
                             {isCurrent ? (
                               <Chip tone="brand" dot="dot-ok">
                                 当前
@@ -1398,14 +1446,14 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num font-mono text-[12px]">
+                          <td className="td cell-num font-mono text-[12px]" data-label="当日活跃">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                             ) : (
                               formatNumber(r.score ?? 0)
                             )}
                           </td>
-                          <td className="td text-[12px] break-all">
+                          <td className="td text-[12px] break-all" data-label="说明">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-state-error)' }}>{r.error}</span>
                             ) : (
@@ -1577,7 +1625,6 @@ const rotateRows = useMemo(() => {
                           ),
                           wide: true,
                         },
-                        { k: '工具协议', v: <span className="font-mono">{config.data?.toolProtocol}</span> },
                       ],
                     },
                   ]}

@@ -261,7 +261,11 @@ const DEFAULT_HOST_US = process.env.TRAE_HOST_US || TRAE_HOSTS.agentUs;
 // 2026-09-12: 对齐 TraeWorkAssistant 实测可用的 SOLO 线指纹（0.1.50 / 20260811），
 // 旧值 3.3.67 / 20260401 与当前在售客户端脱节，易被上游风控识别。
 // m-35：默认值声明下沉 lib/version-defaults.js（headers.js 共用同一份）。
-const { DEFAULT_IDE_VERSION_CN, DEFAULT_IDE_VERSION_SG, DEFAULT_IDE_VERSION_CODE } = require('./version-defaults');
+// m-35 拆分回归修复：exchangeToken 的版本指纹头原先调用的是本模块已不存在的
+// getAppVersion/getIdeVersion/getIdeVersionCode（实现随 m-35 搬去了 headers.js），
+// 运行即抛 ReferenceError → Trae 账号 token 自 10-06 起全部无法自动续期。
+// version-defaults.js 是叶子模块，从它取实现既修复悬空调用又不形成 auth⇄headers 环。
+const { getAppVersion, getIdeVersion, getIdeVersionCode } = require('./version-defaults');
 
 // 上游聊天端点路径（构造 referer 用；默认值与 src/config.js 保持一致）
 const TRAE_CHAT_PATH = process.env.TRAE_UPSTREAM_CHAT_PATH || '/api/agent/v3/llm_utils_chat';
@@ -313,12 +317,14 @@ async function exchangeToken(refreshToken, opts = {}) {
 
   // 刷新请求与业务请求保持一致的客户端外观：UA/app_id/版本头由真实客户端元数据
   // 提供，缺省回落内置默认值。裸 JSON POST（无 UA 无版本头）是登录面易识别特征。
+  // edition 用本机探测值（detectEdition 在本模块内，不引入 auth⇄headers 环）
+  const ed = detectEdition();
   const headers = {
     'Content-Type': 'application/json',
     'user-agent': 'TraeClient/TTNet',
     'x-app-id': process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8',
-    'x-app-version': getAppVersion(),
-    'x-ide-version': getIdeVersion(),
+    'x-app-version': getAppVersion(ed),
+    'x-ide-version': getIdeVersion(ed),
     'x-app-version-code': getIdeVersionCode(),
     'x-ide-version-code': getIdeVersionCode(),
     'package-type': 'stable_cn',

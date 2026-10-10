@@ -345,6 +345,17 @@ function switchTo(account) {
 
 /**
  * 轮换所有账号一遍（每个账号停留 stayMs 让客户端完成初始化）。
+ *
+ * 失败隔离（m-39 根因修复）：此前循环里任一账号的 startClient/stopClient 失败
+ * 都会 `break` 整遍 —— 服务会话（Session 0）下 startClient 必然返回
+ * reason='service_session'，于是整遍轮换在第一个账号就断链，剩余账号连 auth
+ * 都不切换，表现为「轮换触发不了」。现在改为逐账号记录失败并 `continue`：
+ * 单账号失败不影响其余账号，整遍的 ok/failed 如实反映每个账号的结果。
+ *
+ * 另外区分两种失败：（a）switchTo 失败 = 这个号没轮换到；（b）switchTo 成功但
+ * 客户端未拉起 = auth 已改写、活跃度未必记上。两者分别记 failed，但都不再
+ * 中止整遍 —— 前者是账号自身问题，后者是运行环境（服务会话）问题。
+ *
  * 互斥：定时轮与手动触发并发时会互杀进程，进行中的轮换直接拒绝新请求。
  * @returns {Promise<{ok:number, failed:number, results:Array, skippedUids?:Array, busy?:boolean}>}
  */
@@ -416,24 +427,30 @@ async function rotateAllInner() {
     const r = switchTo(acct);
     results.push({ label: acct.label, uid: acct.uid, ...r });
     if (r.ok) ok++; else failed++;
-    if (r.ok) {
-      // 切换后启动客户端热加载该账号，停留观察；启动失败如实计失败
-      const s = await startClient();
-      if (!s.ok) {
-        results.push({ label: acct.label, uid: acct.uid, ok: false, msg: `客户端启动失败（${s.reason || 'unknown'}）` });
-        failed++;
-        break;
-      }
-      await sleep(stayMs);
-      // 下一个账号前再停止客户端（当前进程已在跑，直接覆盖可能被写回）
-      const stopped2 = await stopClient();
-      if (!stopped2) {
-        results.push({ label: acct.label, uid: acct.uid, ok: false, msg: '后续账号停止客户端失败（需管理员权限）' });
-        failed++;
-        break;
-      }
-      await sleep(1000);
+    if (!r.ok) {
+      // 该号备份缺失/复制失败：跳过它，继续轮换下一个（不再 break 断链）
+      continue;
     }
+    // 切换后启动客户端热加载该账号，停留观察；启动失败如实计失败。
+    // 服务会话下 startClient 必失败（reason=service_session）：auth 已改写但
+    // 客户端不在场，活跃度不会实时记上（下次用户打开客户端会以当前 auth 生效）。
+    // 此前这里 break 导致整遍轮换中断 —— 现在继续下一个账号。
+    const s = await startClient();
+    if (!s.ok) {
+      results.push({ label: acct.label, uid: acct.uid, ok: false, msg: `auth 已切换但客户端启动失败（${s.reason || 'unknown'}），活跃度待客户端在场时生效` });
+      failed++;
+      // 客户端没起来：无需（也无法）为下一个账号做「停止客户端」步骤，直接继续
+      continue;
+    }
+    await sleep(stayMs);
+    // 下一个账号前再停止客户端（当前进程已在跑，直接覆盖可能被写回）
+    const stopped2 = await stopClient();
+    if (!stopped2) {
+      results.push({ label: acct.label, uid: acct.uid, ok: false, msg: '后续账号停止客户端失败（需管理员权限）' });
+      failed++;
+      continue;
+    }
+    await sleep(1000);
   }
 
   // 切回起始账号（可配）

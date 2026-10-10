@@ -24,12 +24,6 @@ export const STATE_DOT_CLASS: Record<AccountState, string> = {
   off: 'dot-off',
 };
 
-export const STATE_PILL_CLASS: Record<AccountState, string> = {
-  ok: 'pill-ok',
-  cool: 'pill-warn',
-  off: 'pill',
-};
-
 /**
  * 权益额度文案。
  * unlimited 表示不限量，必须显示为「不限量」，
@@ -100,6 +94,48 @@ export function coolRemaining(coolUntil: string | null | undefined, now = Date.n
   const until = new Date(coolUntil).getTime();
   if (Number.isNaN(until) || until <= now) return null;
   return formatDuration(until - now);
+}
+
+/* --------------------------------------------------------------- 平台归类 */
+
+/**
+ * 账号所属平台：'trae' | 'workbuddy' | 'zcode'。
+ *
+ * 为什么不能直接显示 `source`：source 记录的是「凭据怎么进来的」
+ * （import / oauth / local / workbuddy），不是「账号属于哪个平台」。
+ * Trae 账号无论粘贴导入还是 OAuth 登录，source 都是 import，
+ * 直接展示会把 Trae 账号显示成 import —— 与「来源」这一列名的语义不符。
+ *
+ * 判定与后端 platform/variant.js 一致，且与筛选器同源：
+ * edition 优先，WorkBuddy 的历史值含 'wb' 前缀变体，其余按 Trae 处理。
+ */
+export type Platform = 'trae' | 'workbuddy' | 'zcode';
+
+export function platformOf(a: {
+  edition?: string | null;
+  source?: string | null;
+}): Platform {
+  const edition = String(a.edition || '').toLowerCase();
+  const source = String(a.source || '').toLowerCase();
+  // edition 是平台的正源；source 仅在 edition 缺失时兜底
+  const raw = edition || source;
+  if (raw === 'zcode') return 'zcode';
+  if (raw === 'workbuddy' || raw.startsWith('wb')) return 'workbuddy';
+  return 'trae';
+}
+
+const PLATFORM_LABEL: Record<Platform, string> = {
+  trae: 'Trae',
+  workbuddy: 'WorkBuddy',
+  zcode: 'ZCode',
+};
+
+/** 平台的展示名。 */
+export function platformLabel(a: {
+  edition?: string | null;
+  source?: string | null;
+}): string {
+  return PLATFORM_LABEL[platformOf(a)];
 }
 
 export function formatBoolean(v: boolean | null | undefined): string {

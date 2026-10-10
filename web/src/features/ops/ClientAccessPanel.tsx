@@ -56,7 +56,7 @@ export function ClientAccessPanel({
     return (
       <div className="mt-3">
         <div className="flex items-center justify-between mb-1.5">
-          <span className="t-label">{title}</span>
+          <span className="text-label">{title}</span>
           <Button size="sm" variant="ghost" onClick={() => copy(text, title)}>
             复制
           </Button>
@@ -75,7 +75,7 @@ export function ClientAccessPanel({
     <Panel
       title="客户端接入"
       description="把 IDE 或脚本指向本服务，使用访问密钥调用"
-      footer="转发面使用访问密钥（sk-…）；管理面板使用登录密钥（sk-admin-…），两者不可混用。"
+      footer="访问密钥在「账号 → 访问密钥」页创建，与打开面板用的登录密钥不能混用。"
     >
       {error ? (
         <ErrorState message={error} onRetry={onRetry} />
@@ -139,7 +139,7 @@ export function ClientAccessPanel({
 
           {(config.notes?.length ?? 0) > 0 && (
             <div className="mt-5 pt-4" style={{ borderTop: '1px solid var(--rg-border)' }}>
-              <div className="t-label mb-2">接入注意</div>
+              <div className="text-label mb-2">接入注意</div>
               <ul className="flex flex-col gap-1.5">
                 {config.notes?.map((n, i) => (
                   <li

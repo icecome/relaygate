@@ -121,7 +121,15 @@ router.post('/v1/messages', async (req, res) => {
   const out = exportAnthropic();
   let hadToolCall = false;
   let upstreamFinish = null; // 上游 done 事件的结束原因（截断判定依据）
-  let streamAccountId = null; // 流式错误回灌账号池用（pool.run 成功后赋值）
+  /**
+   * 流式错误回灌账号池用的账号 id。
+   *
+   * 必须是 ref 而不是普通变量：下面的 handler 回调是在 pool.run **内部**被调用的，
+   * 此刻 `pool.run(...)` 还没返回，外层 `let` 变量仍然是 null —— 用普通变量会让
+   * /v1/messages 的流内限流错误永远无法回灌账号池（openai.js 用闭包参数、responses.js
+   * 在 run 之后使用，两者都是对的，只有这里错）。
+   */
+  const streamAccountIdRef = { current: null };
   const handler = createStreamHandler((evt) => {
     let bytes = [];
     switch (evt.type) {
@@ -131,7 +139,9 @@ router.post('/v1/messages', async (req, res) => {
       case 'token_usage': lastUsage = evt.data || null; return;
       case 'error':
         requestError = evt.message;
-        if (isRateLimitCode(evt.code) && streamAccountId) pool.record(streamAccountId, 'rate_limit', { model, message: evt.message });
+        if (isRateLimitCode(evt.code) && streamAccountIdRef.current) {
+          pool.record(streamAccountIdRef.current, 'rate_limit', { model, message: evt.message });
+        }
         bytes = out.error(msgId, model, evt.code, evt.message);
         break;
       default: return;
@@ -142,7 +152,8 @@ router.post('/v1/messages', async (req, res) => {
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
       llmUtilsChat(built, model, true, { tools, max_tokens, accountId }), { model });
-    streamAccountId = accountId;
+    // 先记下账号再开始喂流：流内回调要靠它回灌限流计数
+    streamAccountIdRef.current = accountId;
     const feeder = createLineFeeder((line) => handler.feedLine(line));
     await consumeStream(up.body, (text) => feeder.feed(text));
     feeder.flush();
@@ -177,7 +188,7 @@ router.post('/v1/messages', async (req, res) => {
       endpoint: '/v1/messages',
       method: 'POST',
       model,
-      account: streamAccountId || null,
+      account: streamAccountIdRef.current || null,
       status: requestStatus,
       toolCalls: toolCallCount,
       toolsIn: tools ? tools.length : 0,

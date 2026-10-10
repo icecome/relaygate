@@ -149,7 +149,7 @@ export default function ModelPoolPage() {
         catalog.reload();
       } else {
         // 后端拉取失败会带 error 文本，属业务层失败
-        toast(`拉取未成功：${r.error ?? '后端未给出原因'}`, 'err');
+        toast(`拉取未成功：${r.error ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '拉取失败', 'err');
@@ -321,7 +321,7 @@ export default function ModelPoolPage() {
             </div>
           ) : (
             <div className="scroll-y" style={{ maxHeight: 560 }}>
-              <table className="w-full border-collapse text-[13px]">
+              <table className="card-table w-full border-collapse text-[13px]">
                 <thead>
                   <tr>
                     <th className="th">模型</th>
@@ -350,7 +350,7 @@ export default function ModelPoolPage() {
                             : undefined
                         }
                       >
-                        <td className="td">
+                        <td className="td" data-label="模型">
                           <div className="font-mono text-[12px]">{m.display_name || m.id}</div>
                           <div
                             className="font-mono text-[11px]"
@@ -369,31 +369,31 @@ export default function ModelPoolPage() {
                             </div>
                           )}
                         </td>
-                        <td className="td">{m.source_name || m.source || '—'}</td>
-                        <td className="td">
+                        <td className="td" data-label="来源">{m.source_name || m.source || '—'}</td>
+                        <td className="td" data-label="状态">
                           <Chip tone={meta.tone} dot={meta.dot}>
                             {meta.label}
                           </Chip>
                         </td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="倍率">
                           {m.rateText ?? (m.rate != null ? `x${m.rate}` : '—')}
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="能力">
                           {m.multimodal ? (
                             <Chip tone="brand">多模态</Chip>
                           ) : (
                             CAPABILITY_LABEL[m.capability ?? ''] || '—'
                           )}
                         </td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="上下文窗口">
                           {m.contextWindow != null
                             ? formatNumber(m.contextWindow)
                             : m.maxInputTokens != null
                               ? formatNumber(m.maxInputTokens)
                               : '—'}
                         </td>
-                        <td className="td cell-num">{u ? formatNumber(u.requests) : '—'}</td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="请求">{u ? formatNumber(u.requests) : '—'}</td>
+                        <td className="td cell-num" data-label="错误">
                           {u ? (
                             <span style={u.errors > 0 ? { color: 'var(--rg-state-error)' } : undefined}>
                               {formatNumber(u.errors)}
@@ -402,7 +402,7 @@ export default function ModelPoolPage() {
                             '—'
                           )}
                         </td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="平均延迟">
                           {u?.avgDurationMs != null ? `${u.avgDurationMs}ms` : '—'}
                         </td>
                         <td className="td cell-act">

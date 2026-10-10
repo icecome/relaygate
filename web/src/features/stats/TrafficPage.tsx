@@ -16,10 +16,12 @@ import {
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { markLinkVerified } from '../setup/onboarding';
 import { formatCost, formatDuration, formatNumber, formatTime } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   Field,
   LoadingBlock,
@@ -74,7 +76,18 @@ export default function TrafficPage() {
 
   const metrics = [
     { key: '总请求', value: formatNumber(traffic.data?.total) },
-    { key: '总 Token', value: formatNumber(summary?.tokens) },
+    {
+      key: '总 Token',
+      // 历史日志的 token 被误脱敏成 "***" 无法还原，此时总量是下界；
+      // 把受损行数显式带出，避免被读成「消耗确实这么少」
+      value:
+        (summary?.tokensMasked ?? 0) > 0
+          ? `${formatNumber(summary?.tokens)} *`
+          : formatNumber(summary?.tokens),
+      delta: (summary?.tokensMasked ?? 0) > 0
+        ? `另有 ${formatNumber(summary?.tokensMasked)} 行 token 已丢失`
+        : undefined,
+    },
     { key: '涉及模型', value: formatNumber(Object.keys(summary?.byModel ?? {}).length) },
     { key: '涉及账号', value: formatNumber(Object.keys(summary?.byAccount ?? {}).length) },
   ];
@@ -104,7 +117,9 @@ export default function TrafficPage() {
         message: r.message,
         content: r.content,
       });
-      toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? '后端未给出原因'}`, r.ok ? 'ok' : 'err');
+      toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, r.ok ? 'ok' : 'err');
+      // 链路验证成功：推进首登引导的第三步（见 features/setup/onboarding.ts）
+      if (r.ok) markLinkVerified();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '测试请求失败', 'err');
     } finally {
@@ -115,7 +130,7 @@ export default function TrafficPage() {
   return (
     <PageShell
       title="请求日志"
-      description="网关转发记录、SSE 调试与连通性测试"
+      description="查看网关转发记录、定位失败请求与验证链路连通性"
       actions={
         <Segmented
           ariaLabel="时间范围"
@@ -163,11 +178,20 @@ export default function TrafficPage() {
           {traffic.loading && !traffic.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              区间内无请求记录
-            </div>
+            model.trim() ? (
+              <EmptyState
+                label={`没有匹配模型「${model.trim()}」的记录。`}
+                hint="模型名需与请求日志中的名称完全一致（如 trae/glm-5）。"
+                action={{ label: '清除筛选', onClick: () => { setModel(''); setPage(1); } }}
+              />
+            ) : (
+              <EmptyState
+                label="所选区间内没有转发请求记录。"
+                hint="把时间范围切到「近 24 小时」或「近 7 日」再看；客户端发起请求后即会出现。"
+              />
+            )
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th cell-num">#</th>
@@ -187,22 +211,23 @@ export default function TrafficPage() {
                   return (
                     <tr
                       key={r.seq ?? i}
-                      className="row-hover cursor-pointer"
-                      onClick={() => setFailed(bad ? r : null)}
+                      className={bad ? 'row-hover cursor-pointer' : 'row-hover'}
+                      onClick={bad ? () => setFailed(r) : undefined}
+                      title={bad ? '点击查看失败详情' : undefined}
                     >
-                      <td className="td cell-num font-mono text-[11px]">{r.seq ?? '—'}</td>
-                      <td className="td font-mono text-[12px]">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all">{r.endpoint || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.model || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.account || '—'}</td>
-                      <td className="td">
+                      <td className="td cell-num font-mono text-[11px]" data-label="#">{r.seq ?? '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-[11px] break-all" data-label="接口">{r.endpoint || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="账号">{r.account || '—'}</td>
+                      <td className="td" data-label="状态">
                         <Chip tone={bad ? 'danger' : 'ok'} dot={bad ? 'dot-error' : 'dot-ok'}>
                           {r.status ?? (bad ? 'ERR' : 'OK')}
                         </Chip>
                       </td>
-                      <td className="td cell-num">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
-                      <td className="td cell-num">{formatNumber(r.totalTokens)}</td>
-                      <td className="td cell-num">{formatCost(r.estimatedCost)}</td>
+                      <td className="td cell-num" data-label="耗时">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
+                      <td className="td cell-num" data-label="Token">{formatNumber(r.totalTokens)}</td>
+                      <td className="td cell-num" data-label="估算成本">{formatCost(r.estimatedCost)}</td>
                     </tr>
                   );
                 })}
@@ -264,12 +289,13 @@ export default function TrafficPage() {
           ) : sse.loading && !sse.data ? (
             <LoadingBlock />
           ) : (sse.data?.data ?? []).length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无调试记录
-            </div>
+            <EmptyState
+              label="区间内没有 SSE 调试记录。"
+              hint="这类记录只在排查上游事件流问题时产生（TRAE_DEBUG_SSE 开启），平时为空是正常的。"
+            />
           ) : (
             <div className="scroll-y" style={{ maxHeight: 320 }}>
-              <table className="w-full border-collapse text-[13px]">
+              <table className="card-table w-full border-collapse text-[13px]">
                 <thead>
                   <tr>
                     <th className="th">时间</th>
@@ -282,11 +308,11 @@ export default function TrafficPage() {
                 <tbody>
                   {(sse.data?.data ?? []).map((r, i) => (
                     <tr key={r.seq ?? i} className="row-hover">
-                      <td className="td font-mono text-[12px]">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all">{r.requestId || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.accountId || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.model || '—'}</td>
-                      <td className="td">
+                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-[11px] break-all" data-label="Request ID">{r.requestId || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="账号">{r.accountId || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
+                      <td className="td" data-label="事件">
                         <Chip tone="brand">{r.event?.type || '—'}</Chip>
                       </td>
                     </tr>
@@ -297,7 +323,7 @@ export default function TrafficPage() {
           )}
         </Panel>
 
-        <Panel title="连通性测试" description="向上游发起一次真实请求">
+        <Panel title="连通性测试" description="向上游发起一次真实请求，验证访问密钥与模型可用">
           <div className="grid grid-cols-2 gap-3">
             <Field
               label="模型"

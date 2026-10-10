@@ -67,7 +67,13 @@ async function ensureAuth(accountId) {
         acct = { ...acct, ...patch };
       } catch (e) {
         console.error(`[auth] workbuddy refresh failed for ${acct.id}: ${e.message}`);
+        // 续期失败必须让调用方看见：此前只 console.error 后照常返回旧 token，
+        // 保活任务据此把「刷新失败」记成「保活成功」，面板永远看不到临期风险。
+        acct = { ...acct, _refreshError: e.message };
       }
+    } else if (isExpiring(acct) && !acct.refreshToken) {
+      // 临期但无 refreshToken：不是成功，是「无法续期」，同样要让调用方知道
+      acct = { ...acct, _refreshError: '临期但缺少 refreshToken，无法自动续期' };
     }
     return acct;
   }
@@ -92,7 +98,10 @@ async function ensureAuth(accountId) {
       }
     } catch (e) {
       console.error(`[auth] refresh failed for ${acct.id}: ${e.message}`);
+      acct = { ...acct, _refreshError: e.message };
     }
+  } else if (isExpiring(acct) && !acct.refreshToken) {
+    acct = { ...acct, _refreshError: '临期但缺少 refreshToken，无法自动续期' };
   }
 
   return acct;

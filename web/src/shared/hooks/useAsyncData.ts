@@ -16,8 +16,6 @@ export interface AsyncState<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
-  /** 传输层错误（网络/超时/取消），与业务层失败区分 */
-  isTransportError: boolean;
   reload: () => void;
 }
 
@@ -30,7 +28,6 @@ export function useAsyncData<T>(
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isTransportError, setIsTransportError] = useState(false);
   const [nonce, setNonce] = useState(0);
 
   // fetcher 通常是内联箭头函数，用 ref 固定住，避免因引用变化重复触发
@@ -57,18 +54,11 @@ export function useAsyncData<T>(
         if (!active) return;
         setData(result);
         setError(null);
-        setIsTransportError(false);
       })
       .catch((e: unknown) => {
         if (!active || controller.signal.aborted) return;
         setData(null);
-        if (e instanceof ApiError) {
-          setError(e.message);
-          setIsTransportError(e.isTransport);
-        } else {
-          setError(e instanceof Error ? e.message : '未知错误');
-          setIsTransportError(true);
-        }
+        setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '未知错误');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -81,5 +71,5 @@ export function useAsyncData<T>(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, nonce, ...deps]);
 
-  return { data, loading, error, isTransportError, reload };
+  return { data, loading, error, reload };
 }

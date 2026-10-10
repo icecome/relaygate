@@ -29,6 +29,8 @@ async function postUg(acct, apiPath, body) {
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,
+    // 版本指纹兜底按登录态选 CN/SG 内置默认值
+    _edition: acct.edition || 'cn',
   });
   const resp = await fetch(url, {
     method: 'POST',
@@ -192,48 +194,65 @@ async function refreshWorkbuddyBalance(stored) {
 }
 
 /**
- * ZCode 余额：billing/balance（token 计量口径）。
- * 汇总各 entitlement 的 remaining_units 写入 balance（面板余额列口径）。
+ * ZCode 额度刷新：billing/balance（**token 计量口径，不是积分**）。
+ *
+ * 口径隔离（重要，勿改回）：
+ *   ZCode 的赠送额度单位是 token（单包量级 1e8），而 accounts.balance /
+ *   entitlement_snapshot.packs / credit_history 三处都是「积分」口径
+ *   （单位 credit，量级 1e3）。此前把 token 数写进这三处，导致：
+ *     - /v1/admin/credit-history 的 totalUsed 被单个 ZCode 账号抬高 4 个数量级
+ *       （实测 86,560,855 tokens 混进 ~5,400 credits 的今日消耗里）；
+ *     - 面板「可用额度 / 今日消耗」与「3日内到期积分」同样被污染；
+ *     - pool 的 FEFO 排序与低余额告警读到的是 token 数。
+ *   因此本函数**只写 entitlement_snapshot.tokenBuckets**（独立键，所有以
+ *   `.packs` 为口径的聚合天然排除），balance 列保持 null，且不写 credit_history。
+ *   ZCode 的额度展示走 /v1/zcode 的 rewards 快照。
  */
 async function refreshZcodeBalance(stored) {
   const rewards = require('../zcode/rewards');
   const r = await rewards.fetchBalance(stored);
-  const totalRemaining = (r.balances || []).reduce((s, b) => s + (Number(b.remaining_units) || 0), 0);
-  const balance = totalRemaining > 0 ? totalRemaining : null;
-  const packs = (r.balances || []).map((b) => ({
+  const tokenBuckets = (r.balances || []).map((b) => ({
     name: b.show_name || b.entitlement_id,
-    packId: b.bucket_id || null,
-    limit: Number(b.total_units) || null,
+    bucketId: b.bucket_id || null,
+    planId: b.plan_id || null,
+    meter: b.meter || 'model_usage',
+    unit: b.unit_type || 'token',
+    limit: Number(b.total_units) || 0,
     used: Number(b.used_units) || 0,
     remaining: Number(b.remaining_units) || 0,
     expireTime: Number(b.expires_at) || null,
-    planId: b.plan_id || null,
-    meter: b.meter || 'model_usage',
   }));
+  const totalRemaining = tokenBuckets.reduce((s, b) => s + b.remaining, 0);
+  // 合并而非整体替换：保留 routes/zcode.js 写入的 lastProbeAt / lastClaimAt
+  // （领取历史），否则每轮余额刷新都会把领取记录抹掉。
+  const prev = (stored.entitlementSnapshot && typeof stored.entitlementSnapshot === 'object')
+    ? stored.entitlementSnapshot
+    : {};
   const snapshot = {
+    ...prev,
     updatedAt: new Date().toISOString(),
-    packs,
-    expiring: summarizeExpiry(packs),
+    // 刻意不写 packs：写进去就会被积分口径的聚合（前端 creditTotals、
+    // summarizeExpiry/Fefo、credit-alerts、FEFO 排序）吃进去
+    tokenBuckets,
+    tokenRemaining: totalRemaining,
     plans: r.plans,
   };
-  store.update(stored.id, { balance, entitlementSnapshot: snapshot });
-  try {
-    require('../credentials/credit-history').add(stored.id, {
-      remaining: balance,
-      used: (r.balances || []).reduce((s, b) => s + (Number(b.used_units) || 0), 0) || null,
-      source: 'zcode_billing_balance',
-    });
-  } catch (e) { /* 快照失败不影响余额刷新 */ }
+  // balance 列（积分）保持 null：ZCode 无积分概念
+  store.update(stored.id, { balance: null, entitlementSnapshot: snapshot });
   return {
     accountId: stored.id,
     label: stored.label || stored.id,
-    balance,
-    used: packs.reduce((s, p) => s + p.used, 0) || null,
-    limit: packs.reduce((s, p) => s + (p.limit || 0), 0) || null,
+    // 积分口径字段一律置空，防止调用方误加
+    balance: null,
+    used: null,
+    limit: null,
     isCreditsBilling: false,
     source: 'zcode_billing_balance',
-    expiring: snapshot.expiring,
-    packs,
+    unit: 'token',
+    tokenRemaining: totalRemaining,
+    tokenBuckets,
+    expiring: { d3: 0, d7: 0 },
+    packs: [],
   };
 }
 

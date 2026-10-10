@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
-const { readTrafficLines, isMetered } = require('./stats');
+const { readTrafficLines, isMetered, numTok, isMasked, tokenSource, costOf } = require('./stats');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
 const { round2, round4 } = require('../lib/round');
@@ -31,8 +31,14 @@ const CACHE_DIR = () => {
 /** 写入位置固定新目录，避免与旧目录交替读写出错。 */
 const WRITE_DIR = () => path.join(stateDir(), 'stats-cache');
 const CACHE_TTL_MS = 60 * 60 * 1000;
-/** 桶结构版本。新增字段使旧缓存失效，避免用缺 metered 的旧桶算出错误的覆盖率。 */
-const BUCKET_VERSION = 2;
+/**
+ * 缓存桶版本。递增历史（每次改动解析口径都要 +1，否则旧桶继续被读）：
+ *   3 补 cacheReadTokens；4 补 token 来源三分类；
+ *   5 补 tokensLost；6 estimatedCost 改为按当前标定重算；
+ *   7 numTok 接受数字字符串（旧版落盘格式），tokensLost 仅计真脱敏行；
+ *   8 补 costUpper（缺 cacheRead、按上界计价的行数）。
+ */
+const BUCKET_VERSION = 8;
 
 function todayKey() {
   const d = new Date();
@@ -78,30 +84,42 @@ function writeCache(dateKey, buckets) {
 function buildDayBucket(rows, dateKey) {
   const b = {
     date: dateKey,
-    requests: 0, errors: 0, tokens: 0, metered: 0, estimatedCost: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0,
+    requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0,
+    tokensLost: 0, priced: 0, costUpper: 0,
+    estimatedCost: 0, cacheReadTokens: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0,
     byModel: {}, byAccount: {},
   };
   for (const r of rows) {
     b.requests++;
     if (r.error || (r.status && r.status >= 400)) b.errors++;
-    const metered = isMetered(r);
-    const pt = Number(r.promptTokens) || 0;
-    const ct = Number(r.completionTokens) || 0;
-    const tok = Number(r.totalTokens) || (pt + ct);
-    if (metered) b.metered++;
+    const src = tokenSource(r);
+    b[src]++;
+    if (src !== 'none') b.metered++;
+    // token 字段被脱敏成 "***"（非数字字符串）：原值已丢，只能计数。
+    // 数字字符串（"49569"）可还原，numTok 已接受，不算丢失。
+    if (isMasked(r.totalTokens) || isMasked(r.promptTokens)) b.tokensLost++;
+    const pt = numTok(r.promptTokens) || 0;
+    const ct = numTok(r.completionTokens) || 0;
+    const tok = numTok(r.totalTokens) || (pt + ct);
     b.tokens += tok;
-    const cost = Number(r.estimatedCost) || 0;
+    b.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
+    // 一律按当前标定重算，不采信落盘 estimatedCost（历史为错误的 tier 口径，
+    // 量纲差约 97 倍，详见 log/stats.js#costOf）
+    const c = costOf(r);
+    if (c.priced) b.priced++;
+    if (c.upperBound) b.costUpper++;
+    const cost = c.cost;
     b.estimatedCost += cost;
     b.toolCalls += Number(r.toolCalls) || 0;
     if (typeof r.durationMs === 'number') { b.durationSumMs += r.durationMs; b.durationCount++; }
     const m = r.model || 'unknown';
-    const bm = b.byModel[m] || (b.byModel[m] = { requests: 0, tokens: 0, metered: 0, cost: 0 });
-    bm.requests++; bm.tokens += tok; if (metered) bm.metered++; bm.cost += cost;
+    const bm = b.byModel[m] || (b.byModel[m] = { requests: 0, tokens: 0, metered: 0, cost: 0, cacheReadTokens: 0 });
+    bm.requests++; bm.tokens += tok; if (src !== 'none') bm.metered++; bm.cost += cost; bm.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
     const a = r.account || 'unknown';
     const ba = b.byAccount[a] || (b.byAccount[a] = { requests: 0, errors: 0, tokens: 0, metered: 0, cost: 0 });
     ba.requests++;
     if (r.error || (r.status && r.status >= 400)) ba.errors++;
-    if (metered) ba.metered++;
+    if (src !== 'none') ba.metered++;
     ba.tokens += tok; ba.cost += cost;
   }
   return b;
@@ -142,11 +160,25 @@ function cachedDailyStats(days) {
       errors: b.errors,
       tokens: round2(b.tokens),
       metered: b.metered,
-      unmetered: b.requests - b.metered,
+      exact: b.exact || 0,
+      estimated: b.estimated || 0,
+      none: b.none || 0,
+      unmetered: b.none != null ? b.none : b.requests - b.metered,
+      tokensLost: b.tokensLost || 0,
+      priced: b.priced || 0,
+      costUpper: b.costUpper || 0,
+      cacheReadTokens: round2(b.cacheReadTokens || 0),
       estimatedCost: round4(b.estimatedCost),
       byModel: Object.fromEntries(Object.entries(b.byModel).map(([k, v]) => [
         k,
-        { requests: v.requests, tokens: round2(v.tokens), metered: v.metered, unmetered: v.requests - v.metered, estimatedCost: round4(v.cost) },
+        {
+          requests: v.requests,
+          tokens: round2(v.tokens),
+          metered: v.metered,
+          unmetered: v.requests - v.metered,
+          cacheReadTokens: round2(v.cacheReadTokens || 0),
+          estimatedCost: round4(v.cost),
+        },
       ])),
     }));
 }
@@ -156,12 +188,13 @@ function cachedModelStats(days) {
   const byModel = {};
   for (const b of getBuckets(days)) {
     for (const [m, v] of Object.entries(b.byModel)) {
-      const acc = byModel[m] || (byModel[m] = { model: m, requests: 0, errors: 0, tokens: 0, metered: 0, promptTokens: 0, completionTokens: 0, estimatedCost: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0 });
+      const acc = byModel[m] || (byModel[m] = { model: m, requests: 0, errors: 0, tokens: 0, metered: 0, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, estimatedCost: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0 });
       acc.requests += v.requests;
       // 误差率按该模型实际请求/误差在桶里没有分模型 error 计数——用整体近似：
       // 桶级无 per-model errors，标记 errors 为 0（模型级 error 主要在 traffic 明细里，属可接受近似）
       acc.tokens += v.tokens;
       acc.metered += v.metered || 0;
+      acc.cacheReadTokens += v.cacheReadTokens || 0;
       acc.estimatedCost += v.cost;
       acc.durationSumMs += b.durationSumMs * (v.requests / Math.max(1, b.requests));
       acc.durationCount += Math.round(b.durationCount * (v.requests / Math.max(1, b.requests)));
@@ -178,6 +211,7 @@ function cachedModelStats(days) {
       unmetered: d.requests - d.metered,
       promptTokens: round2(d.promptTokens),
       completionTokens: round2(d.completionTokens),
+      cacheReadTokens: round2(d.cacheReadTokens),
       estimatedCost: round4(d.estimatedCost),
       avgDurationMs: d.durationCount ? Math.round(d.durationSumMs / d.durationCount) : null,
       toolCalls: d.toolCalls,

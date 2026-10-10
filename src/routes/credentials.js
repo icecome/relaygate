@@ -30,17 +30,28 @@ function expiringFromSnapshot(snapshot) {
   };
 }
 
+/**
+ * 把 entitlement_snapshot 摊平成面板直接可用的字段。
+ *
+ * 除 packs 等权益包字段外，账号凭据自身的生命周期字段也随 ...rest 一并透出：
+ *   - expiredAt / refreshExpiredAt —— 登录 token 与 refreshToken 的到期时间（保活链路）
+ *   - lastKeepaliveAt / lastKeepaliveResult —— 最近一次保活刷新的时刻与结果
+ * 前端「账号到期」列据此渲染，与「权益到期」（packs）是两套不同口径。
+ */
 function withExpiry(account) {
   const { entitlementSnapshot, ...rest } = account;
   const exp = expiringFromSnapshot(entitlementSnapshot);
+  const snap = entitlementSnapshot || {};
   return {
     ...rest,
     expiring3d: exp.d3,
     expiring7d: exp.d7,
     packs: exp.packs,
-    entitlementSnapshotUpdatedAt: entitlementSnapshot && entitlementSnapshot.updatedAt
-      ? entitlementSnapshot.updatedAt
-      : null,
+    // ZCode 的额度是 token 计量（非积分），单独透出，不与 packs/balance 混算。
+    // 其它平台无此键，前端按 undefined 忽略。
+    tokenRemaining: typeof snap.tokenRemaining === 'number' ? snap.tokenRemaining : undefined,
+    tokenBuckets: Array.isArray(snap.tokenBuckets) && snap.tokenBuckets.length ? snap.tokenBuckets : undefined,
+    entitlementSnapshotUpdatedAt: snap.updatedAt ? snap.updatedAt : null,
   };
 }
 
@@ -101,8 +112,10 @@ router.get('/summary', admin, (req, res) => {
   });
 });
 
-// 批量：全部启用账号串行签到
+// 批量：全部启用账号串行签到（仅 Trae 系）
 // 手动触发不参与确定性错峰（用户点「立即签到」期望立刻执行），spreadMinutes=0
+// 注意：这是 Trae 专用端点。跨平台的「全部签到」用下面的 /checkin-all，
+// 前端按钮不得再指向这里，否则 WorkBuddy 账号会被静默跳过（m-39）。
 router.post('/checkin', admin, async (req, res) => {
   try {
     const r = await checkinAllEnabled({ spreadMinutes: 0 });
@@ -112,10 +125,51 @@ router.post('/checkin', admin, async (req, res) => {
   }
 });
 
+/**
+ * 跨平台「全部签到」：按 variant 能力位分发到各平台实现，并汇总明细。
+ *
+ * 背景（m-39）：此前前端「全部签到」指向 Trae 专用的 POST /checkin，
+ * 该端点的过滤条件是 `variant.isTrae(a.edition)`，WorkBuddy 账号被静默跳过，
+ * 但接口照常返回 200、前端照常提示「已触发全部签到」——按钮名承诺「全部」，
+ * 实际只覆盖了一个平台，且失败无感知。
+ *
+ * 本端点以 capability.checkin 为准枚举平台，逐平台调用各自实现，
+ * 返回分平台明细，调用方据此如实展示。单平台整体失败不影响其它平台。
+ */
+router.post('/checkin-all', admin, async (req, res) => {
+  try {
+    const { checkinAllByPlatform } = require('../upstream/checkin-all');
+    const result = await checkinAllByPlatform({
+      // 手动触发不参与错峰：用户点「全部签到」期望立刻执行
+      spreadMinutes: 0,
+      trigger: 'manual',
+      notifyOnDone: true,
+    });
+    res.json({ ...result, object: 'checkin.all' });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message, type: 'internal_error' } });
+  }
+});
+
 // 单账号签到
 router.post('/:id/checkin', admin, async (req, res) => {
   try {
     const r = await checkinAccount(req.params.id);
+    // 手动单账号签到也要推送提醒（m-39）：此前只有调度器签到链会通知，
+    // 用户手动点了却收不到任何反馈，无法确认是否真的领到。
+    try {
+      const { notify } = require('../notify');
+      const label = r.label || req.params.id;
+      const already = r.result === 'already';
+      notify(already ? 'checkin_ok' : 'checkin_ok', {
+        accountId: r.accountId || req.params.id,
+        label,
+        claimed: r.claimed ? 1 : 0,
+        message: already
+          ? `今日已签到（连续 ${r.streakDays ?? '-'} 天）`
+          : (r.claimed ? `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）` : '未签到成功'),
+      }, already ? `今日已签到：${label}` : `签到完成：${label}`).catch(() => {});
+    } catch { /* 通知失败不影响签到结果 */ }
     res.json(r);
   } catch (err) {
     const status = err.message && /not found/i.test(err.message) ? 404

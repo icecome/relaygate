@@ -324,6 +324,35 @@ function pruneModelCooldowns(a) {
   return changed ? kept : null;
 }
 
+/**
+ * 把过期冷却条目落库 —— 这是一个**写操作**，必须由定时任务显式调用。
+ *
+ * 为什么不让 explainCandidates / snapshot 顺手写：
+ * `/v1/admin/runtime` 与 `/status` 都会调这两个（snapshot / explain），
+ * 而 `/status` 在 STATUS_PUBLIC=true 时是**免鉴权**的 —— 一个 GET 请求
+ * 不应该产生 N 次数据库写（既是正确性问题，也是可被外部触发的写放大）。
+ * 改由 jobs/balance-refresh 定期调用本函数。
+ *
+ * @returns {number} 实际清理并落库的账号数
+ */
+function sweepModelCooldowns() {
+  let swept = 0;
+  for (const a of store.list()) {
+    const pruned = pruneModelCooldowns(a);
+    if (pruned) {
+      try {
+        store.update(a.id, { modelCooldowns: pruned });
+        swept += 1;
+      } catch (e) {
+        // 并发写冲突：下轮再清即可，不打断整个 sweep
+        if (e && e.code === 'WRITE_CONFLICT') continue;
+        throw e;
+      }
+    }
+  }
+  return swept;
+}
+
 /** 写一条模型级冷却（durationMs 或精确 ISO 时刻二选一）。 */
 function coolModel(a, model, { durationMs, untilIso } = {}) {
   if (!a || !model) return;
@@ -721,9 +750,8 @@ function explainCandidates(excludeIds = []) {
     if (typeof a.balance === 'number' && a.balance < min) reasons.push('low_balance');
     if (getInFlight(a.id) >= maxIn) reasons.push('full_inflight');
     if (exclude.has(a.id)) reasons.push('excluded');
-    const pruned = pruneModelCooldowns(a);
-    if (pruned) store.update(a.id, { modelCooldowns: pruned });
-    const modelCooldowns = pruned || modelCooldownMap(a);
+    // 只读函数不做落库：过期条目在内存视图里过滤，落库由 sweepModelCooldowns 负责
+    const modelCooldowns = pruneModelCooldowns(a) || modelCooldownMap(a);
     return {
       id: a.id,
       label: a.label,
@@ -746,9 +774,8 @@ function snapshot() {
     maxInFlight: maxInFlight(),
     waiters: waiterSnapshot(),
     accounts: list.map((a) => {
-      const pruned = pruneModelCooldowns(a);
-      if (pruned) store.update(a.id, { modelCooldowns: pruned });
-      const modelCooldowns = pruned || modelCooldownMap(a);
+      // 只读函数不做落库（同上）：过滤后的视图直接返回，不写库
+      const modelCooldowns = pruneModelCooldowns(a) || modelCooldownMap(a);
       return {
         id: a.id,
         label: a.label,
@@ -780,5 +807,6 @@ module.exports = {
   waiterCount,
   waiterSnapshot,
   explainCandidates,
+  sweepModelCooldowns,
   COOL_AUTH_MS,
 };

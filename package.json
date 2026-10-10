@@ -1,17 +1,22 @@
 {
   "name": "relaygate",
-  "version": "3.0.0",
-  "description": "RelayGate — 多平台账号池网关（OpenAI / Anthropic 兼容，支持 Trae 与 WorkBuddy）",
+  "version": "3.1.0",
+  "description": "RelayGate — 多平台账号池网关（OpenAI / Anthropic / Codex 兼容，支持 Trae / WorkBuddy / ZCode）",
   "private": true,
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js",
-    "lint": "npm --prefix web run lint",
+    "build:web": "npm --prefix web run build",
+    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js && node src/test/protocol.test.js && node src/test/store-concurrency.test.js && node src/test/shutdown.test.js && node src/test/rate-limit.test.js && node src/test/oauth-listener.test.js && node src/test/startup-checks.test.js",
+    "lint": "npm --prefix web run lint && npx biome check src scripts",
     "test:unit": "node src/test/unit.test.js",
     "test:growth": "node src/test/growth.test.js",
-    "test:security": "node src/test/security.test.js"
+    "test:security": "node src/test/security.test.js",
+    "test:protocol": "node src/test/protocol.test.js",
+    "test:concurrency": "node src/test/store-concurrency.test.js",
+    "test:shutdown": "node src/test/shutdown.test.js",
+    "check": "npm test && npm run lint"
   },
   "engines": {
     "node": ">=22.5"
@@ -30,5 +35,8 @@
   },
   "overrides": {
     "qs": "6.16.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4"
   }
 }

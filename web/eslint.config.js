@@ -31,4 +31,12 @@ export default tseslint.config(
       'jsx-a11y/label-has-associated-control': ['error', { depth: 3 }],
     },
   },
+  {
+    // Node 工具脚本（scripts/*.mjs）：console/process 是合法全局
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      globals: { ...globals.node },
+    },
+  },
 );
