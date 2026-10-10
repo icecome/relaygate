@@ -66,15 +66,40 @@ app.use((req, res, next) => {
 
 const startT = Date.now();
 
+/**
+ * 启动期健康快照。由 runStartupChecks() 在 listen 之前填充，
+ * /health 读它返回真实状态而不是硬编码 'ok'。
+ * @type {{checks: object[], warnings: string[]}}
+ */
+let startupHealth = { checks: [], warnings: [] };
+
+/**
+ * /health：真实健康检查（此前 status 是硬编码 'ok' 字符串，
+ * 只反映「进程还在」，DB 坏了也返回 ok，服务管理器无法据此重启）。
+ *
+ * 语义：
+ *   200 + status:'ok'        —— 全部检查通过
+ *   503 + status:'unhealthy' —— 有检查未通过（checks 里能看到是哪一项）
+ * 免鉴权，因此 checks 只返回布尔与简短文案，不泄露路径或密钥材料。
+ */
 app.get('/health', (req, res) => {
-  const s = status.buildStatus();
-  res.json({
-    status: 'ok',
-    uptime: s.uptimeSec,
-    accounts: s.accounts,
-    scheduler: s.scheduler.enabled,
-    nextCheckinAt: s.scheduler.nextCheckinAt,
-    poolStrategy: s.pool.strategy,
+  let s = null;
+  try {
+    s = status.buildStatus();
+  } catch {
+    s = null;
+  }
+  const failing = startupHealth.checks.filter((c) => !c.ok);
+  const healthy = failing.length === 0 && s != null;
+  res.status(healthy ? 200 : 503).json({
+    status: healthy ? 'ok' : 'unhealthy',
+    checks: startupHealth.checks.map((c) => ({ name: c.name, ok: !!c.ok, detail: c.detail })),
+    warnings: startupHealth.warnings,
+    uptime: s ? s.uptimeSec : null,
+    accounts: s ? s.accounts : null,
+    scheduler: s ? s.scheduler.enabled : null,
+    nextCheckinAt: s ? s.scheduler.nextCheckinAt : null,
+    poolStrategy: s ? s.pool.strategy : null,
   });
 });
 
@@ -211,6 +236,37 @@ try {
   }
 } catch {
   /* 检查失败不影响启动 */
+}
+
+// ---- 启动期健康校验（把「静默降级」变成「明确失败」）----
+// 顺序要求：必须先打开 DB 拿到密文行信息，才能判断 encrypt.key 是否可用。
+try {
+  const startupChecks = require('./lib/startup-checks');
+  const cryptoMod = require('./lib/crypto');
+  const dbMod = require('./credentials/db');
+  const result = startupChecks.runAll({
+    config,
+    cryptoMod,
+    getDb: () => dbMod.db(),
+    fsMod: fs,
+    pathMod: path,
+  });
+  startupHealth = { checks: result.checks, warnings: result.warnings };
+  if (result.fatal) {
+    console.error(`[relay-gate] 启动检查未通过：${result.fatal.name} — ${result.fatal.detail}`);
+    require('./log/crash').writeEvent({
+      tag: 'lifecycle',
+      event: 'startup_fatal',
+      check: result.fatal.name,
+      detail: result.fatal.detail,
+    });
+    process.exit(1);
+  }
+  for (const w of result.warnings) console.warn(`[relay-gate] 启动检查告警：${w}`);
+} catch (e) {
+  // 校验自身出错不应阻断启动，但要留痕且 /health 会体现为无检查项
+  console.error(`[relay-gate] 启动检查执行失败：${e.message}`);
+  startupHealth = { checks: [], warnings: [`启动检查本身失败：${e.message}`] };
 }
 
 listen(config.port, config.host, ['::', '127.0.0.1']);

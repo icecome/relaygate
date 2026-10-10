@@ -7,6 +7,21 @@ const { stateFile, legacyStateDir } = require('./paths');
 const ALGORITHM = 'aes-256-gcm';
 const KEY_ENV_VAR = 'TRAE_API_ENCRYPT_KEY';
 
+/**
+ * 本次进程是否「新生成」了加密密钥（而非从文件/env 读取）。
+ *
+ * 这是不可逆数据丢失的唯一入口：密钥文件被误删后，本模块会生成一把新 key
+ * 落盘，而库里所有 token_enc / refresh_token_enc / api_key_enc 都用旧 key 加密，
+ * 从此永远解不开 —— 用户只会看到账号「登录失效」，猜不到原因。
+ * index.js 启动时据此 + 「库里有密文行」判断并拒绝启动（见 assertKeyMatchesStore）。
+ */
+let keyWasGenerated = false;
+
+/** 供启动校验读取：本进程是否新生成了密钥。 */
+function wasKeyGenerated() {
+  return keyWasGenerated;
+}
+
 // 密钥文件位置：{workspaceDir}/.trae-api/encrypt.key。
 // 读取时回退旧位置 {ROOT}/.trae-api/encrypt.key —— 这是硬要求：该密钥用于解密
 // 账号库中既有 token，若因位置变更找不到旧密钥就会重新生成一把，导致所有已存
@@ -51,6 +66,7 @@ function getEncryptionKey() {
     key = crypto.randomBytes(32).toString('hex');
     if (!writeFileAtomic(keyFile(), key)) throw new Error('write failed');
     process.env[KEY_ENV_VAR] = key;
+    keyWasGenerated = true;
     return normalizeKey(key);
   } catch (e) {
     throw new Error(`[crypto] encryption key cannot be persisted (${e.message}); set ${KEY_ENV_VAR} explicitly`);
@@ -86,5 +102,7 @@ function decrypt(encryptedText) {
 module.exports = {
   encrypt,
   decrypt,
-  getEncryptionKey
+  getEncryptionKey,
+  wasKeyGenerated,
+  KEY_ENV_VAR,
 };
