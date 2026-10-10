@@ -134,6 +134,11 @@ export default function AppLayout() {
             已启用 {enabled}
             {cooling > 0 && <span style={{ color: 'var(--rg-state-warning)' }}>· 冷却 {cooling}</span>}
           </span>
+          {/* 版本号：用户要知道「我跑的是哪一版」才能去查 changelog。
+              值来自 vite define（根 package.json 是单一事实源）。 */}
+          <div className="mt-2 font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+            v{__APP_VERSION__} · {__BUILD_TIME__}
+          </div>
         </div>
       </aside>
 

@@ -1,3 +1,10 @@
 node_modules/
 dist/
 *.local
+
+# 开发/调试产物（不应入库）
+*.log
+_dev_*
+tsconfig.tsbuildinfo
+.playwright-cli/
+.vite/
