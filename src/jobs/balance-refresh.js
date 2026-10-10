@@ -71,6 +71,16 @@ async function runRefresh(opts = {}) {
     }
     // 余额健康账号解冻（与签到后逻辑一致）
     for (const item of r.ok || []) pool.unfreezeIfHealthy(item.accountId);
+    // 模型级冷却过期条目的落库清理。
+    // 原先挂在 pool.snapshot()/explainCandidates 这两个只读函数里，
+    // 会让 GET /v1/admin/runtime 与免鉴权的 GET /status 各触发 N 次写库；
+    // 清理本身是维护动作，放这里（每轮刷新一次）才是对的归属。
+    try {
+      const swept = pool.sweepModelCooldowns();
+      if (swept) console.log(`[balance-refresh] 清理过期模型冷却 ${swept} 个账号`);
+    } catch (e) {
+      console.error('[balance-refresh] sweepModelCooldowns failed', e.message);
+    }
     if (!opts.skipAlerts) {
       try {
         await checkCreditAlerts();

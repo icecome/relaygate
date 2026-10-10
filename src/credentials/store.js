@@ -44,10 +44,67 @@ function bindInt(v, fallback = 0) {
 }
 
 function safeTok(v) {
-  // 对外返回值脱敏：去掉 token / refreshToken / apiKey 明文
-  const { token, refreshToken, apiKey, ...rest } = v;
+  // 对外返回值脱敏：去掉 token / refreshToken / apiKey 明文；
+  // version 是 update() 的乐观锁内部字段，不属于账号业务数据，不外泄。
+  const { token, refreshToken, apiKey, version, ...rest } = v;
   return rest;
 }
+
+/**
+ * patch 的驼峰键 → { 数据库列名, 取值函数 } 映射。
+ *
+ * update() 只写 patch 里真正出现的列（不再全列重写），这是修复「丢失更新」的前提：
+ * 全列重写时，另一写入方刚写入的字段会被当前这份陈旧快照覆盖回去。
+ *
+ * 列名必须显式声明：token→token_enc、group→group_name 这类不是简单驼峰转换。
+ */
+const PATCH_COLUMNS = {
+  label: { col: 'label', val: (a) => bindText(a.label) },
+  edition: { col: 'edition', val: (a) => bindText(a.edition) },
+  token: { col: 'token_enc', val: (a) => enc(a.token) },
+  refreshToken: { col: 'refresh_token_enc', val: (a) => enc(a.refreshToken) },
+  apiKey: { col: 'api_key_enc', val: (a) => enc(a.apiKey) },
+  expiredAt: { col: 'expired_at', val: (a) => bindText(a.expiredAt) },
+  refreshExpiredAt: { col: 'refresh_expired_at', val: (a) => bindText(a.refreshExpiredAt) },
+  tokenReleaseAt: { col: 'token_release_at', val: (a) => bindText(a.tokenReleaseAt) },
+  userId: { col: 'user_id', val: (a) => bindText(a.userId) },
+  host: { col: 'host', val: (a) => bindText(a.host) },
+  userRegion: { col: 'user_region', val: (a) => bindText(a.userRegion) },
+  devices: { col: 'devices', val: (a) => (a.devices ? JSON.stringify(a.devices) : null) },
+  fingerprint: {
+    col: 'fingerprint',
+    val: (a) => (a.fingerprint && Object.keys(a.fingerprint).length ? JSON.stringify(a.fingerprint) : null),
+  },
+  mode: { col: 'mode', val: (a) => bindText(a.mode) },
+  source: { col: 'source', val: (a) => bindText(a.source) || 'import' },
+  enabled: { col: 'enabled', val: (a) => (a.enabled ? 1 : 0) },
+  balance: { col: 'balance', val: (a) => bindNum(a.balance) },
+  errorCount: { col: 'error_count', val: (a) => bindInt(a.errorCount, 0) },
+  coolUntil: { col: 'cool_until', val: (a) => bindText(a.coolUntil) },
+  lastPickedAt: { col: 'last_picked_at', val: (a) => bindInt(a.lastPickedAt, 0) },
+  lastCheckinAt: { col: 'last_checkin_at', val: (a) => bindText(a.lastCheckinAt) },
+  lastCheckinResult: { col: 'last_checkin_result', val: (a) => bindText(a.lastCheckinResult) },
+  lastKeepaliveAt: { col: 'last_keepalive_at', val: (a) => bindText(a.lastKeepaliveAt) },
+  lastKeepaliveResult: { col: 'last_keepalive_result', val: (a) => bindText(a.lastKeepaliveResult) },
+  entitlementSnapshot: { col: 'entitlement_snapshot', val: (a) => bindText(a.entitlementSnapshot) },
+  priority: { col: 'priority', val: (a) => bindInt(a.priority, 0) },
+  tags: { col: 'tags', val: (a) => (a.tags ? JSON.stringify(a.tags) : null) },
+  group: { col: 'group_name', val: (a) => bindText(a.group) },
+  deviceGen: { col: 'device_gen', val: (a) => bindInt(a.deviceGen, 0) },
+  authClientId: { col: 'auth_client_id', val: (a) => bindText(a.authClientId) },
+  authHost: { col: 'auth_host', val: (a) => bindText(a.authHost) },
+  costTier: { col: 'cost_tier', val: (a) => bindInt(a.costTier, 1) },
+  modelCooldowns: {
+    col: 'model_cooldowns',
+    val: (a) =>
+      a.modelCooldowns && Object.keys(a.modelCooldowns).length ? JSON.stringify(a.modelCooldowns) : null,
+  },
+  rateStreak: { col: 'rate_streak', val: (a) => bindInt(a.rateStreak, 0) },
+  modelCoolStreak: { col: 'model_cool_streak', val: (a) => bindInt(a.modelCoolStreak, 0) },
+};
+
+/** 写入冲突时的错误标记，供调用方与测试识别（不当作普通异常吞掉）。 */
+const WRITE_CONFLICT = 'WRITE_CONFLICT';
 
 function acctToRow(acct) {
   return {
@@ -143,6 +200,9 @@ function rowToDecrypted(r, withSecrets = true) {
     modelCooldowns: parseSnapshotJson(r.model_cooldowns) || null,
     rateStreak: r.rate_streak != null ? Number(r.rate_streak) || 0 : 0,
     modelCoolStreak: r.model_cool_streak != null ? Number(r.model_cool_streak) || 0 : 0,
+    // 乐观锁版本号：仅 update() 的 CAS 使用，不属于账号业务字段，
+    // 因此不加入 PATCH_COLUMNS（外部无法直接写它）。
+    version: r.version != null ? Number(r.version) || 0 : 0,
   };
 }
 
@@ -203,31 +263,66 @@ function add(cred, source) {
   return safeTok(acct);
 }
 
-/** 局部更新账号（自动刷新等），返回脱敏结果。 */
+/**
+ * 局部更新账号，返回脱敏结果；账号不存在返回 null。
+ *
+ * 实现说明（P0-001 丢失更新修复）：
+ *   旧实现是 get(id) 全列读 → merge → UPDATE 全部 34 列。单进程内因为
+ *   node:sqlite 同步执行没有 await 窗口，但**跨进程**（第二个 node 进程、
+ *   运维脚本）或多客户端同时写库时，另一写入方在「读」与「写」之间落的字段
+ *   会被本次陈旧快照覆盖回去，且无任何报错。
+ *
+ *   现在改为：
+ *     1) 只写 patch 真正包含的列（buildSetClause）；
+ *     2) UPDATE ... WHERE id=? AND version=? 的 CAS；
+ *     3) 冲突时重读重试（上限 3 次），仍冲突则抛 WRITE_CONFLICT。
+ */
 function update(id, patch) {
-  const existing = get(id);
-  if (!existing) return null;
-  const merged = { ...existing, ...patch };
-  const r = acctToRow(merged);
-  db().prepare(`
-    UPDATE accounts SET
-      label = ?, edition = ?, token_enc = ?, refresh_token_enc = ?, api_key_enc = ?, expired_at = ?,
-      refresh_expired_at = ?, token_release_at = ?, user_id = ?, host = ?, user_region = ?,
-      devices = ?, fingerprint = ?, mode = ?, source = ?, enabled = ?, balance = ?, error_count = ?, cool_until = ?,
-      last_picked_at = ?, last_checkin_at = ?, last_checkin_result = ?,
-      last_keepalive_at = ?, last_keepalive_result = ?,
-      entitlement_snapshot = ?, priority = ?, tags = ?,
-      group_name = ?, device_gen = ?, auth_client_id = ?, auth_host = ?, cost_tier = ?,
-      model_cooldowns = ?, rate_streak = ?, model_cool_streak = ?
-    WHERE id = ?
-  `).run(r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
-    r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
-    r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
-    r.last_picked_at, r.last_checkin_at, r.last_checkin_result,
-    r.last_keepalive_at, r.last_keepalive_result, r.entitlement_snapshot,
-    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
-    r.model_cooldowns, r.rate_streak, r.model_cool_streak, id);
-  return safeTok(merged);
+  if (!patch || typeof patch !== 'object') return null;
+  // 只保留已知列，未知键直接忽略（此前全列重写会顺带写入未知键的 undefined）
+  const keys = Object.keys(patch).filter((k) => Object.prototype.hasOwnProperty.call(PATCH_COLUMNS, k));
+  if (keys.length === 0) {
+    // 没有任何可写列：仍要确认账号存在，保持「不存在返回 null」的契约
+    const cur = get(id);
+    return cur ? safeTok(cur) : null;
+  }
+
+  const RETRY_MAX = 3;
+  for (let attempt = 0; attempt < RETRY_MAX; attempt += 1) {
+    const row = rawRow(id);
+    if (!row) return null;
+
+    const setParts = [];
+    const args = [];
+    for (const k of keys) {
+      const spec = PATCH_COLUMNS[k];
+      setParts.push(`${spec.col} = ?`);
+      // 取值函数收到的是「当前行 + 本键新值」的合并视图，
+      // 因为部分列（如 source 的默认值、modelCooldowns 的空对象判定）依赖完整语义
+      args.push(spec.val({ ...rowToDecrypted(row, false), [k]: patch[k] }));
+    }
+    setParts.push('version = version + 1');
+
+    const info = db()
+      .prepare(`UPDATE accounts SET ${setParts.join(', ')} WHERE id = ? AND version = ?`)
+      .run(...args, id, Number(row.version) || 0);
+
+    if (info.changes > 0) {
+      // 与旧实现保持同一返回契约：脱敏后的账号（不含 token/refreshToken/apiKey/version）。
+      // 注意不能直接 return get(id) —— get() 按设计返回解密后的密文字段。
+      return safeTok(get(id));
+    }
+    // changes === 0：期间被其它写入方改过（version 变了），重读重试。
+    // 账号被删也会落到这里（下一轮 rawRow 返回 null → return null）。
+  }
+  const e = new Error(`账号 ${id} 并发写入冲突：连续 ${RETRY_MAX} 次 version 不匹配`);
+  e.code = WRITE_CONFLICT;
+  throw e;
+}
+
+/** 读原始行（含 version 与密文列），仅供 update 做 CAS 用。 */
+function rawRow(id) {
+  return db().prepare('SELECT * FROM accounts WHERE id = ?').get(id) || null;
 }
 
 function remove(id) {

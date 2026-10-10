@@ -64,6 +64,10 @@ function ensureSchema(db) {
   // 面板无法回答「这个号上次保活是什么时候、还活着吗」。
   if (!names.has('last_keepalive_at')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_at TEXT');
   if (!names.has('last_keepalive_result')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_result TEXT');
+  // 乐观锁版本号（P0-001）：store.update 改为「按 patch 生成 SET + version CAS」后，
+  // 每次成功写入 version+1。并发写入方读到旧 version 时 UPDATE 影响 0 行，
+  // 重读重试即可避免「用陈旧快照覆盖对方刚写的字段」这类静默丢更新。
+  if (!names.has('version')) db.exec('ALTER TABLE accounts ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');
