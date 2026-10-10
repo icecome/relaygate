@@ -16,7 +16,8 @@ import {
   resetAllDevices,
 } from '../../shared/api/credentials';
 import { wbCheckin as wbCheckinOne } from '../../shared/api/workbuddy';
-import { ApiError, isBusinessFailure } from '../../shared/api/http';
+import { ApiError } from '../../shared/api/http';
+import { runAction, summarizeBatch } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import {
@@ -47,7 +48,7 @@ import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
 import { GrowthPanel } from './GrowthPanel';
-import { ExpiryChip, expirySummary, keepaliveOf, worstExpiry } from './accountPacks';
+import { ExpiryChip, expirySummary, keepaliveOf, packsOf, worstExpiry } from './accountPacks';
 import { PackDialog } from './PackDialog';
 
 type StateFilter = 'all' | 'ok' | 'cool' | 'off';
@@ -111,7 +112,7 @@ export default function CredentialsPage() {
   // 到期汇总只用于工具条提示，明细在行内展开，不占页面主体空间
   const expiry = useMemo(() => expirySummary(rows), [rows]);
 
-  /** 统一包装写操作：错误必须落到 UI，不能只console。 */
+  /** 统一包装写操作：错误必须落到 UI，不能只 console。（实现见 shared/api/action） */
   async function run(
     id: string,
     label: string,
@@ -120,20 +121,13 @@ export default function CredentialsPage() {
   ) {
     setBusyId(id);
     try {
-      const result = await fn();
-      // 业务层失败（HTTP 成功但 ok:false）要与请求异常分开提示
-      if (isBusinessFailure(result)) {
-        const reason = (result as { reason?: string }).reason;
-        toast(`${label}未成功：${reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
-        return false;
-      }
-      toast(successMsg, 'ok');
-      list.reload();
-      return true;
-    } catch (e) {
-      const msg = e instanceof ApiError ? e.message : `${label}失败`;
-      toast(msg, 'err');
-      return false;
+      return await runAction({
+        label,
+        fn,
+        successMsg,
+        toast,
+        onDone: list.reload,
+      });
     } finally {
       setBusyId(null);
     }
@@ -164,7 +158,19 @@ export default function CredentialsPage() {
       const already = r.already ?? 0;
       const failed = r.failed ?? 0;
       if (failed > 0) {
-        toast(`签到完成（${claimed} 新签 / ${already} 已签 / ${failed} 失败）：${r.message ?? ''}`, 'err');
+        // 分平台结果里有逐账号的原因，取前几条展示，不能只报一个计数
+        const reasons = (r.platforms ?? [])
+          .flatMap((p) => p.accounts.filter((x) => !x.result || /fail|error|未/i.test(x.result)))
+          .slice(0, 3)
+          .map((x) => [x.label, x.reason].filter(Boolean).join('：'))
+          .filter(Boolean)
+          .join('；');
+        toast(
+          `签到完成（${claimed} 新签 / ${already} 已签 / ${failed} 失败）：${r.message ?? ''}${
+            reasons ? `；${reasons}` : ''
+          }`,
+          'err',
+        );
       } else if (claimed > 0) {
         toast(`签到完成：${claimed} 个新签，${already} 个今日已签`, 'ok');
       } else {
@@ -172,7 +178,7 @@ export default function CredentialsPage() {
       }
       list.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '批量签到失败', 'err');
+      toast(e instanceof ApiError ? e.message : '批量签到请求失败', 'err');
     } finally {
       setBusyId(null);
     }
@@ -218,8 +224,7 @@ export default function CredentialsPage() {
     if (ok !== true) return;
     setBusyId('__dev__');
     try {
-      const r = await resetAllDevices(key);
-      toast(`重置完成：成功 ${r.ok?.length ?? 0}，失败 ${r.failed?.length ?? 0}`, r.failed?.length ? 'warn' : 'ok');
+      summarizeBatch('设备标识重置', await resetAllDevices(key), toast);
       list.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '重置失败', 'err');
@@ -283,13 +288,15 @@ export default function CredentialsPage() {
             <Button size="sm" onClick={() => setGrowthOpen((v) => !v)}>
               {growthOpen ? '收起成长中心' : '成长中心'}
             </Button>
+            {/* 这两个 Chip 是**账号数**口径；总览页的「3日内到期积分」是**额度**
+                口径（后端 summary.expiring3d）。文案已写明「个账号」以示区分。 */}
             {expiry.expired > 0 ? (
               <Chip tone="danger" dot="dot-error">
-                {expiry.expired} 个账号已到期
+                {expiry.expired} 个账号额度已到期
               </Chip>
             ) : expiry.expiring > 0 ? (
               <Chip tone="warn" dot="dot-cool">
-                {expiry.expiring} 个账号 7 日内到期
+                {expiry.expiring} 个账号额度 7 日内到期
               </Chip>
             ) : null}
             <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -352,7 +359,7 @@ export default function CredentialsPage() {
                 {rows.map((a) => {
                   const st = accountState(a);
                   const cooling = coolRemaining(a.coolUntil);
-                  const pack = a.packs?.[0];
+                  const rowPack = packsOf(a)[0] ?? null;
                   const busy = busyId === a.id;
                   const expiryWorst = worstExpiry(a);
                   const keepalive = keepaliveOf(a);
@@ -392,7 +399,9 @@ export default function CredentialsPage() {
                             Trae 账号一律是 import，显示成 import 会被误读为平台 */}
                         <td className="td whitespace-nowrap">{platform}</td>
                         <td className="td font-mono text-[12px]">
-                          {pack ? formatQuota(pack.unlimited, pack.remaining) : '—'}
+                          {/* 与 PackDialog 同源：取 packsOf 排序后的第一个可用包，
+                              而不是后端原序的 packs[0]（那只是「任意一个包」） */}
+                          {rowPack ? formatQuota(rowPack.unlimited, rowPack.remaining) : '—'}
                         </td>
                         <td className="td">
                           <button

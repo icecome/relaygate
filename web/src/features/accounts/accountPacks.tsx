@@ -96,8 +96,9 @@ export function packsOf(account: Account, now = Date.now()): PackView[] {
     };
   });
 
-  // 可用的按到期时间升序（先到期先用，FEFO 语义），
-  // 不可用的统一置底；组内再按到期时间升序
+  // 展示排序：可用项在前、失效置底，组内按到期时间升序。
+  // 注意：这只是阅读顺序，不代表后端的消耗顺序 —— 后端调度（pool.js）有自己的
+  // FEFO 决策。此处刻意不宣称「这些包会优先被消耗」，避免 UI 排序与后端算法漂移。
   return list.sort((a, b) => {
     if (a.usable !== b.usable) return a.usable ? -1 : 1;
     const av = a.expireMs ?? Number.POSITIVE_INFINITY;
@@ -116,7 +117,13 @@ export function worstExpiry(account: Account, now = Date.now()): PackView | null
   )[0];
 }
 
-/** 全库汇总，供工具条提示。 */
+/**
+ * 全库汇总（按**账号数**口径），供凭据池工具条提示。
+ *
+ * 命名注意：后端 /summary 的 expiring3d/7d 是**积分额度**（amount），
+ * 本函数返回的是**账号数**（count）—— 同名不同义。为避免读数打架，
+ * 调用方文案必须写明「N 个账号」，不得与 summary.expiring3d 直接对比。
+ */
 export function expirySummary(
   accounts: Account[],
   now = Date.now(),

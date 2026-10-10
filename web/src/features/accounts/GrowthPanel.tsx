@@ -24,6 +24,7 @@ import {
   type GrowthStatusRow,
 } from '../../shared/api/growth';
 import { ApiError } from '../../shared/api/http';
+import { runAction } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { formatBoolean, formatNumber, formatTime, percent } from '../../shared/lib/format';
 import { Button, Chip, ErrorState, LoadingBlock, MetricGrid, Note, Panel } from '../../shared/ui';
@@ -70,20 +71,20 @@ export function GrowthPanel() {
   const overview = useAsyncData((signal) => growthOverview(key, signal), [key], { enabled: !!key });
   const lastRun = useAsyncData((signal) => growthLastRun(key, signal), [key], { enabled: !!key });
 
-  /** 统一包装写操作：业务层失败展示后端原因，不当作网络错误。 */
-  async function run(id: string, label: string, fn: () => Promise<{ ok?: boolean; reason?: string }>, okMsg: string) {
+  /** 统一包装写操作：业务层失败展示后端原因，不当作网络错误。（实现见 shared/api/action） */
+  async function run(id: string, label: string, fn: () => Promise<unknown>, okMsg: string) {
     setBusyId(id);
     try {
-      const r = await fn();
-      if (r?.ok === false) {
-        toast(`${label}未成功：${r.reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
-        return;
-      }
-      toast(okMsg, 'ok');
-      statusAll.reload();
-      overview.reload();
-    } catch (e) {
-      toast(e instanceof ApiError ? e.message : `${label}失败`, 'err');
+      await runAction({
+        label,
+        fn,
+        successMsg: okMsg,
+        toast,
+        onDone: () => {
+          statusAll.reload();
+          overview.reload();
+        },
+      });
     } finally {
       setBusyId(null);
     }

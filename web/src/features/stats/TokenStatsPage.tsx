@@ -199,13 +199,13 @@ export default function TokenStatsPage() {
   /**
    * 该日账单是否已完整入账。
    *
-   * 不用固定滞后天数硬编码——用数据自身判断：Trae 会话账单入账滞后时
-   * `officialTraeCredit` 为 0，而 WB 逐请求账单通常已入账。因此
-   * 「Trae 侧为 0 且日期在滞后窗口内」即为未完整入账，此时差异率无意义。
-   * 实测 2026-10-10 Trae=0 / WB=39.62，正是这种状态。
+   * Trae 按会话入账，滞后 1~2 天；滞后期内该日只有 WB 侧的账单，
+   * 而网关估算覆盖双平台 —— 拿全平台估算除单平台账单会算出 1000%+
+   * 的假差异。窗口内统一标「入账中」，不出差异率。
    */
   const TRAE_LAG_DAYS = 2;
   const isBillSettled = (d: { date: string; officialTraeCredit?: number }) => {
+    // 有 Trae 账单说明已入账；更早的日期不受滞后窗口影响
     if ((d.officialTraeCredit ?? 0) > 0) return true;
     const daysAgo = (Date.now() - new Date(`${d.date}T00:00:00`).getTime()) / 86400000;
     return daysAgo > TRAE_LAG_DAYS;

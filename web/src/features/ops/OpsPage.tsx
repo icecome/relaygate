@@ -8,6 +8,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { OPS_TABS } from '../../app/nav';
 import { useAuth } from '../../shared/api/auth';
 import {
   clearTaskLog,
@@ -31,6 +32,7 @@ import {
   type RotateHeatmapRow,
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
+import { summarizeBatch } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import {
   formatBoolean,
@@ -59,19 +61,16 @@ import { usePrompt } from '../../shared/ui/Prompt';
 import { ClientAccessPanel } from './ClientAccessPanel';
 import { NotifyBackupPanel } from './NotifyBackupPanel';
 
-type Tab = 'runtime' | 'jobs' | 'rotate' | 'notify' | 'config';
-
 /** 任务日志单页条数与向后端请求的上限（后端 clamp 到 500）。 */
 const LOG_PAGE_SIZE = 20;
 const LOG_LIMIT = 200;
 
-const TABS: readonly { value: Tab; label: string; path: string }[] = [
-  { value: 'runtime', label: '运行状态', path: '/ops' },
-  { value: 'jobs', label: '定时任务', path: '/ops/jobs' },
-  { value: 'rotate', label: '账号轮换', path: '/ops/rotate' },
-  { value: 'notify', label: '通知与备份', path: '/ops/notify' },
-  { value: 'config', label: '网关配置', path: '/ops/config' },
-];
+/** 分段定义来自导航侧栏的运维组，两处不再各声明一份。 */
+const TABS: readonly { value: string; label: string; path: string }[] = OPS_TABS.map((t) => ({
+  value: t.id,
+  label: t.label,
+  path: t.to,
+}));
 
 export default function OpsPage() {
   const { key } = useAuth();
@@ -278,15 +277,9 @@ const rotateRows = useMemo(() => {
     setBusy('rotate');
     try {
       const r = await runRotate(key);
-      // 业务层失败：请求成功但轮换未全部成功
-      if (r.failed > 0 || (r.skipped ?? 0) > 0 || r.reason) {
-        toast(
-          `轮换完成但有异常：成功 ${r.ok}，失败 ${r.failed}，跳过 ${r.skipped ?? 0}${r.reason ? `；${r.reason}` : ''}`,
-          'warn',
-        );
-      } else {
-        toast(`轮换成功：共 ${r.ok} 个账号`, 'ok');
-      }
+      // 业务层失败：请求成功但轮换未全部成功。失败明细尽量带出，
+      // 否则用户只知道「失败 N」却不知道该去查哪个账号。
+      summarizeBatch('账号轮换', r, toast);
       rotateStatus.reload();
       taskLog.reload();
     } catch (e) {
@@ -299,8 +292,8 @@ const rotateRows = useMemo(() => {
   async function doSeed() {
     setBusy('seed');
     try {
-      const r = await seedRotate(key);
-      toast(`种子生成：成功 ${r.ok?.length ?? 0}，跳过 ${r.skipped?.length ?? 0}`, 'ok');
+      // 失败账号的原因原来被丢弃（只显示计数），现在统一走 summarizeBatch 带出前几条
+      summarizeBatch('种子生成', await seedRotate(key), toast);
       rotateStatus.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '种子生成失败', 'err');
