@@ -101,7 +101,7 @@ export function GrowthPanel() {
             hint="成长任务只对启用账号生效；接入账号后这里会显示旅行进度。"
           />
         ) : (
-          <table className="w-full border-collapse text-[13px]">
+          <table className="card-table w-full border-collapse text-[13px]">
             <thead>
               <tr>
                 <th className="th">账号</th>
@@ -115,8 +115,8 @@ export function GrowthPanel() {
             <tbody>
               {statusRows.map((r) => (
                 <tr key={r.accountId} className="row-hover">
-                  <td className="td">{r.label}</td>
-                  <td className="td">
+                  <td className="td" data-label="账号">{r.label}</td>
+                  <td className="td" data-label="状态">
                     {r.ok ? (
                       <Chip tone="brand">{r.state || '—'}</Chip>
                     ) : (
@@ -125,10 +125,10 @@ export function GrowthPanel() {
                       </Chip>
                     )}
                   </td>
-                  <td className="td">{r.location?.name || '—'}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(r.departAt)}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(r.arriveAt)}</td>
-                  <td className="td cell-num">{formatNumber(r.rewardCredit)}</td>
+                  <td className="td" data-label="位置">{r.location?.name || '—'}</td>
+                  <td className="td font-mono text-[12px]" data-label="出发">{formatTime(r.departAt)}</td>
+                  <td className="td font-mono text-[12px]" data-label="到达">{formatTime(r.arriveAt)}</td>
+                  <td className="td cell-num" data-label="奖励额度">{formatNumber(r.rewardCredit)}</td>
                 </tr>
               ))}
             </tbody>
@@ -144,7 +144,7 @@ export function GrowthPanel() {
         ) : overviewRows.length === 0 ? (
           <EmptyState label="暂无成长数据。" hint="后台任务运行一轮后会出现。" />
         ) : (
-          <table className="w-full border-collapse text-[13px]">
+          <table className="card-table w-full border-collapse text-[13px]">
             <thead>
               <tr>
                 <th className="th">账号</th>
@@ -155,9 +155,9 @@ export function GrowthPanel() {
             <tbody>
               {overviewRows.map((r) => (
                 <tr key={r.accountId} className="row-hover">
-                  <td className="td">{r.label}</td>
-                  <td className="td cell-num">{formatNumber(r.streakDays)}</td>
-                  <td className="td cell-num">{formatNumber(r.lotteryChances)}</td>
+                  <td className="td" data-label="账号">{r.label}</td>
+                  <td className="td cell-num" data-label="连登天数">{formatNumber(r.streakDays)}</td>
+                  <td className="td cell-num" data-label="抽奖机会">{formatNumber(r.lotteryChances)}</td>
                 </tr>
               ))}
             </tbody>

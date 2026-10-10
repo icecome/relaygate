@@ -560,7 +560,7 @@ const rotateRows = useMemo(() => {
                 />
               ) : (
                 <div className="scroll-y" style={{ maxHeight: 420 }}>
-                  <table className="w-full border-collapse text-[13px]">
+                  <table className="card-table w-full border-collapse text-[13px]">
                     <thead
                       className="sticky top-0 z-10"
                       style={{ background: 'var(--rg-bg-secondary)' }}
@@ -579,7 +579,7 @@ const rotateRows = useMemo(() => {
                     <tbody>
                       {(runtime.data?.pool?.accounts ?? []).map((a) => (
                         <tr key={a.id} className="row-hover">
-                          <td className="td">
+                          <td className="td" data-label="账号">
                             <div className="font-mono text-[12px]">{a.label || a.id}</div>
                             <div
                               className="font-mono text-[11px]"
@@ -588,7 +588,7 @@ const rotateRows = useMemo(() => {
                               {a.id}
                             </div>
                           </td>
-                          <td className="td">
+                          <td className="td" data-label="可用">
                             {a.usable ? (
                               <Chip tone="ok" dot="dot-ok">
                                 可用
@@ -599,22 +599,22 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num">{formatNumber(a.inFlight)}</td>
-                          <td className="td cell-num">{formatNumber(a.balance)}</td>
-                          <td className="td cell-num">{a.priority ?? 0}</td>
-                          <td className="td font-mono text-[12px]">
+                          <td className="td cell-num" data-label="在途">{formatNumber(a.inFlight)}</td>
+                          <td className="td cell-num" data-label="余额">{formatNumber(a.balance)}</td>
+                          <td className="td cell-num" data-label="优先级">{a.priority ?? 0}</td>
+                          <td className="td font-mono text-[12px]" data-label="最近到期">
                             {a.fefo?.never
                               ? '不过期'
                               : a.fefo?.hasExpiry && a.fefo.soonestDays != null
                                 ? `${a.fefo.soonestDays} 天`
                                 : '—'}
                           </td>
-                          <td className="td cell-num">
+                          <td className="td cell-num" data-label="模型冷却">
                             {a.modelCooldowns
                               ? Object.keys(a.modelCooldowns).length
                               : 0}
                           </td>
-                          <td className="td cell-num">{formatNumber(a.errorCount)}</td>
+                          <td className="td cell-num" data-label="错误数">{formatNumber(a.errorCount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -633,7 +633,7 @@ const rotateRows = useMemo(() => {
                   当前没有粘性会话
                 </div>
               ) : (
-                <table className="w-full border-collapse text-[13px]">
+                <table className="card-table w-full border-collapse text-[13px]">
                   <thead>
                     <tr>
                       <th className="th">会话键</th>
@@ -644,9 +644,9 @@ const rotateRows = useMemo(() => {
                   <tbody>
                     {stickyRows.map((s, i) => (
                       <tr key={`${s?.key ?? i}`} className="row-hover">
-                        <td className="td font-mono text-[11px] break-all">{s?.key || '—'}</td>
-                        <td className="td font-mono text-[12px]">{s?.accountId || '—'}</td>
-                        <td className="td font-mono text-[12px]">{formatTime(s?.expiresAt)}</td>
+                        <td className="td font-mono text-[11px] break-all" data-label="会话键">{s?.key || '—'}</td>
+                        <td className="td font-mono text-[12px]" data-label="绑定账号">{s?.accountId || '—'}</td>
+                        <td className="td font-mono text-[12px]" data-label="过期时间">{formatTime(s?.expiresAt)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -1115,7 +1115,7 @@ const rotateRows = useMemo(() => {
               ) : (
                 <>
                   <div className="scroll-y" style={{ maxHeight: 420 }}>
-                    <table className="w-full border-collapse text-[13px]">
+                    <table className="card-table w-full border-collapse text-[13px]">
                       {/* 表头吸顶：翻页时列名始终可见 */}
                       <thead
                         className="sticky top-0 z-10"
@@ -1138,20 +1138,20 @@ const rotateRows = useMemo(() => {
                           const okCount = t.ok ?? 0;
                           return (
                             <tr key={`${t.ts ?? i}`} className="row-hover">
-                              <td className="td font-mono text-[12px]">{formatTime(t.ts)}</td>
-                              <td className="td font-mono text-[12px]">{t.task || '—'}</td>
-                              <td className="td font-mono text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <td className="td font-mono text-[12px]" data-label="时间">{formatTime(t.ts)}</td>
+                              <td className="td font-mono text-[12px]" data-label="任务">{t.task || '—'}</td>
+                              <td className="td font-mono text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }} data-label="触发">
                                 {t.trigger || '—'}
                               </td>
-                              <td className="td cell-num font-mono text-[12px]">{formatNumber(okCount)}</td>
-                              <td className="td cell-num font-mono text-[12px]">
+                              <td className="td cell-num font-mono text-[12px]" data-label="成功">{formatNumber(okCount)}</td>
+                              <td className="td cell-num font-mono text-[12px]" data-label="失败">
                                 {failed > 0 ? (
                                   <span style={{ color: 'var(--rg-state-error)' }}>{failed}</span>
                                 ) : (
                                   '0'
                                 )}
                               </td>
-                              <td className="td font-mono text-[11px] break-all">
+                              <td className="td font-mono text-[11px] break-all" data-label="详情">
                                 {t.error ? (
                                   <span style={{ color: 'var(--rg-state-error)' }}>{t.error}</span>
                                 ) : t.acted != null ? (
@@ -1416,7 +1416,7 @@ const rotateRows = useMemo(() => {
                   本机 auth 目录里没有可用账号备份，可先点「生成种子」写入。
                 </div>
               ) : (
-                <table className="w-full border-collapse text-[13px]">
+                <table className="card-table w-full border-collapse text-[13px]">
                   <thead>
                     <tr>
                       <th className="th">账号</th>
@@ -1433,9 +1433,9 @@ const rotateRows = useMemo(() => {
                       const busyThis = busy === `switch-${r.uid}`;
                       return (
                         <tr key={r.uid} className="row-hover">
-                          <td className="td font-mono text-[12px] break-all">{r.label || '—'}</td>
-                          <td className="td font-mono text-[11px] break-all">{r.uid}</td>
-                          <td className="td">
+                          <td className="td font-mono text-[12px] break-all" data-label="账号">{r.label || '—'}</td>
+                          <td className="td font-mono text-[11px] break-all" data-label="uid">{r.uid}</td>
+                          <td className="td" data-label="状态">
                             {isCurrent ? (
                               <Chip tone="brand" dot="dot-ok">
                                 当前
@@ -1446,14 +1446,14 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num font-mono text-[12px]">
+                          <td className="td cell-num font-mono text-[12px]" data-label="当日活跃">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                             ) : (
                               formatNumber(r.score ?? 0)
                             )}
                           </td>
-                          <td className="td text-[12px] break-all">
+                          <td className="td text-[12px] break-all" data-label="说明">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-state-error)' }}>{r.error}</span>
                             ) : (

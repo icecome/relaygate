@@ -105,7 +105,7 @@ export default function AuditPage() {
               还没有审计记录。查看密钥明文、导出凭据等敏感操作会记录在这里。
             </div>
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">时间</th>
@@ -118,13 +118,13 @@ export default function AuditPage() {
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={r.id ?? i} className="row-hover">
-                    <td className="td font-mono text-[12px] whitespace-nowrap">{formatTime(r.ts)}</td>
-                    <td className="td">
+                    <td className="td font-mono text-[12px] whitespace-nowrap" data-label="时间">{formatTime(r.ts)}</td>
+                    <td className="td" data-label="动作">
                       <span title={r.action ?? undefined}>{actionLabel(r.action)}</span>
                     </td>
-                    <td className="td font-mono text-[11px] break-all">{r.resource || '—'}</td>
-                    <td className="td">{resultChip(r.result)}</td>
-                    <td className="td text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+                    <td className="td font-mono text-[11px] break-all" data-label="对象">{r.resource || '—'}</td>
+                    <td className="td" data-label="结果">{resultChip(r.result)}</td>
+                    <td className="td text-[12px]" style={{ color: 'var(--rg-text-secondary)' }} data-label="原因">
                       {r.reason || '—'}
                     </td>
                   </tr>

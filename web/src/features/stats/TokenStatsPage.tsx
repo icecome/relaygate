@@ -370,7 +370,7 @@ export default function TokenStatsPage() {
               hint="产生转发请求后即会出现；官方账单通常还有 1-2 天的入账滞后。"
             />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">日期</th>
@@ -397,11 +397,11 @@ export default function TokenStatsPage() {
                       : null;
                   return (
                     <tr key={d.date} className="row-hover">
-                      <td className="td font-mono text-[12px]">{d.date.slice(5)}</td>
-                      <td className="td cell-num font-medium">
+                      <td className="td font-mono text-[12px]" data-label="日期">{d.date.slice(5)}</td>
+                      <td className="td cell-num font-medium" data-label="官方账单积分">
                         {hasBill ? formatNumber(d.officialCredit) : '—'}
                       </td>
-                      <td className="td cell-num">
+                      <td className="td cell-num" data-label="网关估算积分">
                         {/* est=0 且无 priced 行 = token 数据丢失；有 priced 行但含上界 = 估算偏高 */}
                         {est > 0 ? (
                           <span title={upper ? '该日部分请求缺缓存读信息，按全未缓存计价，估算偏高' : undefined}>
@@ -414,7 +414,7 @@ export default function TokenStatsPage() {
                           <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
                         )}
                       </td>
-                      <td className="td cell-num">
+                      <td className="td cell-num" data-label="差异">
                         {diff == null ? (
                           !settled && hasBill ? (
                             <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1~2 天滞后，该日账单尚未完整">入账中</span>
@@ -466,7 +466,7 @@ export default function TokenStatsPage() {
               hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1-2 天出现。"
             />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">账号</th>
@@ -484,7 +484,7 @@ export default function TokenStatsPage() {
                   return (
                     <Fragment key={`${a.platform ?? ''}-${a.accountId}`}>
                       <tr className="row-hover">
-                        <td className="td">
+                        <td className="td" data-label="账号">
                           <div className="flex items-center gap-1.5 min-w-0">
                             {a.available && breakdown.length > 0 && (
                               <button
@@ -504,7 +504,7 @@ export default function TokenStatsPage() {
                             </div>
                           )}
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="平台 / 粒度">
                           <div className="flex items-center gap-1.5">
                             <Chip tone={a.platform === 'trae' ? 'brand' : 'neutral'}>
                               {a.platform === 'trae' ? 'Trae' : 'WorkBuddy'}
@@ -514,24 +514,24 @@ export default function TokenStatsPage() {
                             {a.granularity === 'session' ? '逐会话' : '逐请求'}
                           </div>
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="状态">
                           {a.available ? (
                             <Chip tone="ok" dot="dot-ok">已入账</Chip>
                           ) : (
                             <Chip tone="danger" dot="dot-error">不可用</Chip>
                           )}
                         </td>
-                        <td className="td cell-num">{a.available ? formatNumber(a.requests) : '—'}</td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="明细行">{a.available ? formatNumber(a.requests) : '—'}</td>
+                        <td className="td cell-num" data-label="Token">
                           {a.available && a.tokens != null ? formatNumber(a.tokens) : '—'}
                         </td>
-                        <td className="td cell-num font-semibold">
+                        <td className="td cell-num font-semibold" data-label="Credit">
                           {a.available ? formatNumber(a.credit) : '—'}
                         </td>
                       </tr>
                       {open && (
                         <tr>
-                          <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }}>
+                          <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }} data-label="账号">
                             <div className="grid gap-x-8 gap-y-1" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
                               {breakdown.map((m) => (
                                 <div key={m.model} className="flex items-baseline justify-between gap-3 py-1">
@@ -565,7 +565,7 @@ export default function TokenStatsPage() {
           ) : (models.data?.data ?? []).length === 0 ? (
             <EmptyState label="所选区间内没有模型用量。" hint="产生转发请求后即会出现。" />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">模型</th>
@@ -580,13 +580,13 @@ export default function TokenStatsPage() {
               <tbody>
                 {(models.data?.data ?? []).map((m) => (
                   <tr key={m.model} className="row-hover">
-                    <td className="td font-mono text-[12px] break-all">{m.model}</td>
-                    <td className="td cell-num">{formatNumber(m.requests)}</td>
-                    <td className="td cell-num" style={{ color: m.errors > 0 ? 'var(--rg-state-error)' : undefined }}>
+                    <td className="td font-mono text-[12px] break-all" data-label="模型">{m.model}</td>
+                    <td className="td cell-num" data-label="请求">{formatNumber(m.requests)}</td>
+                    <td className="td cell-num" data-label="错误" style={{ color: m.errors > 0 ? 'var(--rg-state-error)' : undefined }}>
                       {formatNumber(m.errors)}
                     </td>
-                    <td className="td cell-num font-medium">{formatNumber(m.tokens)}</td>
-                    <td className="td cell-num">
+                    <td className="td cell-num font-medium" data-label="Token">{formatNumber(m.tokens)}</td>
+                    <td className="td cell-num" data-label="计量 / 未计量">
                       {formatNumber(m.metered)}
                       <span style={{ color: 'var(--rg-text-tertiary)' }}> / </span>
                       {m.unmetered > 0 ? (
@@ -604,10 +604,10 @@ export default function TokenStatsPage() {
                         </span>
                       )}
                     </td>
-                    <td className="td cell-num">
+                    <td className="td cell-num" data-label="平均延迟">
                       {m.avgDurationMs == null ? '—' : `${Math.round(m.avgDurationMs)}ms`}
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }} data-label="估算成本*">
                       {formatCost(m.estimatedCost)}
                     </td>
                   </tr>
@@ -623,7 +623,7 @@ export default function TokenStatsPage() {
           ) : (accounts.data?.data ?? []).length === 0 ? (
             <EmptyState label="所选区间内没有账号用量。" hint="产生转发请求后即会出现。" />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">账号</th>
@@ -636,9 +636,9 @@ export default function TokenStatsPage() {
               <tbody>
                 {(accounts.data?.data ?? []).map((a) => (
                   <tr key={a.accountId} className="row-hover">
-                    <td className="td font-mono text-[12px]">{a.accountId}</td>
-                    <td className="td cell-num">{formatNumber(a.requests)}</td>
-                    <td className="td">
+                    <td className="td font-mono text-[12px]" data-label="账号">{a.accountId}</td>
+                    <td className="td cell-num" data-label="请求">{formatNumber(a.requests)}</td>
+                    <td className="td" data-label="错误率">
                       <div className="flex items-center gap-2 min-w-[110px]">
                         <div className="flex-1 min-w-[64px]">
                           <ProgressBar
@@ -651,7 +651,7 @@ export default function TokenStatsPage() {
                         </span>
                       </div>
                     </td>
-                    <td className="td">
+                    <td className="td" data-label="Token 占比">
                       <div className="flex items-center gap-2 min-w-[110px]">
                         <div className="flex-1 min-w-[64px]">
                           <ProgressBar ratio={a.tokenShare / 100} tone="soft" />
@@ -661,7 +661,7 @@ export default function TokenStatsPage() {
                         </span>
                       </div>
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }} data-label="估算成本*">
                       {formatCost(a.estimatedCost)}
                     </td>
                   </tr>
@@ -685,7 +685,7 @@ export default function TokenStatsPage() {
                 本机统计不可用：{client.data?.reason || '未返回原因'}。该数据依赖本机会话日志文件，网关转发数据不受影响。
               </Note>
             ) : (
-              <table className="w-full border-collapse text-[13px]">
+              <table className="card-table w-full border-collapse text-[13px]">
                 <tbody>
                   {(
                     [
@@ -718,7 +718,7 @@ export default function TokenStatsPage() {
                 hint="余额自动刷新运行过至少两轮后，这里会出现按账号的消耗估计。"
               />
             ) : (
-              <table className="w-full border-collapse text-[13px]">
+              <table className="card-table w-full border-collapse text-[13px]">
                 <thead>
                   <tr>
                     <th className="th">账号</th>
@@ -728,8 +728,8 @@ export default function TokenStatsPage() {
                 <tbody>
                   {(credit.data?.data ?? []).map((c, i) => (
                     <tr key={`${c.label ?? i}`} className="row-hover">
-                      <td className="td">{c.label || '—'}</td>
-                      <td className="td cell-num">{formatNumber(c.usedTotal)}</td>
+                      <td className="td" data-label="账号">{c.label || '—'}</td>
+                      <td className="td cell-num" data-label="今日消耗">{formatNumber(c.usedTotal)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -756,7 +756,7 @@ export default function TokenStatsPage() {
               hint="官方账单同步过来之后会自动生成；在那之前估算成本使用内置费率表。"
             />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">平台</th>
@@ -771,21 +771,21 @@ export default function TokenStatsPage() {
               <tbody>
                 {calibRows.map((c) => (
                   <tr key={`${c.platform}:${c.model}`} className="row-hover">
-                    <td className="td">
+                    <td className="td" data-label="平台">
                       <Chip tone={c.platform === 'wb' ? 'neutral' : 'brand'}>
                         {c.platform === 'wb' ? 'WorkBuddy' : 'Trae'}
                       </Chip>
                     </td>
-                    <td className="td font-mono text-[12px] break-all">{c.model}</td>
-                    <td className="td cell-num">{formatNumber(c.n)}</td>
-                    <td className="td cell-num font-mono">
+                    <td className="td font-mono text-[12px] break-all" data-label="模型">{c.model}</td>
+                    <td className="td cell-num" data-label="样本">{formatNumber(c.n)}</td>
+                    <td className="td cell-num font-mono" data-label="R²">
                       <span style={{ color: c.r2 >= 0.99 ? 'var(--rg-state-success)' : c.r2 >= 0.9 ? 'var(--rg-text-secondary)' : 'var(--rg-state-warning)' }}>
                         {c.r2.toFixed(6)}
                       </span>
                     </td>
-                    <td className="td cell-num font-mono">{(c.uncached * 1000).toFixed(5)}</td>
-                    <td className="td cell-num font-mono">{(c.output * 1000).toFixed(5)}</td>
-                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num font-mono" data-label="未缓存输入 /1k">{(c.uncached * 1000).toFixed(5)}</td>
+                    <td className="td cell-num font-mono" data-label="输出 /1k">{(c.output * 1000).toFixed(5)}</td>
+                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }} data-label="缓存读 /1k">
                       {(c.cacheRead * 1000).toFixed(5)}
                     </td>
                   </tr>

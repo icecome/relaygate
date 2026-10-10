@@ -243,7 +243,7 @@ export default function AccessKeysPage() {
               action={{ label: '创建第一把访问密钥', onClick: create }}
             />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th">备注</th>
@@ -261,10 +261,10 @@ export default function AccessKeysPage() {
                   const usable = isKeyUsable(r);
                   return (
                     <tr key={r.id} className="row-hover">
-                      <td className="td font-mono text-[12px]">{r.label || '—'}</td>
-                      <td className="td">{r.platform || 'all'}</td>
-                      <td className="td font-mono text-[12px]">{r.hint || maskKey(r.id)}</td>
-                      <td className="td">
+                      <td className="td font-mono text-[12px]" data-label="备注">{r.label || '—'}</td>
+                      <td className="td" data-label="平台">{r.platform || 'all'}</td>
+                      <td className="td font-mono text-[12px]" data-label="密钥">{r.hint || maskKey(r.id)}</td>
+                      <td className="td" data-label="状态">
                         <Chip
                           tone={usable ? 'ok' : r.status === 'disabled' ? 'neutral' : 'danger'}
                           dot={usable ? 'dot-ok' : r.status === 'disabled' ? 'dot-off' : 'dot-error'}
@@ -272,8 +272,8 @@ export default function AccessKeysPage() {
                           {statusLabel(r.status)}
                         </Chip>
                       </td>
-                      <td className="td font-mono text-[12px]">{formatTime(r.createdAt)}</td>
-                      <td className="td font-mono text-[12px]">{formatTime(r.lastUsedAt)}</td>
+                      <td className="td font-mono text-[12px]" data-label="创建时间">{formatTime(r.createdAt)}</td>
+                      <td className="td font-mono text-[12px]" data-label="最近使用">{formatTime(r.lastUsedAt)}</td>
                       <td className="td cell-act">
                         <div className="inline-flex items-center gap-1.5">
                           <Button size="sm" disabled={busy || !usable} onClick={() => reveal(r.id)}>

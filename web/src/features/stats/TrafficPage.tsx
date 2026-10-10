@@ -191,7 +191,7 @@ export default function TrafficPage() {
               />
             )
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="card-table w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th cell-num">#</th>
@@ -215,19 +215,19 @@ export default function TrafficPage() {
                       onClick={bad ? () => setFailed(r) : undefined}
                       title={bad ? '点击查看失败详情' : undefined}
                     >
-                      <td className="td cell-num font-mono text-[11px]">{r.seq ?? '—'}</td>
-                      <td className="td font-mono text-[12px]">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all">{r.endpoint || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.model || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.account || '—'}</td>
-                      <td className="td">
+                      <td className="td cell-num font-mono text-[11px]" data-label="#">{r.seq ?? '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-[11px] break-all" data-label="接口">{r.endpoint || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="账号">{r.account || '—'}</td>
+                      <td className="td" data-label="状态">
                         <Chip tone={bad ? 'danger' : 'ok'} dot={bad ? 'dot-error' : 'dot-ok'}>
                           {r.status ?? (bad ? 'ERR' : 'OK')}
                         </Chip>
                       </td>
-                      <td className="td cell-num">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
-                      <td className="td cell-num">{formatNumber(r.totalTokens)}</td>
-                      <td className="td cell-num">{formatCost(r.estimatedCost)}</td>
+                      <td className="td cell-num" data-label="耗时">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
+                      <td className="td cell-num" data-label="Token">{formatNumber(r.totalTokens)}</td>
+                      <td className="td cell-num" data-label="估算成本">{formatCost(r.estimatedCost)}</td>
                     </tr>
                   );
                 })}
@@ -295,7 +295,7 @@ export default function TrafficPage() {
             />
           ) : (
             <div className="scroll-y" style={{ maxHeight: 320 }}>
-              <table className="w-full border-collapse text-[13px]">
+              <table className="card-table w-full border-collapse text-[13px]">
                 <thead>
                   <tr>
                     <th className="th">时间</th>
@@ -308,11 +308,11 @@ export default function TrafficPage() {
                 <tbody>
                   {(sse.data?.data ?? []).map((r, i) => (
                     <tr key={r.seq ?? i} className="row-hover">
-                      <td className="td font-mono text-[12px]">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all">{r.requestId || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.accountId || '—'}</td>
-                      <td className="td font-mono text-[12px]">{r.model || '—'}</td>
-                      <td className="td">
+                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-[11px] break-all" data-label="Request ID">{r.requestId || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="账号">{r.accountId || '—'}</td>
+                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
+                      <td className="td" data-label="事件">
                         <Chip tone="brand">{r.event?.type || '—'}</Chip>
                       </td>
                     </tr>

@@ -35,6 +35,7 @@ import {
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   Field,
   LoadingBlock,
@@ -328,19 +329,34 @@ export default function CredentialsPage() {
           title="凭据列表"
           actions={
             <Button size="sm" onClick={resetDevices} disabled={busyId === '__dev__'}>
-              重置全部设备标识
+              重置已启用账号的设备标识
             </Button>
           }
           flush
         >
           {list.loading && !list.data ? (
             <LoadingBlock />
+          ) : (list.data?.length ?? 0) === 0 ? (
+            <EmptyState
+              label="还没有接入任何账号。"
+              hint="接入上游账号后才能转发请求；总览页也会开始显示待处理事项。"
+              action={{ label: '接入第一个账号', onClick: () => setShowOauth(true) }}
+            />
           ) : rows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              没有符合条件的账号
-            </div>
+            <EmptyState
+              label="当前筛选条件下没有匹配账号。"
+              hint={`库中共有 ${list.data?.length ?? 0} 个账号。`}
+              action={{
+                label: '清除筛选',
+                onClick: () => {
+                  setQuery('');
+                  setStateFilter('all');
+                  setSourceFilter('all');
+                },
+              }}
+            />
           ) : (
-            <table className="table-fixed w-full border-collapse text-[13px]">
+            <table className="card-table table-fixed w-full border-collapse text-[13px]">
               <thead>
                 <tr>
                   <th className="th col-toggle">启用</th>
@@ -367,7 +383,7 @@ export default function CredentialsPage() {
                   const platform = platformLabel(a);
                   return (
                     <tr key={a.id} className="row-hover">
-                        <td className="td">
+                        <td className="td" data-label="启用">
                           <Button
                             size="sm"
                             variant={a.enabled ? 'primary' : 'default'}
@@ -378,7 +394,7 @@ export default function CredentialsPage() {
                             {a.enabled ? '开' : '关'}
                           </Button>
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="账号">
                           <div className="font-mono text-[12px] truncate" title={a.label || a.id}>
                             {a.label || a.id}
                           </div>
@@ -390,20 +406,20 @@ export default function CredentialsPage() {
                             {a.id}
                           </div>
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="状态">
                           <Chip tone="neutral" dot={STATE_DOT_CLASS[st]}>
                             {STATE_LABEL[st]}
                           </Chip>
                         </td>
                         {/* 平台而非 source：source 是「凭据怎么进来的」（import/oauth/local），
                             Trae 账号一律是 import，显示成 import 会被误读为平台 */}
-                        <td className="td whitespace-nowrap">{platform}</td>
-                        <td className="td font-mono text-[12px]">
+                        <td className="td whitespace-nowrap" data-label="平台">{platform}</td>
+                        <td className="td font-mono text-[12px]" data-label="权益包">
                           {/* 与 PackDialog 同源：取 packsOf 排序后的第一个可用包，
                               而不是后端原序的 packs[0]（那只是「任意一个包」） */}
                           {rowPack ? formatQuota(rowPack.unlimited, rowPack.remaining) : '—'}
                         </td>
-                        <td className="td">
+                        <td className="td" data-label="权益到期">
                           <button
                             type="button"
                             className="inline-flex items-center"
@@ -416,7 +432,7 @@ export default function CredentialsPage() {
                         </td>
                         {/* 账号到期 = 登录 token 有效期，与左侧「权益到期」是两套口径。
                             hover 提示里带上 refreshToken 到期时间（它过期就无法再换新） */}
-                        <td className="td">
+                        <td className="td" data-label="账号到期">
                           <span
                             className="font-mono text-[12px]"
                             title={
@@ -451,7 +467,7 @@ export default function CredentialsPage() {
                             )}
                           </span>
                         </td>
-                        <td className="td cell-num">
+                        <td className="td cell-num" data-label="余额 / 额度">
                           {typeof a.tokenRemaining === 'number' ? (
                             // ZCode：token 计量，与积分列分开标注单位（不并入积分口径）
                             <span title="ZCode token 计量额度，不计入积分">
@@ -461,7 +477,7 @@ export default function CredentialsPage() {
                             formatNumber(a.balance)
                           )}
                         </td>
-                        <td className="td font-mono text-[12px]">
+                        <td className="td font-mono text-[12px]" data-label="冷却至">
                           {st === 'cool' && cooling ? (
                             <span style={{ color: 'var(--rg-state-warning)' }}>{cooling}</span>
                           ) : (
@@ -514,7 +530,7 @@ export default function CredentialsPage() {
           description="用于判断凭据是否仍在被调度与保活"
           flush
         >
-          <table className="table-fixed w-full border-collapse text-[13px]">
+          <table className="card-table table-fixed w-full border-collapse text-[13px]">
             <thead>
               <tr>
                 <th className="th col-account">账号</th>
@@ -528,12 +544,12 @@ export default function CredentialsPage() {
             <tbody>
               {rows.slice(0, 8).map((a) => (
                 <tr key={a.id} className="row-hover">
-                  <td className="td font-mono text-[12px]">{a.label || a.id}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(a.lastPickedAt)}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(a.lastCheckinAt)}</td>
-                  <td className="td font-mono text-[12px]">{a.lastCheckinResult || '—'}</td>
-                  <td className="td font-mono text-[12px]">{formatTime(a.lastKeepaliveAt)}</td>
-                  <td className="td font-mono text-[12px] truncate" title={a.lastKeepaliveResult || undefined}>
+                  <td className="td font-mono text-[12px]" data-label="账号">{a.label || a.id}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近选用">{formatTime(a.lastPickedAt)}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近签到">{formatTime(a.lastCheckinAt)}</td>
+                  <td className="td font-mono text-[12px]" data-label="签到结果">{a.lastCheckinResult || '—'}</td>
+                  <td className="td font-mono text-[12px]" data-label="最近保活">{formatTime(a.lastKeepaliveAt)}</td>
+                  <td className="td font-mono text-[12px] truncate" title={a.lastKeepaliveResult || undefined} data-label="保活结果">
                     {a.lastKeepaliveResult || '—'}
                   </td>
                 </tr>
