@@ -22,6 +22,7 @@ const store = require('./store');
 const { importAccount, genDevices } = require('./import');
 const legacyAuth = require('../lib/auth');
 const variant = require('../platform/variant');
+const { writeEvent } = require('../log/crash');
 
 const TRAE_HOSTS = variant.variantOf(variant.TRAE).hosts;
 const TRAE_IDENTITY = variant.variantOf(variant.TRAE).identity;
@@ -149,6 +150,21 @@ function startListener() {
         collectPostBody(req, u);
         return;
       }
+      // GET 分支：必须存在待完成的登录会话，否则一律拒绝。
+      // 没有这道闸门时，任何本地进程或网页都能 GET /authorize?refreshToken=…
+      // 直接往凭据池注入账号（P1-004）。
+      if (!hasPendingLogin()) {
+        console.log('[oauth] reject GET callback: no pending login session');
+        writeEvent({
+          tag: 'security',
+          event: 'oauth_callback_rejected',
+          reason: 'no_pending_login',
+          clientIp: req.socket && req.socket.remoteAddress,
+        });
+        res.writeHead(403);
+        res.end('No pending login session.');
+        return;
+      }
       res.writeHead(200);
       res.write(CALLBACK_MSG);
       res.end();
@@ -250,6 +266,23 @@ async function handleCallbackParams(params) {
     userId: params.get('userId') || params.get('user_id'),
     userName: params.get('userName') || params.get('user_name') || params.get('nickname'),
   });
+}
+
+/**
+ * 回调是否处于「有登录流程在等待」的状态。
+ *
+ * 这是本地监听器（GET /authorize）的关键闸门：监听器只应该服务于
+ * 管理面刚通过 /oauth/url 发起的登录。没有 pending 会话时，任何
+ * 凭据投递都不应被接受 —— 否则任何本地进程或恶意网页都能往凭据池
+ * 注入账号（P1-004）。
+ *
+ * 注意：不能在此做强 state 匹配。Trae 授权页会重新生成 state
+ * （与 /oauth/url 下发的不同，代码注释与实测均证实），强匹配会
+ * 打断真实登录流程。闸门用「是否存在 pending 会话」这一更弱的
+ * 不变量：无会话 → 拒绝；有会话 → 交给 completeLogin 处理。
+ */
+function hasPendingLogin() {
+  return !!(pending.state && pending.server);
 }
 
 /** 用回调凭据完成登录：换 token → 拉用户信息 → 落库。 */
@@ -380,6 +413,8 @@ function status() {
   return {
     listening: !!pending.server,
     hasPending: !!pending.state,
+    /** 测试与运维用：是否处于「正在等待回调」状态（闸门的判定依据） */
+    pendingSession: hasPendingLogin(),
     result: pending.result,
   };
 }
@@ -392,4 +427,7 @@ module.exports = {
   exchangeToken,
   getUserInfo,
   verifyAndConsumeState,
+  // 供测试与运维验证本地监听器的闸门行为
+  hasPendingLogin,
+  stopListener,
 };

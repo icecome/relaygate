@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js && node src/test/protocol.test.js && node src/test/store-concurrency.test.js && node src/test/shutdown.test.js",
+    "test": "node src/test/unit.test.js && node src/test/growth.test.js && node src/test/security.test.js && node src/test/protocol.test.js && node src/test/store-concurrency.test.js && node src/test/shutdown.test.js && node src/test/rate-limit.test.js && node src/test/oauth-listener.test.js",
     "lint": "npm --prefix web run lint && npx biome check src scripts",
     "test:unit": "node src/test/unit.test.js",
     "test:growth": "node src/test/growth.test.js",
