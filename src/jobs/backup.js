@@ -8,7 +8,9 @@
  *   - credit_history 表
  *   - 非敏感配置：.trae-api/scheduler-settings.json、notify-settings.json（渠道密钥仅密文? 否——
  *     notify-settings.json 含 webhook 密钥，按「敏感文件」处理，仅在有加密密钥时纳入备份）
- *   - model-config.json / model-fallback.json（只读配置，不含密钥）
+ *   - model-config.json（只读配置，不含密钥）
+ *   - 注：model-fallback.json 已移除（从未被业务代码消费，见 config.js 注释）。
+ *     备份不再收集它；恢复旧备份时若含该字段，按「不写回」处理并在结果提示。
  * 加密：密钥由环境变量 TRAE_BACKUP_PASSPHRASE 或自动生成持久化密钥（.trae-api/backup.key）；
  *       生成 sha256 校验和附于 manifest。
  *
@@ -167,7 +169,6 @@ function collectBackupPayload() {
       scheduler: readJsonIfExists(resolveStateFileForRead('scheduler-settings.json', fs.existsSync)),
       growthLastRun: readJsonIfExists(resolveStateFileForRead('growth-last-run.json', fs.existsSync)),
       modelConfig: readJsonIfExists(path.join(config.ROOT, 'model-config.json')),
-      modelFallback: readJsonIfExists(path.join(config.ROOT, 'model-fallback.json')),
     },
     // notify-settings.json 含 webhook 密钥：纳入加密桶（不单独出明文）
     notifySettings: readJsonIfExists(resolveStateFileForRead('notify-settings.json', fs.existsSync)),
@@ -466,6 +467,8 @@ async function restoreBackup(filePath, opts = {}) {
 
   // 配置文件按备份内容覆盖（文件名固定，不接受外部输入）
   let configs = 0;
+  /** 恢复时被跳过的遗留配置（如已废弃的 model-fallback.json），随结果返回供 UI 提示。 */
+  let skippedLegacy = [];
   const cfg = payload.config || {};
   const writeIfPresent = (name, value) => {
     if (!value || typeof value !== 'object') return;
@@ -478,9 +481,10 @@ async function restoreBackup(filePath, opts = {}) {
     writeJsonAtomic(path.join(config.ROOT, 'model-config.json'), cfg.modelConfig);
     configs += 1;
   }
-  if (cfg.modelFallback && typeof cfg.modelFallback === 'object') {
-    writeJsonAtomic(path.join(config.ROOT, 'model-fallback.json'), cfg.modelFallback);
-    configs += 1;
+  // 旧备份可能含 modelFallback：该配置已废弃（从未被消费），恢复时不写回，
+  // 避免在磁盘上复活一个「看起来有用但没人读」的文件。
+  if (cfg.modelFallback) {
+    skippedLegacy = [...(skippedLegacy || []), 'model-fallback.json（已废弃，未写回）'];
   }
   if (payload.notifySettings && typeof payload.notifySettings === 'object') {
     writeJsonAtomic(stateFile('notify-settings.json'), payload.notifySettings);
@@ -499,6 +503,8 @@ async function restoreBackup(filePath, opts = {}) {
     apiKeys,
     creditHistory: credits,
     configs,
+    /** 恢复时被跳过的遗留配置（有则说明备份来自旧版本），UI 应提示 */
+    skippedLegacy,
     safetyBackupFile: safetyBackup && safetyBackup.ok ? safetyBackup.file : null,
   };
   try {

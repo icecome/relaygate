@@ -1625,7 +1625,6 @@ const rotateRows = useMemo(() => {
                           ),
                           wide: true,
                         },
-                        { k: '工具协议', v: <span className="font-mono">{config.data?.toolProtocol}</span> },
                       ],
                     },
                   ]}

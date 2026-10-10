@@ -198,6 +198,21 @@ try {
 } catch (e) {
   console.error('[api-keys] bootstrap failed:', e.message);
 }
+
+// 已废弃配置的启动期提醒：model-fallback.json 从未被任何业务代码消费
+// （详见 config.js 的说明）。文件若还在，明确告知用户「你的配置没生效」，
+// 否则他会一直以为系统有降级兜底。
+try {
+  if (fs.existsSync(path.join(config.ROOT, 'model-fallback.json'))) {
+    console.warn(
+      '[relay-gate] 警告：检测到 model-fallback.json，但本版本不实现模型降级，' +
+        '该文件不会被读取。其中的 autoFallback / mappings 不会生效，可安全删除。',
+    );
+  }
+} catch {
+  /* 检查失败不影响启动 */
+}
+
 listen(config.port, config.host, ['::', '127.0.0.1']);
 
 module.exports = app;

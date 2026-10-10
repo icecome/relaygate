@@ -256,7 +256,7 @@ router.get('/config', admin, (req, res) => {
   });
 });
 
-/** 重新加载 model-config.json / model-fallback.json / .env 关键项。 */
+/** 重新加载 model-config.json / .env 关键项。 */
 router.post('/config/reload', admin, (req, res) => {
   try {
     const before = {
