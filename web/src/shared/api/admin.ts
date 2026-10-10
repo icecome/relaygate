@@ -95,6 +95,42 @@ export function getSseDebug(
   );
 }
 
+/* ------------------------------------------------------------ 安全审计 */
+
+/**
+ * 审计事件行（GET /v1/admin/audit）。后端 audit_log 表的原始列，
+ * 只读；敏感操作（密钥 reveal / 凭据导出 / 目录 lifecycle）都会落一行。
+ */
+export interface AuditRow {
+  id?: number;
+  ts?: string;
+  request_id?: string | null;
+  action?: string | null;
+  actor_key_id?: string | null;
+  resource?: string | null;
+  result?: string | null;
+  reason?: string | null;
+  client_ip?: string | null;
+  user_agent?: string | null;
+  meta?: string | null;
+}
+
+export const getAuditLog = (
+  params: { action?: string; result?: string; limit?: number } = {},
+  key: string,
+  signal?: AbortSignal,
+) => {
+  const q = new URLSearchParams();
+  if (params.action) q.set('action', params.action);
+  if (params.result) q.set('result', params.result);
+  q.set('limit', String(params.limit ?? 200));
+  return api<{ object: string; data: AuditRow[]; total: number }>(
+    `/v1/admin/audit?${q.toString()}`,
+    { signal },
+    key,
+  );
+};
+
 /* ------------------------------------------------------------ 测试请求 */
 
 export function testChat(
@@ -316,6 +352,21 @@ export const getSchedulerSettings = (key: string, signal?: AbortSignal) =>
 
 export const saveSchedulerSettings = (body: Partial<SchedulerSettings>, key: string) =>
   api<SchedulerSettings>('/v1/admin/scheduler-settings', { method: 'POST', body }, key);
+
+/**
+ * 手动触发一次定时任务（POST /v1/admin/scheduler/:action）。
+ * 后端三种动作返回形状不同：checkin 给 ok/failed 计数、
+ * keepalive 给 {ok:true}+快照、probe 给探测计数，故 ok 允许 number|boolean。
+ */
+export const triggerScheduler = (
+  action: 'checkin' | 'keepalive' | 'probe',
+  key: string,
+) =>
+  api<{ action: string; ok?: number | boolean; failed?: number; [k: string]: unknown }>(
+    `/v1/admin/scheduler/${action}`,
+    { method: 'POST' },
+    key,
+  );
 
 /**
  * 任务日志。字段与后端 appendTaskLog 写入的一致：

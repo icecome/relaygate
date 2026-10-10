@@ -113,7 +113,7 @@ export default function AppLayout() {
                 <NavLink
                   key={item.id}
                   to={item.to}
-                  end={item.to === '/' || item.to === '/ops'}
+                  end={item.to === '/' || item.to === '/ops' || item.to === '/audit'}
                   className="nav-item flex items-center h-8 px-2 rounded-md text-[13px] no-underline transition-colors"
                   style={({ isActive }) => ({
                     color: isActive ? 'var(--rg-brand-700)' : 'var(--rg-text-secondary)',

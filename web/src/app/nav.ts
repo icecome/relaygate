@@ -64,6 +64,7 @@ export const NAV_GROUPS: readonly NavGroup[] = [
       { id: 'rotate', to: '/ops/rotate', label: '账号轮换' },
       { id: 'notify', to: '/ops/notify', label: '通知与备份' },
       { id: 'config', to: '/ops/config', label: '网关配置' },
+      { id: 'audit', to: '/audit', label: '审计日志' },
     ],
   },
 ];
@@ -71,9 +72,13 @@ export const NAV_GROUPS: readonly NavGroup[] = [
 /** 展平后的全部导航项，供路由判定与标题查询使用。 */
 export const NAV_ITEMS: readonly NavItem[] = NAV_GROUPS.flatMap((g) => g.items);
 
-/** /ops 页内分段：与上方运维组完全同源，OpsPage 不再另行声明。 */
-export const OPS_TABS: readonly { id: string; to: string; label: string }[] =
-  NAV_GROUPS.find((g) => g.id === 'ops')!.items;
+/**
+ * /ops 页内分段：从运维组派生，但排除独立路由的审计页
+ * （审计是整页而非 /ops 的一个分段）。
+ */
+export const OPS_TABS: readonly { id: string; to: string; label: string }[] = NAV_GROUPS.find(
+  (g) => g.id === 'ops',
+)!.items.filter((i) => i.to === '/ops' || i.to.startsWith('/ops/'));
 
 export function navItemOf(pathname: string): NavItem {
   // 路径长度降序匹配，避免 /ops 抢走 /ops/config

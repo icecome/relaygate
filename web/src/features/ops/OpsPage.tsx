@@ -22,6 +22,7 @@ import {
   getSchedulerSettings,
   getSticky,
   getTaskLog,
+  triggerScheduler,
   reloadConfig,
   runRotate,
   saveBalanceRefresh,
@@ -361,6 +362,29 @@ const rotateRows = useMemo(() => {
     }
   }
 
+  /** 手动触发一次定时任务（后端 /scheduler/:action：checkin | keepalive | probe）。 */
+  async function runSchedulerAction(action: 'checkin' | 'keepalive' | 'probe') {
+    setBusy(`job-${action}`);
+    try {
+      const r = await triggerScheduler(action, key);
+      // 三种动作的返回形状不同，统一给出可读摘要；失败明细不吞掉
+      const detail =
+        typeof r.ok === 'number'
+          ? `成功 ${r.ok}${r.failed ? `，失败 ${r.failed}` : ''}`
+          : r.ok === true
+            ? '已完成'
+            : '已完成（无计数返回）';
+      toast(`手动${action === 'checkin' ? '签到' : action === 'keepalive' ? '保活' : '探测'}：${detail}`, 'ok');
+      taskLog.reload();
+      runtime.reload();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '触发失败，请稍后重试', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  /** 重载配置是破坏性操作（重建模型池与路由），保留确认框。 */
   async function doReload() {
     const ok = await prompt({
       title: '重载网关配置？',
@@ -638,14 +662,39 @@ const rotateRows = useMemo(() => {
               title="调度设置"
               description="保存后会重启调度器使新配置立即生效"
               actions={
-                <Button
-                  size="sm"
-                  variant="primary"
-                  onClick={saveScheduler}
-                  disabled={busy === 'scheduler' || !schedulerDirty}
-                >
-                  {busy === 'scheduler' ? '保存中…' : '保存'}
-                </Button>
+                <>
+                  {/* 手动触发：后端 POST /v1/admin/scheduler/:action 早已实现，
+                      但 UI 一直没有入口 —— 排障时「不等定时器、现在跑一次」是刚需 */}
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('checkin')}
+                    disabled={busy === 'job-checkin'}
+                  >
+                    {busy === 'job-checkin' ? '签到中…' : '立即签到'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('keepalive')}
+                    disabled={busy === 'job-keepalive'}
+                  >
+                    {busy === 'job-keepalive' ? '保活中…' : '立即保活'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() => runSchedulerAction('probe')}
+                    disabled={busy === 'job-probe'}
+                  >
+                    {busy === 'job-probe' ? '探测中…' : '立即探测'}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={saveScheduler}
+                    disabled={busy === 'scheduler' || !schedulerDirty}
+                  >
+                    {busy === 'scheduler' ? '保存中…' : '保存'}
+                  </Button>
+                </>
               }
             >
               {scheduler.loading && !scheduler.data ? (

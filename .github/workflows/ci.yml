@@ -1,0 +1,54 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      # ⚠️ 这些测试失败时 stdout 仍会打印 "N passed"（FAIL 走 stderr）。
+      # 每步都依赖 && 链与默认的 exit-code 检查，切勿改成 `|| true` 或忽略返回值。
+      - name: Backend tests (unit / growth / security)
+        run: npm test
+      - name: Backend lint (biome, covers src/ — web/ 由前端 job 覆盖)
+        run: npx biome check src scripts
+
+  frontend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        run: npm ci
+      - name: Lint
+        run: npm run lint
+      - name: Type check
+        run: npx tsc -b --force
+      - name: CSS token check
+        run: npm run check:tokens
+      - name: Build
+        run: npm run build
+
+  audit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Dependency audit (fail on high+)
+        run: npm audit --audit-level=high

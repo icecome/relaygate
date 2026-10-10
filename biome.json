@@ -1,0 +1,92 @@
+{
+  "$schema": "https://biomejs.dev/schemas/1.9.4/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "files": {
+    "ignore": [
+      "node_modules",
+      "output",
+      "backups",
+      "logs",
+      "web",
+      ".history",
+      "design",
+      "preview",
+      ".trae-api"
+    ]
+  },
+  "organizeImports": {
+    "enabled": false
+  },
+  "formatter": {
+    "enabled": false
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "suspicious": {
+        "noEmptyBlockStatements": "off",
+        "noExplicitAny": "off",
+        "noRedundantUseStrict": "off",
+        "noGlobalIsNan": "off",
+        "noAssignInExpressions": "off",
+        "noControlCharactersInRegex": "off",
+        "noDoubleEquals": "warn",
+        "noSparseArray": "warn"
+      },
+      "complexity": {
+        "noForEach": "off",
+        "useLiteralKeys": "off",
+        "noBannedTypes": "off",
+        "useOptionalChain": "off",
+        "noMultipleSpacesInRegularExpressionLiterals": "off",
+        "noExtraBooleanCast": "off"
+      },
+      "style": {
+        "noNonNullAssertion": "off",
+        "useTemplate": "off",
+        "noParameterAssign": "off",
+        "useDefaultParameterLast": "off",
+        "noUnusedTemplateLiteral": "off",
+        "useSingleVarDeclarator": "off",
+        "noUselessElse": "off",
+        "useNodejsImportProtocol": "off",
+        "useConst": "off",
+        "useExponentiationOperator": "off",
+        "noYodaExpression": "off",
+        "useNumberNamespace": "off",
+        "useImportType": "off"
+      },
+      "correctness": {
+        "noUnusedVariables": "warn",
+        "noUnusedImports": "warn",
+        "useExhaustiveDependencies": "off",
+        "noUnnecessaryContinue": "off"
+      },
+      "performance": {
+        "noDelete": "off"
+      }
+    }
+  },
+  "javascript": {
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": false
+    }
+  },
+  "overrides": [
+    {
+      "include": ["src/test/**"],
+      "linter": {
+        "rules": {
+          "suspicious": { "noMisleadingCharacterClass": "off" },
+          "complexity": { "noStaticOnlyClass": "off" },
+          "correctness": { "noUnusedVariables": "off" }
+        }
+      }
+    }
+  ]
+}
