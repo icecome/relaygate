@@ -14,6 +14,7 @@ import {
   getClientStats,
   getCreditHistory,
   getOfficialUsage,
+  getPricingCalibration,
   getStatsAccounts,
   getStatsDaily,
   getStatsModels,
@@ -24,6 +25,7 @@ import { formatCost, formatNumber } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   LoadingBlock,
   Note,
@@ -37,12 +39,13 @@ import { DailyTrendChart } from './DailyTrendChart';
 
 type Range = '1' | '7' | '30';
 
-/** 口径卡片：主读数 + 口径说明。数字用 metric 字体（TraeWork：大数不用 mono）。 */
+/** 口径卡片：主读数 + 口径说明。数字用 metric 字体（大数不用 mono）。 */
 function CaliberCard({
   label,
   value,
   unit,
   caliber,
+  loading,
   children,
 }: {
   label: string;
@@ -50,6 +53,8 @@ function CaliberCard({
   unit?: string;
   /** 口径语气：exact=上游精确值（品牌色）；metered=网关计量（主文字色）；estimate=估算（置灰） */
   caliber: 'exact' | 'estimate' | 'metered';
+  /** 加载中：主读数显示 — 而不是 0，避免把「还没拿到」读成「确实是零」 */
+  loading?: boolean;
   /** 卡片底部的口径拆解行 */
   children?: ReactNode;
 }) {
@@ -76,27 +81,31 @@ function CaliberCard({
       </div>
       <div className="mt-1.5 flex items-baseline gap-1.5 min-w-0">
         <span className="text-read truncate" style={{ color: accent }}>
-          {value}
+          {loading ? '—' : value}
         </span>
-        {unit && (
+        {unit && !loading && (
           <span className="text-aux shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
             {unit}
           </span>
         )}
       </div>
-      {children}
+      {!loading && children}
     </div>
   );
 }
 
 /** 口径小注：卡片内的分平台/分口径说明行。 */
-function CaliberRow({ k, v }: { k: string; v: string }) {
+function CaliberRow({ k, v, tone }: { k: string; v: string; tone?: 'warn' | 'muted' }) {
+  const color =
+    tone === 'warn' ? 'var(--rg-state-warning)'
+      : tone === 'muted' ? 'var(--rg-text-tertiary)'
+        : 'var(--rg-text-secondary)';
   return (
     <div className="flex items-baseline justify-between gap-3 mt-1.5 first:mt-3">
       <span className="text-[11px] leading-4 shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
         {k}
       </span>
-      <span className="font-mono text-[12px] leading-4 tabular-nums" style={{ color: 'var(--rg-text-secondary)' }}>
+      <span className="font-mono text-[12px] leading-4 tabular-nums" style={{ color }}>
         {v}
       </span>
     </div>
@@ -126,6 +135,7 @@ export default function TokenStatsPage() {
   const client = useAsyncData((signal) => getClientStats(days, key, signal), [days, key], { enabled: !!key });
   const official = useAsyncData((signal) => getOfficialUsage(days, key, signal), [days, key], { enabled: !!key });
   const credit = useAsyncData((signal) => getCreditHistory(days, key, signal), [days, key], { enabled: !!key });
+  const calibration = useAsyncData((signal) => getPricingCalibration(key, false, signal), [key], { enabled: !!key });
 
   const totals = useMemo(() => {
     const rows = daily.data?.data ?? [];
@@ -135,10 +145,23 @@ export default function TokenStatsPage() {
         errors: acc.errors + r.errors,
         tokens: acc.tokens + r.tokens,
         metered: acc.metered + r.metered,
+        // exact=上游真值 / estimated=tiktoken 补算 / none=完全没有 token
+        exact: acc.exact + (r.exact ?? 0),
+        estimated: acc.estimated + (r.estimated ?? 0),
+        none: acc.none + (r.none ?? 0),
+        // 历史脱敏缺陷把 token 写成 "***"，原值从未落盘，无法逐行还原
+        tokensLost: acc.tokensLost + (r.tokensLost ?? 0),
         unmetered: acc.unmetered + r.unmetered,
+        cacheRead: acc.cacheRead + (r.cacheReadTokens ?? 0),
         cost: acc.cost + r.estimatedCost,
+        // 官方账单按日合计（与估算同窗口，可直接对照）
+        officialCredit: acc.officialCredit + (r.officialCredit ?? 0),
+        officialTokens: acc.officialTokens + (r.officialTokens ?? 0),
       }),
-      { requests: 0, errors: 0, tokens: 0, metered: 0, unmetered: 0, cost: 0 },
+      {
+        requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0,
+        tokensLost: 0, unmetered: 0, cacheRead: 0, cost: 0, officialCredit: 0, officialTokens: 0,
+      },
     );
   }, [daily.data]);
 
@@ -170,6 +193,34 @@ export default function TokenStatsPage() {
     totals.metered + totals.unmetered > 0
       ? (totals.metered / (totals.metered + totals.unmetered)) * 100
       : 0;
+
+  const ratio = calibration.data?.ratio ?? null;
+  const calibCount = Object.keys(calibration.data?.models ?? {}).length;
+  /**
+   * 该日账单是否已完整入账。
+   *
+   * 不用固定滞后天数硬编码——用数据自身判断：Trae 会话账单入账滞后时
+   * `officialTraeCredit` 为 0，而 WB 逐请求账单通常已入账。因此
+   * 「Trae 侧为 0 且日期在滞后窗口内」即为未完整入账，此时差异率无意义。
+   * 实测 2026-10-10 Trae=0 / WB=39.62，正是这种状态。
+   */
+  const TRAE_LAG_DAYS = 2;
+  const isBillSettled = (d: { date: string; officialTraeCredit?: number }) => {
+    if ((d.officialTraeCredit ?? 0) > 0) return true;
+    const daysAgo = (Date.now() - new Date(`${d.date}T00:00:00`).getTime()) / 86400000;
+    return daysAgo > TRAE_LAG_DAYS;
+  };
+  /** 标定表按「平台:模型」建键，展示时拆开，并按 R² 降序（拟合越准越靠前）。 */
+  const calibRows = useMemo(
+    () =>
+      Object.entries(calibration.data?.models ?? {})
+        .map(([k, v]) => {
+          const idx = k.indexOf(':');
+          return { platform: k.slice(0, idx), model: k.slice(idx + 1), ...v };
+        })
+        .sort((a, b) => b.r2 - a.r2 || b.n - a.n),
+    [calibration.data],
+  );
 
   async function clearCache() {
     try {
@@ -206,62 +257,196 @@ export default function TokenStatsPage() {
       <Stack>
         {daily.error && <ErrorState message={daily.error} onRetry={daily.reload} />}
 
-        {/* ---- 口径卡片区：精确值优先，估算值置灰 ---- */}
+        {/* ---- 口径卡片区：两问两答 —— 花了多少积分（成本）+ 用了多少 token（用量）。
+              成本两张卡并列（官方=主读数，估算=对照），用量与换算各一张，
+              四卡一行，不再换行散落。 ---- */}
         <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
+          {/* 1. 成本主读数：官方账单 */}
           <CaliberCard
             label="官方账单积分"
             value={formatNumber(officialTotals.credit)}
             unit="credits"
             caliber="exact"
+            loading={official.loading && !official.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
               <CaliberRow k={`Trae · ${officialTotals.trae.accounts} 账号`} v={formatNumber(officialTotals.trae.credit)} />
               <CaliberRow k={`WorkBuddy · ${officialTotals.wb.accounts} 账号`} v={formatNumber(officialTotals.wb.credit)} />
+              <CaliberRow
+                k="本地估算对照"
+                v={
+                  officialTotals.credit > 0 && totals.cost > 0
+                    ? `${formatCost(totals.cost)} · ${((totals.cost / officialTotals.credit) * 100).toFixed(0)}%`
+                    : formatCost(totals.cost)
+                }
+                tone="muted"
+              />
+              {/* 主口径的可信度前提：Trae 按会话入账有 1~2 天滞后，最近一两日必然偏低。
+                  这是全站唯一一处该警告，放在读数旁边而不是页面底部。 */}
+              <CaliberRow k="入账滞后" v="Trae 1~2 天" tone="muted" />
             </div>
           </CaliberCard>
+
+          {/* 2. 用量主读数：Token 总量 + 来源拆解 + 丢失提示 */}
           <CaliberCard
             label="Token 总量"
             value={formatNumber(totals.tokens)}
             caliber="metered"
+            loading={daily.loading && !daily.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
-              <CaliberRow k="上游真实 usage" v={`${totals.metered} 请求`} />
-              <CaliberRow k="补算（tiktoken）" v={`${totals.unmetered} 请求`} />
+              {/* 下面三行是「请求数」而不是 token 数，单位必须写明，
+                  否则会被读成上方大数字的构成拆解 */}
+              <CaliberRow k="上游真值请求" v={`${formatNumber(totals.exact)} 次`} />
+              <CaliberRow k="tiktoken 补算请求" v={`${formatNumber(totals.estimated)} 次`} />
+              <CaliberRow k="无 token 请求" v={`${formatNumber(totals.none)} 次`} />
+              {totals.cacheRead > 0 && totals.tokens > 0 && (
+                <CaliberRow
+                  k="其中缓存读"
+                  v={`${((totals.cacheRead / totals.tokens) * 100).toFixed(1)}% · ${formatNumber(totals.cacheRead)}`}
+                />
+              )}
+              {totals.tokensLost > 0 && (
+                <CaliberRow
+                  k="token 已丢失（历史脱敏）"
+                  v={`${formatNumber(totals.tokensLost)} 行`}
+                  tone="warn"
+                />
+              )}
             </div>
           </CaliberCard>
+
+          {/* 3. 换算比：token ↔ 积分的关系，账单实测均值 */}
+          <CaliberCard
+            label="换算比（账单实测）"
+            value={ratio ? `${ratio.tokensPerCredit.toLocaleString('zh-CN')}` : '—'}
+            unit={ratio ? 'token / 积分' : undefined}
+            caliber="exact"
+            loading={calibration.loading && !calibration.data}
+          >
+            <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
+              {ratio ? (
+                <>
+                  <CaliberRow k="积分 / 千 token" v={ratio.creditsPer1k.toFixed(6)} />
+                  <CaliberRow k="账单日" v={ratio.asOf ?? '—'} />
+                  <CaliberRow k="样本" v={`${formatNumber(ratio.tokens)} token · ${formatNumber(ratio.credits)} 积分`} />
+                </>
+              ) : (
+                <CaliberRow k="状态" v="暂无账单样本" />
+              )}
+            </div>
+          </CaliberCard>
+
+          {/* 4. 计量覆盖率：网关侧 usage 回传情况 */}
           <CaliberCard
             label="计量覆盖率"
             value={`${meteredRate.toFixed(1)}%`}
             caliber="metered"
+            loading={daily.loading && !daily.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
               <CaliberRow k="总请求" v={formatNumber(totals.requests)} />
               <CaliberRow k="错误" v={formatNumber(totals.errors)} />
-            </div>
-          </CaliberCard>
-          <CaliberCard
-            label="本地估算成本"
-            value={formatCost(totals.cost)}
-            caliber="estimate"
-          >
-            <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
-              <CaliberRow k="口径" v="费率表推算" />
-              <CaliberRow k="用途" v="仅作对照" />
+              <CaliberRow
+                k="估算口径"
+                v={calibCount > 0 ? `账单标定 · ${calibCount} 模型` : '费率表推算'}
+                tone="muted"
+              />
             </div>
           </CaliberCard>
         </div>
 
-        <Panel
-          title="每日趋势"
-          description="请求量、错误数与 Token 走势"
-          footer="Token = 上游真实 usage（优先）+ tiktoken 补算（usage 缺失时）；补算值与上游分词器存在偏差，仅供趋势参考。"
+                <Panel
+          title="每日积分对照"
+          description="官方账单（权威）与网关估算（对照）按日并列"
+          flush
+          footer="网关估算基于已计量 token：历史日期因 token 缺失显示 0 属数据丢失，不是零消耗；两者不可相加。"
         >
           {daily.loading && !daily.data ? (
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
-            <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              区间内无数据
-            </div>
+            <EmptyState
+              label="所选区间内没有统计数据。"
+              hint="产生转发请求后即会出现；官方账单通常还有 1-2 天的入账滞后。"
+            />
+          ) : (
+            <table className="w-full border-collapse text-[13px]">
+              <thead>
+                <tr>
+                  <th className="th">日期</th>
+                  <th className="th cell-num">官方账单积分</th>
+                  <th className="th cell-num">网关估算积分</th>
+                  <th className="th cell-num">差异</th>
+                </tr>
+              </thead>
+              <tbody>
+                {/* 差异只在账单「已完整入账」的日子才有意义。
+                  Trae 按会话入账有 1~2 天滞后，滞后期内账单只覆盖 WB 一侧，
+                  而网关估算覆盖双平台 —— 拿全平台估算除单平台账单会算出
+                  1000%+ 这种假差异。故近 TRAE_LAG_DAYS 天不出差异，标「入账中」。 */}
+                {(daily.data?.data ?? []).map((d) => {
+                  const hasBill = typeof d.officialCredit === 'number' && d.officialCredit > 0;
+                  const est = d.estimatedCost;
+                  const upper = (d.costUpper ?? 0) > 0;
+                  const unpriced = (d.priced ?? 0) === 0;
+                  const settled = isBillSettled(d);
+                  // 差异率：两侧都 > 0 且账单已完整入账才有意义
+                  const diff =
+                    hasBill && est > 0 && settled
+                      ? ((est - d.officialCredit!) / d.officialCredit!) * 100
+                      : null;
+                  return (
+                    <tr key={d.date} className="row-hover">
+                      <td className="td font-mono text-[12px]">{d.date.slice(5)}</td>
+                      <td className="td cell-num font-medium">
+                        {hasBill ? formatNumber(d.officialCredit) : '—'}
+                      </td>
+                      <td className="td cell-num">
+                        {/* est=0 且无 priced 行 = token 数据丢失；有 priced 行但含上界 = 估算偏高 */}
+                        {est > 0 ? (
+                          <span title={upper ? '该日部分请求缺缓存读信息，按全未缓存计价，估算偏高' : undefined}>
+                            {formatCost(est)}
+                            {upper && <span className="ml-0.5 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>↑</span>}
+                          </span>
+                        ) : unpriced ? (
+                          <span style={{ color: 'var(--rg-text-tertiary)' }} title="该日 token 数据缺失，无法估算">数据缺失</span>
+                        ) : (
+                          <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
+                        )}
+                      </td>
+                      <td className="td cell-num">
+                        {diff == null ? (
+                          !settled && hasBill ? (
+                            <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1~2 天滞后，该日账单尚未完整">入账中</span>
+                          ) : (
+                            <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
+                          )
+                        ) : (
+                          <span style={{ color: Math.abs(diff) > 50 ? 'var(--rg-state-warning)' : 'var(--rg-text-secondary)' }}>
+                            {diff > 0 ? '+' : ''}
+                            {diff.toFixed(0)}%
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </Panel>
+
+        <Panel
+          title="每日趋势"
+          description="请求量、错误数与 Token 走势"
+        >
+          {daily.loading && !daily.data ? (
+            <LoadingBlock />
+          ) : (daily.data?.data ?? []).length === 0 ? (
+            <EmptyState
+              label="区间内无请求数据。"
+              hint="产生转发请求后即会出现。"
+            />
           ) : (
             <DailyTrendChart rows={daily.data?.data ?? []} />
           )}
@@ -272,14 +457,14 @@ export default function TokenStatsPage() {
           title="官方账单积分"
           description="上游精确值 · Trae 逐会话聚合 / WorkBuddy 逐请求"
           flush
-          footer="Trae 一行 = 一次完整会话的积分与 token 汇总；WorkBuddy 一行 = 单次模型调用。上游按会话落库有滞后，近一两天数据可能尚未入账。"
         >
           {official.loading && !official.data ? (
             <LoadingBlock />
           ) : billRows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无账单数据
-            </div>
+            <EmptyState
+              label="还没有官方账单记录。"
+              hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1-2 天出现。"
+            />
           ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -374,13 +559,11 @@ export default function TokenStatsPage() {
         </Panel>
 
         {/* ---- 网关计量：模型 / 账号两张表 ---- */}
-        <Panel title="模型用量" description="按模型聚合的请求与 Token（含估算成本对照列）" flush>
+        <Panel title="模型用量" description="按模型聚合的请求与 Token" flush>
           {models.loading && !models.data ? (
             <LoadingBlock />
           ) : (models.data?.data ?? []).length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无模型数据
-            </div>
+            <EmptyState label="所选区间内没有模型用量。" hint="产生转发请求后即会出现。" />
           ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -411,6 +594,15 @@ export default function TokenStatsPage() {
                       ) : (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
                       )}
+                      {(m.estimated ?? 0) > 0 && (
+                        <span
+                          className="ml-1 text-[11px]"
+                          title="其中 tiktoken 补算的请求数"
+                          style={{ color: 'var(--rg-text-tertiary)' }}
+                        >
+                          ({m.estimated} 估)
+                        </span>
+                      )}
                     </td>
                     <td className="td cell-num">
                       {m.avgDurationMs == null ? '—' : `${Math.round(m.avgDurationMs)}ms`}
@@ -425,13 +617,11 @@ export default function TokenStatsPage() {
           )}
         </Panel>
 
-        <Panel title="账号用量" description="按账号聚合的请求与 Token 占比（估算成本为对照口径）" flush>
+        <Panel title="账号用量" description="按账号聚合的请求与 Token 占比" flush>
           {accounts.loading && !accounts.data ? (
             <LoadingBlock />
           ) : (accounts.data?.data ?? []).length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无账号数据
-            </div>
+            <EmptyState label="所选区间内没有账号用量。" hint="产生转发请求后即会出现。" />
           ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -520,28 +710,93 @@ export default function TokenStatsPage() {
           </Panel>
 
           <Panel title="积分快照消耗" description="相邻余额快照差分（下界估计，供交叉验证）" flush>
+            {credit.loading && !credit.data ? (
+              <LoadingBlock />
+            ) : (credit.data?.data ?? []).length === 0 ? (
+              <EmptyState
+                label="还没有快照差分记录。"
+                hint="余额自动刷新运行过至少两轮后，这里会出现按账号的消耗估计。"
+              />
+            ) : (
+              <table className="w-full border-collapse text-[13px]">
+                <thead>
+                  <tr>
+                    <th className="th">账号</th>
+                    <th className="th cell-num">今日消耗</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(credit.data?.data ?? []).map((c, i) => (
+                    <tr key={`${c.label ?? i}`} className="row-hover">
+                      <td className="td">{c.label || '—'}</td>
+                      <td className="td cell-num">{formatNumber(c.usedTotal)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </Panel>
+        </div>
+
+        {/* ---- 标定系数：估算成本的来源与可信度，全量透明 ---- */}
+        <Panel
+          title="积分标定系数"
+          description={
+            calibCount > 0
+              ? `由官方账单最小二乘回归得出 · ${calibCount} 个「平台:模型」组合 · ${calibration.data?.calibratedAt ? `标定于 ${calibration.data.calibratedAt.slice(0, 16).replace('T', ' ')}` : ''}`
+              : '尚无标定：无账单数据时估算成本回退费率表'
+          }
+          flush
+        >
+          {calibration.loading && !calibration.data ? (
+            <LoadingBlock />
+          ) : calibRows.length === 0 ? (
+            <EmptyState
+              label="还没有标定样本。"
+              hint="官方账单同步过来之后会自动生成；在那之前估算成本使用内置费率表。"
+            />
+          ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
                 <tr>
-                  <th className="th">账号</th>
-                  <th className="th cell-num">今日消耗</th>
+                  <th className="th">平台</th>
+                  <th className="th">模型</th>
+                  <th className="th cell-num">样本</th>
+                  <th className="th cell-num">R²</th>
+                  <th className="th cell-num">未缓存输入 /1k</th>
+                  <th className="th cell-num">输出 /1k</th>
+                  <th className="th cell-num">缓存读 /1k</th>
                 </tr>
               </thead>
               <tbody>
-                {(credit.data?.data ?? []).map((c, i) => (
-                  <tr key={`${c.label ?? i}`} className="row-hover">
-                    <td className="td">{c.label || '—'}</td>
-                    <td className="td cell-num">{formatNumber(c.todayUsed)}</td>
+                {calibRows.map((c) => (
+                  <tr key={`${c.platform}:${c.model}`} className="row-hover">
+                    <td className="td">
+                      <Chip tone={c.platform === 'wb' ? 'neutral' : 'brand'}>
+                        {c.platform === 'wb' ? 'WorkBuddy' : 'Trae'}
+                      </Chip>
+                    </td>
+                    <td className="td font-mono text-[12px] break-all">{c.model}</td>
+                    <td className="td cell-num">{formatNumber(c.n)}</td>
+                    <td className="td cell-num font-mono">
+                      <span style={{ color: c.r2 >= 0.99 ? 'var(--rg-state-success)' : c.r2 >= 0.9 ? 'var(--rg-text-secondary)' : 'var(--rg-state-warning)' }}>
+                        {c.r2.toFixed(6)}
+                      </span>
+                    </td>
+                    <td className="td cell-num font-mono">{(c.uncached * 1000).toFixed(5)}</td>
+                    <td className="td cell-num font-mono">{(c.output * 1000).toFixed(5)}</td>
+                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      {(c.cacheRead * 1000).toFixed(5)}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-          </Panel>
-        </div>
+          )}
+        </Panel>
 
         <Note>
-          口径说明：官方账单积分（Trae 逐会话 / WorkBuddy 逐请求）为上游精确值，是积分主口径；
-          带 * 的估算成本由费率表推算，仅作 Trae 历史数据与无账单场景的对照，不建议与官方值相加。
+          官方账单积分是上游精确值；带 * 的估算成本是网关推算值，仅供对照，两者不可相加。
         </Note>
       </Stack>
     </PageShell>

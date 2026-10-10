@@ -15,15 +15,19 @@ import {
   refreshOneBalance,
   resetAllDevices,
 } from '../../shared/api/credentials';
+import { wbCheckin as wbCheckinOne } from '../../shared/api/workbuddy';
 import { ApiError, isBusinessFailure } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import {
   accountState,
   coolRemaining,
+  formatDate,
   formatNumber,
   formatQuota,
   formatTime,
+  platformLabel,
+  platformOf,
   STATE_DOT_CLASS,
   STATE_LABEL,
 } from '../../shared/lib/format';
@@ -43,7 +47,7 @@ import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
 import { GrowthPanel } from './GrowthPanel';
-import { ExpiryChip, expirySummary, worstExpiry } from './accountPacks';
+import { ExpiryChip, expirySummary, keepaliveOf, worstExpiry } from './accountPacks';
 import { PackDialog } from './PackDialog';
 
 type StateFilter = 'all' | 'ok' | 'cool' | 'off';
@@ -89,9 +93,10 @@ export default function CredentialsPage() {
       const st = accountState(a);
       if (stateFilter !== 'all' && st !== stateFilter) return false;
       if (sourceFilter !== 'all') {
-        const raw = String(a.edition || a.source || '');
-        const isWb = raw === 'workbuddy' || raw.startsWith('wb');
-        if (sourceFilter === 'workbuddy' ? !isWb : isWb) return false;
+        const platform = platformOf(a);
+        if (sourceFilter === 'workbuddy' ? platform !== 'workbuddy' : platform === 'workbuddy') {
+          return false;
+        }
       }
       if (q) {
         const hay = `${a.label ?? ''} ${a.id}`.toLowerCase();
@@ -117,7 +122,7 @@ export default function CredentialsPage() {
       // 业务层失败（HTTP 成功但 ok:false）要与请求异常分开提示
       if (isBusinessFailure(result)) {
         const reason = (result as { reason?: string }).reason;
-        toast(`${label}未成功：${reason ?? '后端未给出原因'}`, 'err');
+        toast(`${label}未成功：${reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
         return false;
       }
       toast(successMsg, 'ok');
@@ -137,14 +142,32 @@ export default function CredentialsPage() {
   }
 
   async function checkin(a: Account) {
-    await run(a.id, '签到', () => checkinOne(a.id, key), '签到完成');
+    // 按平台分发：WorkBuddy 走它自己的签到端点（/v1/workbuddy/checkin），
+    // Trae 系走通用端点。此前统一打到 /v1/credentials/:id/checkin，
+    // 后端平台闸门对 WorkBuddy 直接抛「not a trae account」——按钮是坏的（m-39）。
+    if (platformOf(a) === 'workbuddy') {
+      await run(a.id, '签到', () => wbCheckinOne({ accountId: a.id }, key), '签到完成');
+    } else {
+      await run(a.id, '签到', () => checkinOne(a.id, key), '签到完成');
+    }
   }
 
   async function checkinEveryOne() {
     setBusyId('__all__');
     try {
-      await checkinAll(key);
-      toast('已触发全部签到', 'ok');
+      // 跨平台聚合签到：同时覆盖 Trae + WorkBuddy（而非旧接口只签 Trae），
+      // toast 如实展示分平台明细，让「全部」名副其实（m-39）。
+      const r = await checkinAll(key);
+      const claimed = r.claimed ?? 0;
+      const already = r.already ?? 0;
+      const failed = r.failed ?? 0;
+      if (failed > 0) {
+        toast(`签到完成（${claimed} 新签 / ${already} 已签 / ${failed} 失败）：${r.message ?? ''}`, 'err');
+      } else if (claimed > 0) {
+        toast(`签到完成：${claimed} 个新签，${already} 个今日已签`, 'ok');
+      } else {
+        toast(`今日均已签到（${already} 个账号）`, 'ok');
+      }
       list.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '批量签到失败', 'err');
@@ -191,7 +214,7 @@ export default function CredentialsPage() {
   return (
     <PageShell
       title="凭据池"
-      description="账号凭据的启用、签到、余额与设备标识管理"
+      description="接入、启用与排查上游账号凭据"
       actions={
         <>
           <Chip tone="brand" dot="dot-ok">
@@ -293,18 +316,19 @@ export default function CredentialsPage() {
               没有符合条件的账号
             </div>
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="table-fixed w-full border-collapse text-[13px]">
               <thead>
                 <tr>
-                  <th className="th">启用</th>
-                  <th className="th">账号</th>
-                  <th className="th">状态</th>
-                  <th className="th">来源</th>
-                  <th className="th">权益包</th>
-                  <th className="th">到期</th>
-                  <th className="th cell-num">余额</th>
-                  <th className="th">冷却至</th>
-                  <th className="th cell-act">操作</th>
+                  <th className="th col-toggle">启用</th>
+                  <th className="th col-account">账号</th>
+                  <th className="th col-state">状态</th>
+                  <th className="th col-source">平台</th>
+                  <th className="th col-pack">权益包</th>
+                  <th className="th col-expiry">权益到期</th>
+                  <th className="th col-token">账号到期</th>
+                  <th className="th col-balance cell-num">余额 / 额度</th>
+                  <th className="th col-cool">冷却至</th>
+                  <th className="th col-actions cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -314,6 +338,8 @@ export default function CredentialsPage() {
                   const pack = a.packs?.[0];
                   const busy = busyId === a.id;
                   const expiryWorst = worstExpiry(a);
+                  const keepalive = keepaliveOf(a);
+                  const platform = platformLabel(a);
                   return (
                     <tr key={a.id} className="row-hover">
                         <td className="td">
@@ -328,8 +354,14 @@ export default function CredentialsPage() {
                           </Button>
                         </td>
                         <td className="td">
-                          <div className="font-mono text-[12px]">{a.label || a.id}</div>
-                          <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <div className="font-mono text-[12px] truncate" title={a.label || a.id}>
+                            {a.label || a.id}
+                          </div>
+                          <div
+                            className="font-mono text-[11px] truncate"
+                            style={{ color: 'var(--rg-text-tertiary)' }}
+                            title={a.id}
+                          >
                             {a.id}
                           </div>
                         </td>
@@ -338,7 +370,9 @@ export default function CredentialsPage() {
                             {STATE_LABEL[st]}
                           </Chip>
                         </td>
-                        <td className="td">{a.source || a.edition || '—'}</td>
+                        {/* 平台而非 source：source 是「凭据怎么进来的」（import/oauth/local），
+                            Trae 账号一律是 import，显示成 import 会被误读为平台 */}
+                        <td className="td whitespace-nowrap">{platform}</td>
                         <td className="td font-mono text-[12px]">
                           {pack ? formatQuota(pack.unlimited, pack.remaining) : '—'}
                         </td>
@@ -353,7 +387,53 @@ export default function CredentialsPage() {
                             <ExpiryChip item={expiryWorst} />
                           </button>
                         </td>
-                        <td className="td cell-num">{formatNumber(a.balance)}</td>
+                        {/* 账号到期 = 登录 token 有效期，与左侧「权益到期」是两套口径。
+                            hover 提示里带上 refreshToken 到期时间（它过期就无法再换新） */}
+                        <td className="td">
+                          <span
+                            className="font-mono text-[12px]"
+                            title={
+                              keepalive.expiresMs == null
+                                ? keepalive.label
+                                : `登录 token 到期：${formatTime(a.expiredAt)}${
+                                    keepalive.refreshExpiresMs == null
+                                      ? ''
+                                      : `；refreshToken 到期：${formatTime(a.refreshExpiredAt)}`
+                                  }`
+                            }
+                          >
+                            {keepalive.expiresMs == null ? (
+                              <span style={{ color: 'var(--rg-text-tertiary)' }}>{keepalive.label}</span>
+                            ) : (
+                              <>
+                                {formatDate(a.expiredAt)}
+                                <span
+                                  className="ml-1.5 text-[11px]"
+                                  style={{
+                                    color:
+                                      keepalive.tone === 'warn'
+                                        ? 'var(--rg-state-warning)'
+                                        : keepalive.tone === 'danger'
+                                          ? 'var(--rg-state-error)'
+                                          : 'var(--rg-text-tertiary)',
+                                  }}
+                                >
+                                  {keepalive.label}
+                                </span>
+                              </>
+                            )}
+                          </span>
+                        </td>
+                        <td className="td cell-num">
+                          {typeof a.tokenRemaining === 'number' ? (
+                            // ZCode：token 计量，与积分列分开标注单位（不并入积分口径）
+                            <span title="ZCode token 计量额度，不计入积分">
+                              {formatNumber(a.tokenRemaining)} <span className="text-[11px]">tok</span>
+                            </span>
+                          ) : (
+                            formatNumber(a.balance)
+                          )}
+                        </td>
                         <td className="td font-mono text-[12px]">
                           {st === 'cool' && cooling ? (
                             <span style={{ color: 'var(--rg-state-warning)' }}>{cooling}</span>
@@ -363,9 +443,15 @@ export default function CredentialsPage() {
                         </td>
                         <td className="td cell-act">
                           <div className="inline-flex items-center gap-1.5">
-                            <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
-                              签到
-                            </Button>
+                            {/* 签到按钮按平台能力显示：ZCode 无签到能力（后端也会拒），
+                                故隐藏；其奖励走 /v1/zcode 的定时任务。
+                                Trae 与 WorkBuddy 都有签到能力，只是端点不同——
+                                checkin() 内部按 platformOf 分发（m-39）。 */}
+                            {platformOf(a) !== 'zcode' && (
+                              <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
+                                签到
+                              </Button>
+                            )}
                             <Button size="sm" disabled={busy} onClick={() => checkBalance(a)}>
                               查余额
                             </Button>
@@ -383,17 +469,19 @@ export default function CredentialsPage() {
         </Panel>
 
         <Panel
-          title="最近操作时间"
-          description="用于判断凭据是否仍在被调度"
+          title="最近操作与保活"
+          description="用于判断凭据是否仍在被调度与保活"
           flush
         >
-          <table className="w-full border-collapse text-[13px]">
+          <table className="table-fixed w-full border-collapse text-[13px]">
             <thead>
               <tr>
-                <th className="th">账号</th>
+                <th className="th col-account">账号</th>
                 <th className="th">最近选用</th>
                 <th className="th">最近签到</th>
                 <th className="th">签到结果</th>
+                <th className="th">最近保活</th>
+                <th className="th">保活结果</th>
               </tr>
             </thead>
             <tbody>
@@ -403,6 +491,10 @@ export default function CredentialsPage() {
                   <td className="td font-mono text-[12px]">{formatTime(a.lastPickedAt)}</td>
                   <td className="td font-mono text-[12px]">{formatTime(a.lastCheckinAt)}</td>
                   <td className="td font-mono text-[12px]">{a.lastCheckinResult || '—'}</td>
+                  <td className="td font-mono text-[12px]">{formatTime(a.lastKeepaliveAt)}</td>
+                  <td className="td font-mono text-[12px] truncate" title={a.lastKeepaliveResult || undefined}>
+                    {a.lastKeepaliveResult || '—'}
+                  </td>
                 </tr>
               ))}
             </tbody>

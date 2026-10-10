@@ -7,6 +7,11 @@
  *   - remaining 为 0 表示已用尽；unlimited 为true 时 remaining 为 null；
  *   - limit 为 -1 表示不限量，后端归一化为 unlimited + remaining=null。
  *
+ * **单位边界（务必遵守）**：本模块的 packs / remaining / creditTotals 全部是
+ * 「积分」口径（单位 credit，量级 1e3）。ZCode 的额度是 token 计量（量级 1e8），
+ * 后端刻意把它存在 Account.tokenBuckets（非 packs），因此本模块天然不会读到它。
+ * 若将来要展示 ZCode 额度，必须走独立通道，**绝不能**并入 packs 或 creditTotals。
+ *
  * 三个用途：
  *   1. ExpiryChip —— 账号表单元格内显示最紧迫项；
  *   2. PackDialog —— 点击后弹窗展示该账号全部权益包，可用者在上、失效者置底置灰；
@@ -186,6 +191,62 @@ export function ExpiryChip({ item }: { item: PackView | null }) {
       {meta.label}
     </Chip>
   );
+}
+
+/* ---------------------------------------------------------------- 保活状态 */
+
+/**
+ * 账号凭据保活状态（登录 token 的有效期与刷新链路）。
+ *
+ * 口径说明（避免与「到期」列混淆——那是**权益包**积分的到期）：
+ *   - expiredAt 是登录 token（JWT）的过期时间，由上游 ExchangeToken /
+ *     WorkBuddy refresh 写回；保活定时任务（scheduler 的 keepalive）在到期前
+ *     用 refreshToken 换新。ZCode 账号 JWT 无 exp，恒为 null —— 不是异常，
+ *     而是「长期有效」。
+ *   - refreshExpiredAt 是 refreshToken 本身的有效期。它一旦过期就无法再换新，
+ *     账号只能重新导入/OAuth 登录，是保活链路的最终期限。
+ */
+export interface KeepaliveView {
+  /** 登录 token 到期毫秒；null = 无记录或长期有效（ZCode） */
+  expiresMs: number | null;
+  /** refreshToken 到期毫秒；null = 无记录 */
+  refreshExpiresMs: number | null;
+  /** token 相对 now 的剩余天数（向上取整）；expiresMs 为 null 时为 null */
+  days: number | null;
+  /** 保活链路状态文案 */
+  label: string;
+  tone: 'neutral' | 'ok' | 'warn' | 'danger';
+}
+
+/** 保活告警窗口：7 日内到期提示，已过期告警。 */
+const KEEPALIVE_NOTICE_DAYS = 7;
+
+export function keepaliveOf(account: Account, now = Date.now()): KeepaliveView {
+  const toMs = (iso: string | null | undefined): number | null => {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    return Number.isNaN(t) ? null : t;
+  };
+  const expiresMs = toMs(account.expiredAt);
+  const refreshExpiresMs = toMs(account.refreshExpiredAt);
+
+  // refreshToken 已过期：无法再换新，链路终断
+  if (refreshExpiresMs != null && refreshExpiresMs <= now) {
+    return { expiresMs, refreshExpiresMs, days: null, label: '需重新登录', tone: 'danger' };
+  }
+  // token 已过期：下一次请求会触发换票，可自愈
+  if (expiresMs != null && expiresMs <= now) {
+    return { expiresMs, refreshExpiresMs, days: null, label: '已过期 · 待刷新', tone: 'warn' };
+  }
+  if (expiresMs == null) {
+    // ZCode 的 JWT 无 exp 字段，属长期有效而非数据缺失
+    return { expiresMs, refreshExpiresMs, days: null, label: '长期有效', tone: 'neutral' };
+  }
+  const days = Math.ceil((expiresMs - now) / 86_400_000);
+  if (days <= KEEPALIVE_NOTICE_DAYS) {
+    return { expiresMs, refreshExpiresMs, days, label: `${days} 天`, tone: 'warn' };
+  }
+  return { expiresMs, refreshExpiresMs, days, label: `${days} 天`, tone: 'ok' };
 }
 
 /** 弹窗内的到期明细表：失效项置底并置灰。 */

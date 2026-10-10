@@ -76,7 +76,7 @@ export function GrowthPanel() {
     try {
       const r = await fn();
       if (r?.ok === false) {
-        toast(`${label}未成功：${r.reason ?? '上游未给出原因'}`, 'err');
+        toast(`${label}未成功：${r.reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
         return;
       }
       toast(okMsg, 'ok');
@@ -154,7 +154,7 @@ export function GrowthPanel() {
             setBusyId(null);
             toast(
               p.status === 'failed'
-                ? `任务失败：${p.errors?.join('；') ?? '未给出原因'}`
+                ? `任务失败：${p.errors?.join('；') ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`
                 : '一键任务已结束',
               p.status === 'failed' ? 'err' : 'ok',
             );
@@ -335,7 +335,7 @@ export function GrowthPanel() {
                         </Chip>
                       )}
                     </td>
-                    <td className="td">{r.location || '—'}</td>
+                    <td className="td">{r.location?.name || '—'}</td>
                     <td className="td font-mono text-[12px]">{formatTime(r.departAt)}</td>
                     <td className="td font-mono text-[12px]">{formatTime(r.arriveAt)}</td>
                     <td className="td cell-num">{formatNumber(r.rewardCredit)}</td>

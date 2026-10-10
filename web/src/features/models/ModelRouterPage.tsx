@@ -139,7 +139,7 @@ export default function ModelRouterPage() {
         toast(`自动分层已同步：${r.tiers?.length ?? 0} 个层级`, 'ok');
       } else {
         // 业务层失败：展示后端原因，不当作网络错误
-        toast(`同步未成功：${r.errors?.join('；') || '后端未给出原因'}`, 'err');
+        toast(`同步未成功：${r.errors?.join('；') || '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
       overview.reload();
     } catch (e) {
@@ -218,7 +218,7 @@ export default function ModelRouterPage() {
   return (
     <PageShell
       title="路由与虚拟模型"
-      description="上游 provider、虚拟模型映射与候选健康度"
+      description="把对外暴露的模型名映射到多个上游候选，并展示各候选健康度"
       actions={
         <>
           <Button onClick={resync} disabled={busy === 'resync'}>

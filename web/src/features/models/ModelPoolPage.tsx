@@ -149,7 +149,7 @@ export default function ModelPoolPage() {
         catalog.reload();
       } else {
         // 后端拉取失败会带 error 文本，属业务层失败
-        toast(`拉取未成功：${r.error ?? '后端未给出原因'}`, 'err');
+        toast(`拉取未成功：${r.error ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '拉取失败', 'err');

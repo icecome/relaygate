@@ -97,6 +97,7 @@ export default function AccessKeysPage() {
   }
 
   async function create() {
+    // platform 是后端必填项（PLATFORMS = trae|workbuddy|all），缺省 400
     const label = await prompt({
       title: '创建访问密钥',
       message: '明文仅在创建时返回一次，请立即保存。',
@@ -106,12 +107,15 @@ export default function AccessKeysPage() {
     if (typeof label !== 'string') return;
     setBusyId('__create__');
     try {
-      const created = await createAccessKey({ label: label.trim() || undefined }, key);
+      const created = await createAccessKey(
+        { label: label.trim() || undefined, platform: 'all' },
+        key,
+      );
       revealFresh(created);
       toast('密钥已创建，请立即复制保存', 'ok');
       list.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '创建失败', 'err');
+      toast(e instanceof ApiError ? e.message : '创建失败，请在访问密钥页重试', 'err');
     } finally {
       setBusyId(null);
     }
@@ -120,14 +124,15 @@ export default function AccessKeysPage() {
   async function rotate(id: string) {
     const ok = await prompt({
       title: '轮换该密钥？',
-      message: '旧密钥将进入宽限期后失效。',
+      message: '将生成一把新密钥；旧密钥保留 24 小时宽限期后自动失效。',
       okText: '轮换',
       danger: true,
     });
     if (ok !== true) return;
     setBusyId(id);
     try {
-      const created = await rotateAccessKey(id, 0, key);
+      // 24h 与后端 rotateKey 默认值一致：宽限期让调用方有时间替换配置
+      const created = await rotateAccessKey(id, 24 * 3600_000, key);
       revealFresh(created);
       toast('已轮换，新明文如下', 'ok');
       list.reload();

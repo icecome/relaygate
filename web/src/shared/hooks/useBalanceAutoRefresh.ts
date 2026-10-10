@@ -15,12 +15,11 @@ import { useEffect, useRef } from 'react';
 import { refreshAllBalance } from '../api/credentials';
 
 /** 默认轮询间隔（毫秒）。 */
-export const BALANCE_POLL_MS = 60_000;
+const BALANCE_POLL_MS = 60_000;
 
 export function useBalanceAutoRefresh(
   apiKey: string | undefined,
   onRefreshed: () => void,
-  intervalMs: number = BALANCE_POLL_MS,
 ): void {
   // 用 ref 固定回调与密钥，避免调用方每次渲染都重建定时器
   const cbRef = useRef(onRefreshed);
@@ -53,7 +52,7 @@ export function useBalanceAutoRefresh(
 
     function schedule() {
       if (timer != null) window.clearInterval(timer);
-      timer = window.setInterval(tick, intervalMs);
+      timer = window.setInterval(tick, BALANCE_POLL_MS);
     }
 
     function onVisibility() {
@@ -73,5 +72,5 @@ export function useBalanceAutoRefresh(
       if (timer != null) window.clearInterval(timer);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [apiKey, intervalMs]);
+  }, [apiKey]);
 }

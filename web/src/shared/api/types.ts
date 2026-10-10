@@ -1,5 +1,3 @@
-export type AccountState = 'ok' | 'cool' | 'off';
-
 export interface Pack {
   name?: string;
   packId?: string | null;
@@ -14,13 +12,35 @@ export interface Pack {
   unlimited?: boolean;
 }
 
+/** ZCode 的额度桶（token 计量；与 Pack 的积分口径是两套，勿合并汇总） */
+export interface TokenBucket {
+  name?: string;
+  bucketId?: string | null;
+  planId?: string | null;
+  meter?: string;
+  /** 计量单位，固定 'token' */
+  unit?: string;
+  limit?: number;
+  used?: number;
+  remaining?: number;
+  /** 秒级时间戳，转毫秒需乘 1000 */
+  expireTime?: number | null;
+}
+
 export interface Account {
   id: string;
   label: string | null;
   edition?: string | null;
   source?: string | null;
-  userRegion?: unknown;
   region?: string | null;
+  /**
+   * 登录 token 的到期时间（ISO）。由 ExchangeToken / WorkBuddy refresh 写回，
+   * 保活定时任务在到期前换新。ZCode 的 JWT 无 exp，恒为 null（长期有效）。
+   */
+  expiredAt?: string | null;
+  /** refreshToken 的到期时间（ISO）；过期即无法再换新，需重新登录/导入。 */
+  refreshExpiredAt?: string | null;
+  /** 积分口径余额（Trae/WorkBuddy）。ZCode 无积分概念，恒为 null。 */
   balance?: number | null;
   errorCount?: number;
   enabled: boolean;
@@ -28,14 +48,21 @@ export interface Account {
   lastPickedAt?: string | null;
   lastCheckinAt?: string | null;
   lastCheckinResult?: string | null;
+  /** 最近一次保活（token 刷新）的时刻与结果；保活任务逐账号写入 */
+  lastKeepaliveAt?: string | null;
+  lastKeepaliveResult?: string | null;
   priority?: number;
   group?: string | null;
   expiring3d?: number;
   expiring7d?: number;
+  /** 积分口径权益包。ZCode 为空（其额度走 tokenBuckets） */
   packs?: Pack[];
-  verified?: boolean;
-  action?: string;
-  verifiedBalance?: number | null;
+  /**
+   * ZCode 专用：token 计量剩余额度（**非积分**，量级 1e8）。
+   * 与 packs/balance 分属两套口径，任何积分汇总都必须排除它。
+   */
+  tokenRemaining?: number;
+  tokenBuckets?: TokenBucket[];
 }
 
 export interface Summary {
@@ -82,10 +109,4 @@ export interface BalanceResult {
   balance?: number | null;
   used?: number | null;
   expiring?: { d3?: number; d7?: number };
-}
-
-export function accountState(a: Account): AccountState {
-  if (!a.enabled) return 'off';
-  if (a.coolUntil && new Date(a.coolUntil).getTime() > Date.now()) return 'cool';
-  return 'ok';
 }

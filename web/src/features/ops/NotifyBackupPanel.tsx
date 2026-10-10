@@ -278,7 +278,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       } else if (r.running) {
         toast('备份正在执行中', 'warn');
       } else {
-        toast(`备份未成功：${r.error ?? '后端未给出原因'}`, 'err');
+        toast(`备份未成功：${r.error ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
       backup.reload();
     } catch (e) {
@@ -310,7 +310,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
     try {
       const r = await verifyBackup(path, apiKey);
       if (r.ok) toast(`校验通过：${file}`, 'ok');
-      else toast(`校验未通过：${r.reason ?? '后端未给出原因'}`, 'err');
+      else toast(`校验未通过：${r.reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '校验失败', 'err');
     } finally {

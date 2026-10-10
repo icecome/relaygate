@@ -42,6 +42,7 @@ import {
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   FieldRow,
   KeyCardGroups,
@@ -313,7 +314,7 @@ const rotateRows = useMemo(() => {
     setBusy(`switch-${uid}`);
     try {
       const r = await switchRotate(uid, key);
-      if (!r.ok) toast(`切换未成功：${r.msg ?? '后端未给出原因'}`, 'err');
+      if (!r.ok) toast(`切换未成功：${r.msg ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       else toast(`已切换到 ${label}`, 'ok');
       rotateStatus.reload();
     } catch (e) {
@@ -420,7 +421,7 @@ const rotateRows = useMemo(() => {
   return (
     <PageShell
       title="运维中心"
-      description="运行状态、定时任务、账号轮换、通知备份与网关配置"
+      description="网关运行状态、定时任务与账号调度策略"
       actions={<Button onClick={reloadAll}>刷新</Button>}
       toolbar={
         <Segmented
@@ -530,11 +531,16 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="账号池快照"
-              description="含在途请求、模型级冷却与 FEFO 到期信号"
+              description="含在途请求、模型级冷却与最近到期信号"
               flush
             >
-              {(runtime.data?.pool?.accounts ?? []).length === 0 ? (
+              {runtime.loading && !runtime.data ? (
                 <LoadingBlock />
+              ) : (runtime.data?.pool?.accounts ?? []).length === 0 ? (
+                <EmptyState
+                  label="当前没有账号进入调度池。"
+                  hint="请先在凭据池接入并启用账号；若已接入，请检查调度器是否开启。"
+                />
               ) : (
                 <div className="scroll-y" style={{ maxHeight: 420 }}>
                   <table className="w-full border-collapse text-[13px]">

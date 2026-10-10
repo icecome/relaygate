@@ -123,7 +123,7 @@ export function Stepper({
   return (
     <div
       className="stepper inline-flex items-stretch h-6 rounded-md border overflow-hidden"
-      style={{ borderColor: 'var(--rg-border-stronger)', background: 'var(--rg-bg-primary)' }}
+      style={{ borderColor: 'var(--rg-border-stronger)', background: 'var(--rg-bg-base)' }}
       role="group"
       aria-label={label}
     >
@@ -442,10 +442,35 @@ export function LoadingBlock({ label = '加载中' }: { label?: string }) {
   );
 }
 
-export function EmptyState({ label }: { label: string }) {
+/**
+ * 空态。回答两个问题：为什么空 / 现在该做什么。
+ * 只有纯展示的空态可以省略 action，但 hint 至少要说明原因，
+ * 否则用户停在空页面时无法判断是"还没配"还是"筛错了"。
+ */
+export function EmptyState({
+  label,
+  hint,
+  action,
+}: {
+  label: string;
+  /** 原因说明，例如「官方账单通常在请求后 1-2 天出现」 */
+  hint?: string;
+  /** 下一步动作，例如「接入第一个账号」 */
+  action?: { label: string; onClick: () => void };
+}) {
   return (
-    <div className="p-4 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-      {label}
+    <div className="p-4 text-aux flex flex-col items-start gap-2" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <div>{label}</div>
+      {hint && (
+        <div className="text-[12px] leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+          {hint}
+        </div>
+      )}
+      {action && (
+        <Button size="sm" variant="primary" onClick={action.onClick}>
+          {action.label}
+        </Button>
+      )}
     </div>
   );
 }

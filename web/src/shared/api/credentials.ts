@@ -36,8 +36,35 @@ export function deleteAccount(id: string, key: string) {
   return api<{ deleted: string }>(`/v1/credentials/${encodeURIComponent(id)}`, { method: 'DELETE' }, key);
 }
 
+/**
+ * 跨平台「全部签到」（POST /v1/credentials/checkin-all）。
+ * 覆盖所有启用且有 checkin 能力的账号（Trae + WorkBuddy），返回分平台明细。
+ * 注意：不要改回 /v1/credentials/checkin —— 那是 Trae 专用端点，
+ * WorkBuddy 账号会被静默跳过（m-39 回归）。
+ */
+export interface CheckinAllResult {
+  object?: string;
+  trigger?: string;
+  total?: number;
+  claimed?: number;
+  already?: number;
+  disabled?: number;
+  failed?: number;
+  message?: string;
+  platforms?: {
+    platform: string;
+    total: number;
+    claimed: number;
+    already: number;
+    disabled: number;
+    failed: number;
+    error: string | null;
+    accounts: { id?: string; label?: string; result: string; credit?: number | null; reason?: string | null }[];
+  }[];
+}
+
 export const checkinAll = (key: string) =>
-  api<Record<string, unknown>>('/v1/credentials/checkin', { method: 'POST' }, key);
+  api<CheckinAllResult>('/v1/credentials/checkin-all', { method: 'POST' }, key);
 
 export const checkinOne = (id: string, key: string) =>
   api<CheckinResult & { status?: number }>(
@@ -62,13 +89,6 @@ export const refreshAllBalance = (key: string) =>
 
 export const refreshOneBalance = (id: string, key: string) =>
   api<BalanceResult>(`/v1/credentials/${encodeURIComponent(id)}/balance`, { method: 'POST' }, key);
-
-export const resetDevice = (id: string, key: string) =>
-  api<{ deviceGen: number; machineId: string }>(
-    `/v1/credentials/${encodeURIComponent(id)}/device/reset`,
-    { method: 'POST' },
-    key,
-  );
 
 export const resetAllDevices = (key: string) =>
   api<{ ok: { accountId: string }[]; failed: { accountId: string; reason: string }[] }>(
@@ -103,17 +123,6 @@ export interface OauthStatus {
 
 export const oauthStatus = (key: string, signal?: AbortSignal) =>
   api<{ result?: OauthStatus }>('/v1/credentials/oauth/status', { signal }, key);
-
-/** 提交 OAuth 回调结果。token 或 refreshToken 至少给一个。 */
-export const oauthComplete = (
-  body: { token?: string; refreshToken?: string; name?: string },
-  key: string,
-) =>
-  api<{ ok: boolean; account?: Account; detail?: OauthStatus }>(
-    '/v1/credentials/oauth/complete',
-    { method: 'POST', body },
-    key,
-  );
 
 /** 手动兜底：粘贴完整回调 URL，仅解析参数，不向该地址发起请求。 */
 export const oauthCallback = (url: string, key: string) =>

@@ -12,12 +12,23 @@ import { api } from './http';
 
 /* ------------------------------------------------------------ 汇总视图 */
 
+/**
+ * 上游 travel/status 的 location 是结构化对象
+ * （见 src/workbuddy/cat-trip.js normalizeStatus），idle 时为 null。
+ */
+export interface GrowthLocation {
+  id?: number | null;
+  code?: string | null;
+  name?: string | null;
+  durationHours?: number | null;
+}
+
 export interface GrowthStatusRow {
   accountId: string;
   label: string;
   ok: boolean;
   state?: string;
-  location?: string;
+  location?: GrowthLocation | null;
   departAt?: string;
   arriveAt?: string;
   serverNow?: string;
@@ -56,57 +67,11 @@ export const growthOverview = (key: string, signal?: AbortSignal) =>
 
 /* -------------------------------------------------------------- 单账号 */
 
-export interface GrowthStatus {
-  ok?: boolean;
-  state?: string;
-  location?: string;
-  departAt?: string;
-  arriveAt?: string;
-  rewardCredit?: number;
-  dailyLimitReached?: boolean;
-  reason?: string;
-}
-
-export interface GrowthStreak {
-  ok?: boolean;
-  days?: number;
-  makeupCards?: number;
-  reason?: string;
-}
-
-export interface GrowthLotteryChances {
-  ok?: boolean;
-  balance?: number;
-}
-
-const single = <T>(name: string) => (accountId: string, key: string, signal?: AbortSignal) =>
-  api<T & { object: string; accountId: string }>(
-    `/v1/workbuddy/growth/${name}`,
-    { method: 'POST', signal, body: { accountId } },
-    key,
-  );
-
-export const growthStatus = single<GrowthStatus>('status');
-export const growthStreak = single<GrowthStreak>('streak');
-export const growthChances = single<GrowthLotteryChances>('chances');
-
 /** 领取旅行奖励。返回 rewardCredit 表示到账额度。 */
 export const growthClaim = (accountId: string, key: string) =>
   api<{ ok?: boolean; rewardCredit?: number; reason?: string }>(
     '/v1/workbuddy/growth/claim',
     { method: 'POST', body: { accountId } },
-    key,
-  );
-
-/** 出发（开始旅行）。 */
-export const growthDepart = (
-  accountId: string,
-  body: { location?: string },
-  key: string,
-) =>
-  api<{ ok?: boolean; reason?: string }>(
-    '/v1/workbuddy/growth/depart',
-    { method: 'POST', body: { accountId, ...body } },
     key,
   );
 

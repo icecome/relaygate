@@ -82,16 +82,6 @@ export interface AutoTierSyncResult {
 export const getRouterOverview = (key: string, signal?: AbortSignal) =>
   api<RouterOverview>('/v1/admin/model-router/overview', { signal }, key);
 
-export const upsertProvider = (id: string, body: Partial<RouterProvider>, key: string) =>
-  api<{ data: RouterProvider }>(
-    `/v1/admin/model-router/providers/${encodeURIComponent(id)}`,
-    { method: 'PUT', body },
-    key,
-  );
-
-export const deleteProvider = (id: string, key: string) =>
-  api<unknown>(`/v1/admin/model-router/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }, key);
-
 export const upsertVirtual = (id: string, body: Partial<VirtualModel>, key: string) =>
   api<{ data: VirtualModel }>(
     `/v1/admin/model-router/virtual/${encodeURIComponent(id)}`,
@@ -134,17 +124,3 @@ export const resyncAutoTiers = (key: string) =>
 
 export const reloadRouter = (key: string) =>
   api<{ ok: boolean; message?: string }>('/v1/admin/model-router/reload', { method: 'POST' }, key);
-
-export const getRouteCheck = (id: string, key: string, signal?: AbortSignal) =>
-  api<{ ok: boolean; message?: string; checkedAt?: string }>(
-    `/v1/admin/model-router/route-check/${encodeURIComponent(id)}`,
-    { signal },
-    key,
-  );
-
-export const getAvailableModels = (key: string, signal?: AbortSignal) =>
-  api<{ data: Record<string, { id: string; label: string }[]> }>(
-    '/v1/admin/model-router/available-models',
-    { signal },
-    key,
-  );

@@ -4,8 +4,6 @@
  * 原实现里 `/summary` 被多个组件各自 useSummary() 拉取，
  * 同一页面可能触发多次重复请求。这里改为 Context 单例：
  * 整棵树只发起一次请求，页面按需订阅。
- *
- * 同时提供按 edition 过滤的派生函数，派生值不落 state。
  */
 import {
   createContext,
@@ -18,28 +16,18 @@ import {
   type ReactNode,
 } from 'react';
 import { getSummary } from '../api/credentials';
-import type { Account, Summary } from './types';
+import type { Summary } from './types';
 import { ApiError } from './http';
 import { useAuth } from './auth';
-
-export type EditionFilter = 'trae' | 'workbuddy' | 'all';
 
 export interface SummaryContextValue {
   data: Summary | null;
   loading: boolean;
   error: string | null;
   reload: () => void;
-  /** 按 edition 过滤账号，派生值不缓存进 state */
-  accountsOf: (edition: EditionFilter) => Account[];
 }
 
 const SummaryContext = createContext<SummaryContextValue | null>(null);
-
-/** 账号 edition 归类：workbuddy 系与 trae 系，其余归 trae。 */
-function editionOf(account: Account): 'trae' | 'workbuddy' {
-  const raw = String(account.edition || account.source || '');
-  return raw === 'workbuddy' || raw.startsWith('wb') ? 'workbuddy' : 'trae';
-}
 
 export function SummaryProvider({ children }: { children: ReactNode }) {
   const { key } = useAuth();
@@ -83,19 +71,9 @@ export function SummaryProvider({ children }: { children: ReactNode }) {
     return () => controller.abort();
   }, [key, nonce]);
 
-  const accountsOf = useCallback(
-    (edition: EditionFilter): Account[] => {
-      const list = data?.accounts;
-      if (!list) return [];
-      if (edition === 'all') return list;
-      return list.filter((a: Account) => editionOf(a) === edition);
-    },
-    [data],
-  );
-
   const value = useMemo<SummaryContextValue>(
-    () => ({ data, loading, error, reload, accountsOf }),
-    [data, loading, error, reload, accountsOf],
+    () => ({ data, loading, error, reload }),
+    [data, loading, error, reload],
   );
 
   return <SummaryContext.Provider value={value}>{children}</SummaryContext.Provider>;

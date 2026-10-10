@@ -5,18 +5,27 @@
  *   方式一：抓取本机桌面客户端登录态（默认，后端会在线验证）；
  *   方式二：粘贴 .info 文件内容跨机导入（后端不做在线验证，导入后需补验）。
  *
- * 导入的账号默认停用，需在凭据池手动启用 —— 这里如实告知，避免用户以为导入即可用。
+ * 导入的账号默认停用。弹窗在导入成功后不自动关闭，而是就地给出「立即启用」，
+ * 避免用户以为导入即可用、又找不到该去列表哪里启用。
  */
 import { useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
 import { ApiError } from '../../shared/api/http';
+import { patchAccount } from '../../shared/api/credentials';
 import { wbImport, wbLocal, wbVerify, type WbLocalInfo } from '../../shared/api/workbuddy';
 import { Button, Field, LoadingBlock, Note, Segmented } from '../../shared/ui';
 import Modal from '../../shared/ui/Modal';
 import { useToast } from '../../shared/ui/Toast';
-import { usePrompt } from '../../shared/ui/Prompt';
 
 type Mode = 'local' | 'paste';
+
+/** 导入成功后保留的结果，用于就地启用；null 表示还在导入表单态。 */
+interface Imported {
+  id?: string;
+  label?: string;
+  isUpdate: boolean;
+  needVerify: boolean;
+}
 
 export function ImportWbDialog({ open, onClose, onImported }: {
   open: boolean;
@@ -25,7 +34,6 @@ export function ImportWbDialog({ open, onClose, onImported }: {
 }) {
   const { key } = useAuth();
   const toast = useToast();
-  const prompt = usePrompt();
 
   const [mode, setMode] = useState<Mode>('local');
   const [local, setLocal] = useState<WbLocalInfo | null>(null);
@@ -33,6 +41,14 @@ export function ImportWbDialog({ open, onClose, onImported }: {
   const [infoText, setInfoText] = useState('');
   const [label, setLabel] = useState('');
   const [busy, setBusy] = useState(false);
+  const [imported, setImported] = useState<Imported | null>(null);
+
+  function reset() {
+    setImported(null);
+    setInfoText('');
+    setLabel('');
+    setBusy(false);
+  }
 
   async function detectLocal() {
     setLoadingLocal(true);
@@ -45,50 +61,112 @@ export function ImportWbDialog({ open, onClose, onImported }: {
     }
   }
 
-  async function doImport() {
+  /** 就地启用刚导入的账号，避免用户回到长列表里自己找。 */
+  async function enableImported() {
+    if (!imported?.id) return;
     setBusy(true);
     try {
-      const body = mode === 'paste' ? { infoJsonText: infoText.trim(), label: label.trim() || undefined } : { label: label.trim() || undefined };
-      if (mode === 'paste' && !infoText.trim()) {
-        toast('请粘贴 .info 文件内容', 'warn');
-        return;
-      }
-      const r = await wbImport(body, key);
-      const isUpdate = r.action === 'updated';
-      toast(
-        `${isUpdate ? '已更新' : '已导入'} WorkBuddy 账号${r.label ? `：${r.label}` : ''}（默认停用）`,
-        'ok',
-      );
+      await patchAccount(imported.id, { enabled: true }, key);
+      toast('账号已启用，可参与调度', 'ok');
       onImported();
+      reset();
       onClose();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '启用失败，可在凭据池重试', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
 
-      // 跨机导入未做在线验证，引导补验
-      if (mode === 'paste' && r.id) {
-        const ok = await prompt({
-          title: '立即验证该账号？',
-          message: '跨机导入未做在线验证，验证通过后才能正常调度。',
-          okText: '验证',
-        });
-        if (ok === true) {
-          try {
-            const v = await wbVerify({ accountId: r.id }, key);
-            if (v.valid) {
-              toast('验证通过', 'ok');
-              onImported();
-            } else {
-              toast(`验证未通过：${v.reason ?? '后端未给出原因'}`, 'err');
-            }
-          } catch (e) {
-            toast(e instanceof ApiError ? e.message : '验证失败', 'err');
-          }
-        }
+  /** 跨机导入未做在线验证，就地补验。 */
+  async function verifyImported() {
+    if (!imported?.id) return;
+    setBusy(true);
+    try {
+      const v = await wbVerify({ accountId: imported.id }, key);
+      if (v.valid) {
+        toast('验证通过', 'ok');
+        onImported();
+        setImported((prev) => (prev ? { ...prev, needVerify: false } : prev));
+      } else {
+        toast(`验证未通过：${v.reason ?? '凭据可能已失效，建议重新抓取本机登录态'}`, 'err');
       }
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '验证请求失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doImport() {
+    if (mode === 'paste' && !infoText.trim()) {
+      toast('请粘贴 .info 文件内容', 'warn');
+      return;
+    }
+    setBusy(true);
+    try {
+      const body =
+        mode === 'paste'
+          ? { infoJsonText: infoText.trim(), label: label.trim() || undefined }
+          : { label: label.trim() || undefined };
+      const r = await wbImport(body, key);
+      // 不关闭弹窗：把结果留在原地，让用户就地决定启用 / 验证
+      setImported({
+        id: r.id,
+        label: r.label,
+        isUpdate: r.action === 'updated',
+        needVerify: mode === 'paste',
+      });
+      onImported();
     } catch (e) {
       // 后端对加密 token、未找到登录态等情况有明确 code/文案，直接呈现
       toast(e instanceof ApiError ? e.message : '导入失败', 'err');
     } finally {
       setBusy(false);
     }
+  }
+
+  if (imported) {
+    return (
+      <Modal
+        open={open}
+        onClose={() => {
+          reset();
+          onClose();
+        }}
+        title="账号已导入"
+        desc="新导入的账号默认停用，确认无误后再启用"
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => { reset(); onClose(); }}>
+              稍后处理
+            </Button>
+            <Button variant="primary" onClick={enableImported} disabled={busy || !imported.id}>
+              {busy ? '处理中…' : '立即启用'}
+            </Button>
+          </>
+        }
+      >
+        <dl className="kv">
+          <dt>状态</dt>
+          <dd>{imported.isUpdate ? '已更新既有账号' : '已新建账号'}</dd>
+          <dt>备注名</dt>
+          <dd>{imported.label || '—'}</dd>
+          <dt>调度状态</dt>
+          <dd>停用（启用后才参与转发调度）</dd>
+        </dl>
+        {imported.needVerify && (
+          <div className="mt-3">
+            <Note tone="warn">
+              跨机粘贴导入未做在线验证。
+              <Button size="sm" className="ml-2" onClick={verifyImported} disabled={busy}>
+                现在验证
+              </Button>
+            </Note>
+          </div>
+        )}
+      </Modal>
+    );
   }
 
   return (
@@ -184,7 +262,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
       </div>
 
       <div className="mt-3">
-        <Note>导入的账号默认处于停用状态，需在凭据池确认后手动启用。</Note>
+        <Note>导入后不会自动启用；下一步可直接在本弹窗内启用，或稍后在凭据池处理。</Note>
       </div>
     </Modal>
   );

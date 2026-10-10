@@ -15,7 +15,29 @@ export interface DailyStat {
   tokens: number;
   metered: number;
   unmetered: number;
+  /** token 来源三分类：exact=上游真值；estimated=tiktoken 补算；none=完全没有 token。 */
+  exact?: number;
+  estimated?: number;
+  none?: number;
+  /** token 字段被历史脱敏缺陷写成 '***' 而无法还原的行数（该日 token 总量是下界）。 */
+  tokensLost?: number;
+  /** 能算出估算积分的行数；远小于请求数时说明该日估算总量是下界。 */
+  priced?: number;
+  /** 缺缓存读信息、按「全未缓存」上界计价的行数；多时估算整体偏高。 */
+  costUpper?: number;
+  /** 缓存读 token 合计（已含在 tokens 内，单列用于解释积分单价）。 */
+  cacheReadTokens?: number;
   estimatedCost: number;
+  /** 官方账单该日积分合计（Trae 会话 + WB 逐请求），与 estimatedCost 同窗口可直接对照。 */
+  officialCredit?: number;
+  officialTraeCredit?: number;
+  officialWbCredit?: number;
+  /** 官方账单该日 token 合计（仅 Trae 账单带 token）。 */
+  officialTokens?: number;
+  officialSessions?: number;
+  officialRequests?: number;
+  /** 该日是否存在账单缓存文件（不代表有消耗——Trae 入账有 1~2 天滞后）。 */
+  officialCovered?: boolean;
 }
 
 export interface ModelStat {
@@ -25,8 +47,11 @@ export interface ModelStat {
   tokens: number;
   metered: number;
   unmetered: number;
+  /** 其中由 tiktoken 补算的请求数（token 值非账单口径）。 */
+  estimated?: number;
   promptTokens: number;
   completionTokens: number;
+  cacheReadTokens?: number;
   estimatedCost: number;
   avgDurationMs: number | null;
   toolCalls: number;
@@ -140,3 +165,42 @@ export const getCreditHistory = (days: number, key: string, signal?: AbortSignal
     remainingDelta: number;
     data: CreditHistoryRow[];
   }>(`/v1/admin/credit-history?days=${days}`, { signal }, key);
+
+/**
+ * 积分/token 标定系数（官方账单最小二乘回归结果）。
+ *
+ * 每个模型给出三个「积分/token」系数：uncached（未命中缓存的输入）、
+ * output（输出）、cacheRead（缓存读）。n 为样本数，r2 为拟合优度——
+ * r2≈1 表示该模型的三系数能精确还原账单，estimatedCost 可视作账单口径；
+ * r2 偏低（如 Trae 会话级 DeepSeek）说明上游账单本身有抹零噪声。
+ */
+export interface PricingCalibration {
+  version: number;
+  calibratedAt: string | null;
+  models: Record<
+    string,
+    { n: number; r2: number; uncached: number; output: number; cacheRead: number }
+  >;
+  /**
+   * 账单实测的积分 ↔ token 换算比（无账单数据时为 null）。
+   * 精确换算必须按模型逐个用三系数算，这里只是概览均值。
+   */
+  ratio?: {
+    /** 换算比所属账单日（上游入账有滞后，不是实时值） */
+    asOf: string | null;
+    credits: number;
+    tokens: number;
+    /** 积分 / 千 token */
+    creditsPer1k: number;
+    /** token / 积分 */
+    tokensPerCredit: number;
+    models: number;
+  } | null;
+}
+
+export const getPricingCalibration = (key: string, refresh = false, signal?: AbortSignal) =>
+  api<PricingCalibration>(
+    `/v1/admin/stats/pricing-calibration${refresh ? '?refresh=1' : ''}`,
+    { signal },
+    key,
+  );

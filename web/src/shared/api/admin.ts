@@ -6,7 +6,7 @@
  */
 import { api } from './http';
 
-export { ApiError, isBusinessFailure, businessFailureReason } from './http';
+export { ApiError } from './http';
 
 /* ------------------------------------------------------------ 流量日志 */
 
@@ -20,6 +20,14 @@ export interface TrafficRow {
   totalTokens?: number;
   promptTokens?: number;
   completionTokens?: number;
+  /** 缓存读 token（标定费率按「未缓存输入/输出/缓存读」分别计价）。 */
+  cacheReadTokens?: number;
+  /** 上游未回传 usage、由 tiktoken 补算：token 值属估算，非账单精确值。 */
+  tokensEstimated?: boolean;
+  /** 计费模型（真实命中的上游模型名）；model 可能是虚拟 ID，费率表无条目。 */
+  pricedModel?: string;
+  platform?: string;
+  routedTo?: string;
   estimatedCost?: number;
   error?: string | null;
   status?: number;
@@ -36,6 +44,11 @@ export interface TrafficResponse {
     byAccount?: Record<string, number>;
     byStatus?: Record<string, number>;
     tokens?: number;
+    /**
+     * token 字段被历史脱敏破坏（值为 "***"）而无法还原的行数。
+     * 2026-10-10 之前的日志全部如此——「总 Token」因此是下界而非全量。
+     */
+    tokensMasked?: number;
   };
   data: TrafficRow[];
 }
@@ -65,9 +78,6 @@ export interface SseDebugRow {
   model?: string | null;
   event?: { type?: string; chunk?: string };
 }
-
-export const getSseDebugStatus = (key: string, signal?: AbortSignal) =>
-  api<{ object: string; enabled: boolean }>('/v1/admin/debug/sse/status', { signal }, key);
 
 export function getSseDebug(
   params: { days?: number; requestId?: string; limit?: number },
@@ -420,8 +430,6 @@ export interface RotateStatus {
   lastRotateAt?: string | null;
   lastRotateOk?: boolean | null;
   lastRotateFailed?: number | null;
-  scheduler?: SchedulerSnapshot;
-  settings?: RotateSettings;
 }
 
 /**
@@ -552,18 +560,6 @@ export const testNotify = (key: string) =>
     results?: { channel: string; ok: boolean; error?: string }[];
   }>('/v1/admin/notify/test', { method: 'POST' }, key);
 
-/** 事件开关。builtin 为后端内置事件 id，data 为当前开关状态。 */
-export const getNotifyEvents = (key: string, signal?: AbortSignal) =>
-  api<{ object: string; builtin: string[]; data: { id: string; enabled: boolean }[] }>(
-    '/v1/admin/notify/events',
-    { signal },
-    key,
-  );
-
-/** 事件开关随通知设置一并落盘，返回同 saveNotifySettings。 */
-export const saveNotifyEvents = (events: Record<string, boolean>, key: string) =>
-  saveNotifySettings({ events }, key);
-
 /** 备份条目。path 用于后续校验 / 预览 / 恢复。 */
 export interface BackupRow {
   file: string;
@@ -677,10 +673,6 @@ export interface ModelInfo {
   source_name?: string;
   rate?: number | null;
   rateText?: string | null;
-  feeLevel?: number | null;
-  scene?: string | null;
-  /** 峰谷价格：后端固定返回 null */
-  peak?: number | null;
   /** WorkBuddy 侧的最大输入 token */
   maxInputTokens?: number | null;
   /** 虚拟模型候选数 / 可用候选数 */

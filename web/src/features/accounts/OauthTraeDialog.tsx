@@ -101,7 +101,7 @@ export function OauthTraeDialog({ open, onClose, onDone }: {
         stopPolling();
       } else {
         setPhase('error');
-        toast(`导入未成功：${r.detail?.message ?? '后端未给出原因'}`, 'err');
+        toast(`导入未成功：${r.detail?.message ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
     } catch (e) {
       setPhase('error');
