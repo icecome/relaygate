@@ -3,11 +3,9 @@
  * 固定桌面布局，移动端断点见 global.css 的 @media 块。
  */
 import { useState, useEffect } from 'react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { NAV_GROUPS, navItemOf } from './nav';
 import { useSummaryStore } from '../shared/api/SummaryProvider';
-import { useOnboarding } from '../features/setup/onboarding';
-import { Button } from '../shared/ui';
 
 function Clock() {
   // 顶栏时钟独立组件：秒级刷新不会带动整页重渲染；
@@ -29,29 +27,7 @@ function Clock() {
   );
 }
 
-/** 首登引导进度条：仅在还有未完成步骤时出现，完成后自动消失。 */
-function OnboardingBar() {
-  const navigate = useNavigate();
-  const { steps, remaining, next } = useOnboarding();
-  if (remaining === 0 || !next) return null;
-  const done = steps.filter((s) => s.done).length;
-  return (
-    <div
-      className="flex items-center justify-between gap-3 flex-wrap mb-4"
-      style={{ background: 'var(--rg-brand-50)', border: '1px solid var(--rg-brand-200)' }}
-    >
-      <span className="text-[13px]" style={{ color: 'var(--rg-brand-900)' }}>
-        首次使用还差 {remaining} 步，下一步：{next.label}
-        <span className="ml-2 text-[12px]" style={{ color: 'var(--rg-brand-700)' }}>
-          （已完成 {done}/{steps.length}）
-        </span>
-      </span>
-      <Button size="sm" variant="primary" onClick={() => navigate(next.path)}>
-        去完成
-      </Button>
-    </div>
-  );
-}
+/** 首登引导已移除（见 git 历史）。 */
 
 export default function AppLayout() {
   const location = useLocation();
@@ -153,7 +129,6 @@ export default function AppLayout() {
 
         <main className="flex-1 overflow-y-auto bg-white">
           <div className="max-w-[1400px] mx-auto p-6 pb-14">
-            <OnboardingBar />
             <Outlet />
           </div>
         </main>
