@@ -13,10 +13,9 @@
  */
 const fs = require('fs');
 const path = require('path');
-const config = require('../config');
-const { readTrafficLines, isMetered, numTok, isMasked, tokenSource, costOf } = require('./stats');
+const { numTok, isMasked, tokenSource, costOf } = require('./stats');
 const { writeJsonAtomic } = require('../lib/atomic-write');
-const { stateDir, legacyStateDir } = require('../lib/paths');
+const { stateDir, legacyStateDir, logsDir } = require('../lib/paths');
 const { round2, round4 } = require('../lib/round');
 const { localDateKey, recentLocalDateKeys } = require('../lib/util');
 
@@ -132,7 +131,7 @@ function getBuckets(days) {
       out.push(cached);
       continue;
     }
-    const base = path.join(config.ROOT, 'logs');
+    const base = logsDir();
     const file = path.join(base, day, 'traffic.jsonl');
     if (!fs.existsSync(file)) { writeCache(day, null); continue; }
     const rows = [];

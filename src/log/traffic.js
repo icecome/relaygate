@@ -12,8 +12,8 @@ const { maskSecret } = require('../lib/mask');
 const config = require('../config');
 const { estimateCost } = require('../models/rates');
 const { localDateKey } = require('../lib/util');
+const { logsDir } = require('../lib/paths');
 
-const ROOT = path.resolve(__dirname, '..', '..');
 let seq = 0;
 // 已确认存在的日志目录，仅跨日时变化，避免每请求一次 mkdir syscall。
 let ensuredDir = null;
@@ -27,7 +27,7 @@ let ensuredDir = null;
  * 目录名与读取端（stats.readTrafficLines）必须同为本地日期键。
  */
 function todayDir() {
-  return path.join(ROOT, 'logs', localDateKey());
+  return path.join(logsDir(), localDateKey());
 }
 
 /** 确保目录存在（同一天只 mkdir 一次）。 */

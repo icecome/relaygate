@@ -32,6 +32,24 @@ function legacyStateDir() {
 }
 
 /**
+ * 日志根目录。
+ *
+ * 默认沿用 `<ROOT>/logs`，**刻意不改默认位置**：历史日志都在这里，而
+ * `log/stats.js`、`routes/admin-traffic.js`、`routes/admin-debug.js` 与面板都读它；
+ * 状态文件那边有 `resolveStateFileForRead` 的双位置回退，日志这边没有，
+ * 换默认位置等于让升级用户看不到既有历史。
+ *
+ * 但必须可被 `LOGS_DIR` 覆盖：日志是运行期状态，测试与运维脚本要在临时目录里跑。
+ * 不隔离的后果是实测过的——`npm test` 会往真实 `logs/<date>/traffic.jsonl` 追加
+ * `model=test`、`model=vm/sec-guard` 之类的行，并往 `crash.jsonl` 追加
+ * `lifecycle/shutdown_done`；而 `/v1/admin/stats/*` 正是读这份文件，
+ * 于是测试流量会出现在**统计面板与热力图**里，不是纯日志噪声。
+ */
+function logsDir() {
+  return process.env.LOGS_DIR || path.join(config.ROOT, 'logs');
+}
+
+/**
  * 状态文件的目标写入路径。
  * @param {string} name 相对 .trae-api 的文件名或子路径
  * @returns {string}
@@ -64,4 +82,4 @@ function resolveStateFileForRead(name, exists) {
   return candidates.find((p) => exists(p)) || candidates[0];
 }
 
-module.exports = { stateDir, legacyStateDir, stateFile, stateFileCandidates, resolveStateFileForRead };
+module.exports = { stateDir, legacyStateDir, stateFile, stateFileCandidates, resolveStateFileForRead, logsDir };

@@ -9,6 +9,7 @@ const path = require('path');
 const config = require('../config');
 const pool = require('../credentials/pool');
 const { localDateKey, recentLocalDateKeys } = require('../lib/util');
+const { logsDir } = require('../lib/paths');
 const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
@@ -184,8 +185,9 @@ router.post('/test-chat', admin, async (req, res) => {
 // SSE 调试模式
 
 const SSE_DEBUG_ENABLED = () => process.env.TRAE_DEBUG_SSE === 'true';
-// 与写入端（upstream/client.js#sseDebugWrite）共用本地日期键，否则跨零点会读写错目录
-const SSE_DEBUG_DIR = () => path.join(config.ROOT, 'logs', localDateKey());
+// 与写入端（upstream/client.js#sseDebugWrite）共用本地日期键与 logsDir()，
+// 否则跨零点或换了 LOGS_DIR 会读写到不同目录
+const SSE_DEBUG_DIR = () => path.join(logsDir(), localDateKey());
 const SSE_DEBUG_FILE = () => path.join(SSE_DEBUG_DIR(), 'sse-debug.jsonl');
 
 /** SSE 调试状态。 */
@@ -203,7 +205,7 @@ router.get('/debug/sse', admin, (req, res) => {
   const limit = Math.min(Math.max(parseInt(req.query.limit || '200', 10) || 200, 1), 1000);
 
   const rows = [];
-  const base = path.join(config.ROOT, 'logs');
+  const base = logsDir();
   for (const day of recentLocalDateKeys(days)) {
     const file = path.join(base, day, 'sse-debug.jsonl');
     if (!fs.existsSync(file)) continue;

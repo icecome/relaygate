@@ -6,15 +6,15 @@
  */
 const fs = require('fs');
 const path = require('path');
-const config = require('../config');
 const { estimateCost } = require('../models/rates');
 const { round2, round4 } = require('../lib/round');
 const { recentLocalDateKeys } = require('../lib/util');
+const { logsDir } = require('../lib/paths');
 
 /** 读取最近 N 天的 traffic.jsonl 行；按日期从新到旧合并，分页时优先命中近期数据。 */
 function readTrafficLines(days) {
   const rows = [];
-  const base = path.join(config.ROOT, 'logs');
+  const base = logsDir();
   for (const day of recentLocalDateKeys(days)) {
     const file = path.join(base, day, 'traffic.jsonl');
     if (!fs.existsSync(file)) continue;
@@ -66,14 +66,6 @@ function numTok(v) {
 /** 该字段是否被历史脱敏破坏（值为 "***" 之类，不可还原）。 */
 function isMasked(v) {
   return typeof v === 'string' && !/^\d+$/.test(v);
-}
-
-/**
- * 该行的 token 是补算值（上游未回传 usage，由 tiktoken 估算）。
- * 日志侧只在确实缺失 usage 时才写 tokensEstimated，无需再判 metered。
- */
-function isEstimated(r) {
-  return r.tokensEstimated === true;
 }
 
 /** 该行的 token 数。未计量记 0；由调用方单独累计 metered 计数以作区分。 */

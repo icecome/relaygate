@@ -8,12 +8,12 @@
 const fs = require('fs');
 const path = require('path');
 const { localDateKey } = require('../lib/util');
-
-const ROOT = path.resolve(__dirname, '..', '..');
+const { logsDir } = require('../lib/paths');
 
 function todayDir() {
-  // 本地日期：与 traffic/audit 共用 logs/<date>/ 目录，日期键必须一致。
-  return path.join(ROOT, 'logs', localDateKey());
+  // 本地日期、且跟随 logsDir()：与 traffic/audit 共用同一个 logs/<date>/ 目录，
+  // 日期键与根目录都不能各写一套。
+  return path.join(logsDir(), localDateKey());
 }
 
 function serializeError(err) {

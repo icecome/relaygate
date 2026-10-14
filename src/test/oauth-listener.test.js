@@ -21,6 +21,7 @@ const PORT = Number(process.env.TRAE_OAUTH_REDIRECT_PORT || 17701);
 process.env.WORKSPACE_DIR = path.join(os.tmpdir(), `trae-oauth-${Date.now()}`);
 process.env.TRAE_API_ENCRYPT_KEY = 'c'.repeat(64);
 process.env.TRAE_OAUTH_REDIRECT_PORT = String(PORT);
+require('./isolation-guard')('oauth-listener');
 
 const assert = require('assert');
 const oauth = require('../credentials/oauth');

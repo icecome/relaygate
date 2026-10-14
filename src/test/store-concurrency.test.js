@@ -20,6 +20,7 @@ process.env.WORKSPACE_DIR = WORKSPACE;
 process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
 process.env.API_KEY = 'test-api-key';
 process.env.ADMIN_KEY = 'test-admin-key';
+require('./isolation-guard')('store-concurrency');
 
 const assert = require('assert');
 

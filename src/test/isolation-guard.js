@@ -25,10 +25,19 @@ const path = require('node:path');
 
 module.exports = function assertIsolated(testName) {
   const label = testName || 'test';
-  const problems = [];
-
   const tmpRoot = path.resolve(os.tmpdir());
   const ws = process.env.WORKSPACE_DIR;
+
+  // 日志目录一并隔离，且不必由各测试文件自己写：日志是运行期状态，
+  // log/traffic.js、log/crash.js、log/audit.js 默认写 <ROOT>/logs，
+  // 而 /v1/admin/stats/* 读的正是它——不隔离就会把测试流量写进真实统计口径
+  // （实测 model=test、vm/sec-guard 之类的行会出现在统计面板与热力图里）。
+  if (!process.env.LOGS_DIR && ws) {
+    process.env.LOGS_DIR = path.join(String(ws), 'logs');
+  }
+
+  const problems = [];
+
   if (!ws) {
     problems.push('WORKSPACE_DIR 未设置：状态文件会落到默认的 <ROOT>/output');
   } else if (!path.resolve(String(ws)).startsWith(tmpRoot)) {
@@ -39,7 +48,14 @@ module.exports = function assertIsolated(testName) {
     problems.push('TRAE_API_ENCRYPT_KEY 未设置：会读取真实的 encrypt.key，可能写入真实凭据');
   }
 
-  // 再问一次 config 自己的解析结果：env 设对了但被 .env 覆盖时，
+  const logs = process.env.LOGS_DIR;
+  if (!logs) {
+    problems.push('LOGS_DIR 未设置：日志会落到 <ROOT>/logs，测试流量会进统计面板');
+  } else if (!path.resolve(String(logs)).startsWith(tmpRoot)) {
+    problems.push(`LOGS_DIR=${logs} 不在临时目录 ${tmpRoot} 内`);
+  }
+
+  // 再问一次各模块自己的解析结果：env 设对了但被 .env 覆盖时，
   // 只有这一步能看出来。
   let cfg;
   try {
@@ -52,12 +68,22 @@ module.exports = function assertIsolated(testName) {
       `config.workspaceDir=${cfg.workspaceDir} 不在临时目录内（.env 覆盖了进程环境变量？）`,
     );
   }
+  try {
+    const { logsDir } = require('../lib/paths');
+    const resolved = logsDir();
+    if (!path.resolve(String(resolved)).startsWith(tmpRoot)) {
+      problems.push(`lib/paths.logsDir()=${resolved} 不在临时目录内`);
+    }
+  } catch (e) {
+    problems.push(`require('../lib/paths') 失败：${e.message}`);
+  }
 
   if (problems.length) {
     console.error(`\n[FATAL] ${label} 测试未处于隔离环境，拒绝运行：`);
     for (const p of problems) console.error(`  - ${p}`);
     console.error(
-      '\n  这些用例会写入真实状态库（账号 / 密钥 / 备份），不是「测试失败」而是数据事故。\n' +
+      '\n  这些用例会写入真实状态库与真实日志目录（账号 / 密钥 / 备份 / 统计口径），\n' +
+      '  不是「测试失败」而是数据事故。\n' +
       '  请检查 src/config.js 的 .env 加载是否覆盖了进程环境变量。\n',
     );
     process.exit(1);

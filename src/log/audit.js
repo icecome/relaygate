@@ -5,8 +5,8 @@
  */
 const fs = require('fs');
 const path = require('path');
-const config = require('../config');
 const { localDateKey } = require('../lib/util');
+const { logsDir } = require('../lib/paths');
 
 function table() {
   try {
@@ -17,10 +17,9 @@ function table() {
 }
 
 function jsonlFile() {
-  // 本地日期：audit.jsonl 与 traffic.jsonl 同处 logs/<date>/ 目录，
-  // 两处必须用同一个日期键，否则同一目录会被拆到两个日期名下。
-  const day = localDateKey();
-  const dir = path.join(config.workspaceDir || process.cwd(), 'logs', day);
+  // 本地日期 + 统一的 logsDir()：audit.jsonl 与 traffic.jsonl / crash.jsonl
+  // 同处 logs/<date>/ 目录，三处的日期键与根目录必须一致，否则同一目录会被拆开。
+  const dir = path.join(logsDir(), localDateKey());
   return path.join(dir, 'audit.jsonl');
 }
 

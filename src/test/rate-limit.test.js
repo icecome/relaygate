@@ -16,6 +16,7 @@ process.env.ADMIN_KEY = 'test-admin-key';
 
 // 注意：maxRpmFor 读 process.env，必须在 require 之前固化默认场景
 delete process.env.KEY_DEFAULT_RPM;
+require('./isolation-guard')('rate-limit');
 
 const assert = require('assert');
 const { maxRpmFor, keyRateLimit, DEFAULT_RPM } = require('../middleware/rate-limit');

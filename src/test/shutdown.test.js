@@ -19,6 +19,7 @@ const WORKSPACE = path.join(os.tmpdir(), `trae-shut-${Date.now()}`);
 fs.mkdirSync(WORKSPACE, { recursive: true });
 process.env.WORKSPACE_DIR = WORKSPACE;
 process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
+require('./isolation-guard')('shutdown');
 
 const assert = require('assert');
 
@@ -73,9 +74,12 @@ t('onShutdown 注册的钩子按顺序执行，且抛错的钩子不阻断后续
 });
 
 t('抛错的钩子不阻断后续钩子（且已记录）', async () => {
-  // 上一条用例已包含抛错的钩子且顺序正确，这里显式断言日志里有 shutdown_hook_error
-  const day = new Date().toISOString().slice(0, 10);
-  const crashFile = path.resolve(__dirname, '..', '..', 'logs', day, 'crash.jsonl');
+  // 上一条用例已包含抛错的钩子且顺序正确，这里显式断言日志里有 shutdown_hook_error。
+  // 路径必须走 logsDir()：测试用 LOGS_DIR 把日志隔离到临时目录，硬编码 ROOT/logs 会：
+  //   (1) 读不到子进程刚写的那份（它继承了 LOGS_DIR）；
+  //   (2) 去读真实日志目录，用例变成「碰巧真实日志里有这条」。
+  const day = require('../lib/util').localDateKey();
+  const crashFile = path.join(require('../lib/paths').logsDir(), day, 'crash.jsonl');
   const lines = fs.readFileSync(crashFile, 'utf8').trim().split('\n');
   const hasHookError = lines.some((l) => {
     try {

@@ -18,6 +18,7 @@ const WORKSPACE = path.join(os.tmpdir(), `trae-startup-${Date.now()}`);
 fs.mkdirSync(WORKSPACE, { recursive: true });
 process.env.WORKSPACE_DIR = WORKSPACE;
 process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
+require('./isolation-guard')('startup-checks');
 
 const assert = require('assert');
 const checks = require('../lib/startup-checks');

@@ -55,10 +55,10 @@ function pruneLogDirs(logsDir, now = new Date()) {
 }
 
 /** 启动期入口：失败只打日志，绝不抛出（不影响服务启动）。 */
-function pruneAtStartup(rootDir) {
+function pruneAtStartup(dir) {
   try {
-    const logsDir = path.join(rootDir, 'logs');
-    const r = pruneLogDirs(logsDir);
+    const logsDirPath = dir || require('../lib/paths').logsDir();
+    const r = pruneLogDirs(logsDirPath);
     if (r.removed.length) {
       console.log(`[log-retention] pruned ${r.removed.length} expired log dirs (keep ${retentionDays()}d): ${r.removed.join(', ')}`);
     }

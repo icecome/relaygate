@@ -8,6 +8,7 @@ process.env.WORKSPACE_DIR = path.join(os.tmpdir(), `growth-test-${Date.now()}`);
 process.env.TRAE_API_ENCRYPT_KEY = 'b'.repeat(64);
 process.env.API_KEY = 'test-api-key';
 process.env.ADMIN_KEY = 'test-admin-key';
+require('./isolation-guard')('growth');
 
 const assert = require('assert');
 

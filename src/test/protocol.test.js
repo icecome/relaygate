@@ -14,6 +14,7 @@ process.env.WORKSPACE_DIR = path.join(os.tmpdir(), `trae-proto-${Date.now()}`);
 process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
 process.env.API_KEY = 'test-api-key';
 process.env.ADMIN_KEY = 'test-admin-key';
+require('./isolation-guard')('protocol');
 
 const assert = require('assert');
 const { exportOpenAI, exportAnthropic } = require('../transform/emitters');

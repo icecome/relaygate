@@ -200,7 +200,7 @@ function listen(port, host, fallbacks = []) {
     require('./jobs/qoder-rewards').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
     // 必须在调度器启动之前执行：先清出干净目录再排程，且它是同步阻塞的
-    require('./log/retention').pruneAtStartup(config.ROOT);
+    require('./log/retention').pruneAtStartup();
     console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards + qoder rewards)');
   });
   server.on('error', (err) => {

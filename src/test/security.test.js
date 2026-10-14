@@ -26,6 +26,7 @@ process.env.ADMIN_KEY = 'security-test-admin-key';
 process.env.PORT = String(19000 + (process.pid % 1000));
 process.env.HOST = '127.0.0.1';
 process.env.SCHEDULER_ENABLED = 'false';
+require('./isolation-guard')('security');
 
 const app = require('../index.js');
 const apiKeys = require('../credentials/api-keys');
