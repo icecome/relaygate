@@ -1,4 +1,5 @@
 /** 格式化与纯函数工具。集中口径，避免各页面各写一套。 */
+import type { ChannelId } from './channelIds';
 
 /**
  * 字节数转人话（1024 进制，1 位小数）。
@@ -126,8 +127,11 @@ export function coolRemaining(coolUntil: string | null | undefined, now = Date.n
  *
  * 判定与后端 platform/variant.js 一致，且与筛选器同源：
  * edition 优先，WorkBuddy 的历史值含 'wb' 前缀变体，其余按 Trae 处理。
+ *
+ * 类型直接复用渠道注册表的 ChannelId（而不是再写一份字面量联合）：
+ * 两处各写一份时，新增平台只改一处就会静默不一致。
  */
-export type Platform = 'trae' | 'workbuddy' | 'zcode' | 'qoder';
+export type Platform = ChannelId;
 
 export function platformOf(a: {
   edition?: string | null;

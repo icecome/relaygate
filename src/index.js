@@ -31,6 +31,7 @@ const catTrip = require('./routes/cat-trip'); // WorkBuddy 成长活动端点（
 const apiKeys = require('./routes/api-keys');
 const modelRouterAdmin = require('./routes/model-router');
 const adminSecurity = require('./routes/admin-security');
+const adminChannels = require('./routes/admin-channels'); // 渠道接入清单（能力位 + 账号计数 + 本机探测）
 const { keyRateLimit } = require('./middleware/rate-limit');
 const { authenticate, authenticateAny, requireKeyScope } = require('./middleware/auth');
 const scheduler = require('./jobs/scheduler');
@@ -149,6 +150,7 @@ app.use('/v1/admin', adminNotify);
 app.use('/v1/admin', adminDebug);
 app.use('/v1/admin/model-router', modelRouterAdmin);
 app.use('/v1/admin', adminSecurity);
+app.use('/v1/admin', adminChannels);
 app.use('/v1/api-keys', apiKeys);
 // 模型列表双面可用（转发客户端 + 面板）：与转发面共用同一限流中间件实例。
 // K-2：访问密钥需 models:read scope；登录密钥/管理域直接放行（关卡内判定）。

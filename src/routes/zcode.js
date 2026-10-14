@@ -21,13 +21,23 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 const V = variant.variantOf(variant.ZCODE);
 
-/** 账号出参脱敏（token/apiKey 不出网）。 */
+/**
+ * 账号出参脱敏（token/apiKey 不出网）。
+ *
+ * 除脱敏外还把 token 额度从快照摊平到顶层（`tokenRemaining` / `tokenBuckets`）：
+ * `/v1/credentials` 的 withExpiry 用的就是这两个字段名，运营面若再从
+ * `entitlementSnapshot.tokenRemaining` 里各读一套，同一个「剩余额度」就会有两套
+ * 读取逻辑，早晚漂移。快照本身仍原样透出（既有契约与 docs 都写了它）。
+ */
 function redact(acct) {
   const { token, refreshToken, apiKey, ...rest } = acct || {};
+  const snap = (acct && acct.entitlementSnapshot) || {};
   return {
     ...rest,
     hasToken: !!token,
     hasApiKey: !!apiKey,
+    tokenRemaining: typeof snap.tokenRemaining === 'number' ? snap.tokenRemaining : undefined,
+    tokenBuckets: Array.isArray(snap.tokenBuckets) && snap.tokenBuckets.length ? snap.tokenBuckets : undefined,
   };
 }
 

@@ -42,6 +42,15 @@ const VARIANTS = {
     id: TRAE,
     label: 'Trae',
     edition: TRAE,
+    // 渠道展示元数据（面板「渠道接入」用）。刻意放在变体表内而不是前端常量：
+    // 「新增平台」只需改这一处，前端不会漏掉入口——ZCode 曾在后端全部就绪
+    // （/v1/zcode/local/preview + /local/import）的情况下前端一个按钮都没有。
+    // 只写可核实的客户端来源，不写厂商归属（Qoder 的厂商在本仓库无任何证据）。
+    note: 'Trae IDE 账号池；OAuth 登录换票或粘贴本机凭据 JSON',
+    // 接入方式（静态声明）：oauth = 授权页换票；paste = 粘贴凭据 JSON；
+    // local = 读本机桌面客户端登录态。运行时是否真可用由
+    // /v1/admin/channels 逐项探测（文件在不在、登录没登录），前端按结果渲染。
+    onboarding: ['oauth', 'paste'],
     capability: {
       chat: true,
       checkin: true,
@@ -106,6 +115,8 @@ const VARIANTS = {
     id: WORKBUDDY,
     label: 'WorkBuddy',
     edition: WORKBUDDY,
+    note: 'CodeBuddy / WorkBuddy 桌面端登录态；含成长中心任务',
+    onboarding: ['local', 'paste'],
     capability: {
       chat: true,
       checkin: true,
@@ -163,6 +174,10 @@ const VARIANTS = {
     id: ZCODE,
     label: 'ZCode',
     edition: ZCODE,
+    note: 'ZCode 桌面端登录态；限时套餐自动探测与领取（不参与对话转发）',
+    // ZCode 只有本机导入一条路：客户端 JWT 无 refresh_token、也不发放可移植凭据，
+    // 「粘贴凭据」在它这里没有可粘贴的东西，不要为了界面整齐而假装支持。
+    onboarding: ['local'],
     capability: {
       chat: false,
       checkin: false,
@@ -250,6 +265,8 @@ const VARIANTS = {
     id: QODER,
     label: 'Qoder',
     edition: QODER,
+    note: 'Qoder 桌面端登录态，双区域（国内版 / 国际版）；对话转发仅国际版',
+    onboarding: ['local'],
     // 区域相关域名/路径的取值表。realm 由本机客户端目录推导，见 qoder/local.js。
     realms: {
       [QODER_REALM_CN]: {
@@ -503,6 +520,18 @@ function qoderChatOk(acct) {
   return !!String(acct.token || '').trim();
 }
 
+/**
+ * 全部渠道变体，按展示顺序返回。
+ *
+ * 顺序即 VARIANTS 的定义顺序（JS 对象字符串键保序）：Trae / WorkBuddy / ZCode / Qoder。
+ * /v1/admin/channels 与面板「渠道接入」直接消费它——新增平台只需往 VARIANTS 里
+ * 加一项，聚合端点与前端渠道卡片会自动出现，不必再改第二处（这正是 ZCode
+ * 当初漏掉入口的根因：能力位在变体表里，前端却各写各的弹窗）。
+ */
+function allVariants() {
+  return Object.values(VARIANTS);
+}
+
 module.exports = {
   TRAE,
   WORKBUDDY,
@@ -511,6 +540,7 @@ module.exports = {
   QODER_REALM_CN,
   QODER_REALM_INTL,
   VARIANTS,
+  allVariants,
   TRAE_EDITIONS,
   variantOf,
   normalizeEdition,

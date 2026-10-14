@@ -16,10 +16,12 @@ import {
   resetAllDevices,
 } from '../../shared/api/credentials';
 import { wbCheckin as wbCheckinOne } from '../../shared/api/workbuddy';
+import { listChannels, type Channel } from '../../shared/api/channels';
 import { ApiError } from '../../shared/api/http';
 import { runAction, summarizeBatch } from '../../shared/api/action';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
+import { channelEntry, type WizardKind } from '../../shared/lib/channels';
 import {
   accountState,
   coolRemaining,
@@ -47,7 +49,10 @@ import { usePrompt } from '../../shared/ui/Prompt';
 import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
 import { ImportQoderDialog } from './ImportQoderDialog';
+import { ImportZcodeDialog } from './ImportZcodeDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
+import { ChannelGrid } from './ChannelGrid';
+import { ChannelOpsDialog } from './ChannelOpsDialog';
 import { GrowthPanel } from './GrowthPanel';
 import { ExpiryChip, expirySummary, keepaliveOf, usablePacksOf, worstExpiry } from './accountPacks';
 import { PackDialog } from './PackDialog';
@@ -67,12 +72,15 @@ export default function CredentialsPage() {
   const [showOauth, setShowOauth] = useState(false);
   const [showWbImport, setShowWbImport] = useState(false);
   const [showQoderImport, setShowQoderImport] = useState(false);
+  const [showZcodeImport, setShowZcodeImport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [growthOpen, setGrowthOpen] = useState(false);
   /** 查看权益包的账号；null 表示弹窗关闭 */
   const [packTarget, setPackTarget] = useState<Account | null>(null);
   /** 需要重新登录的账号；null 表示 OAuth 弹窗关闭 */
   const [reloginTarget, setReloginTarget] = useState<Account | null>(null);
+  /** 正在查看运营面的渠道（套餐 / 积分领取）；null 表示弹窗关闭 */
+  const [opsChannel, setOpsChannel] = useState<Channel | null>(null);
 
   const list = useAsyncData(
     (signal) => listAccounts(key, signal),
@@ -80,15 +88,36 @@ export default function CredentialsPage() {
     { enabled: !!key },
   );
 
+  // 渠道接入清单：能力位、账号计数、本机客户端探测结果。
+  // 平台名单来自后端（platform/variant.js），前端不写死——
+  // 写死正是 ZCode 后端全就绪却没有入口的成因。
+  const channels = useAsyncData(
+    (signal) => listChannels(key, signal),
+    [key],
+    { enabled: !!key },
+  );
+
   // 页面可见时每 60 秒触发一次真实余额查询；
   // 重新拉取后同时重读列表与全局汇总，保持侧栏可用数与列表一致。
   const { reload: reloadList } = list;
+  const { reload: reloadChannels } = channels;
   const { reload: reloadSummary } = useSummaryStore();
   const reloadAfterBalance = useCallback(() => {
     reloadList();
     reloadSummary();
   }, [reloadList, reloadSummary]);
   useBalanceAutoRefresh(key, reloadAfterBalance);
+
+  /**
+   * 接入 / 运营面写操作后的统一刷新：账号列表、渠道计数、侧栏汇总一起走。
+   * 刻意不并进 60 秒的余额轮询——渠道清单里的本机客户端探测是磁盘读取，
+   * 没有理由跟着余额一起每分钟跑一遍。
+   */
+  const reloadAll = useCallback(() => {
+    reloadList();
+    reloadChannels();
+    reloadSummary();
+  }, [reloadList, reloadChannels, reloadSummary]);
 
   // 过滤与排序均为派生值，不写入 state
   const rows = useMemo(() => {
@@ -114,6 +143,18 @@ export default function CredentialsPage() {
 
   // 到期汇总只用于工具条提示，明细在行内展开，不占页面主体空间
   const expiry = useMemo(() => expirySummary(rows), [rows]);
+
+  /**
+   * 渠道 id → 渠道对象 / 能力位。
+   * 行内按钮显示什么（签到、领取）一律读后端能力位，不再按平台名硬编码：
+   * 此前是 `platformOf(a) !== 'zcode' && !== 'qoder'`，新增平台时必然漏改，
+   * 且漏改的表现是「按钮显示但后端拒绝」或「有能力的平台没有按钮」。
+   */
+  const channelById = useMemo(() => {
+    const out: Record<string, Channel> = {};
+    for (const c of channels.data?.data ?? []) out[c.id] = c;
+    return out;
+  }, [channels.data]);
 
   /** 统一包装写操作：错误必须展示到 UI，不能只写入 console。（实现见 shared/api/action） */
   async function run(
@@ -203,18 +244,42 @@ export default function CredentialsPage() {
   }
 
   /**
-   * 行内「重新登录」：refreshToken 已过期的账号无法自动续期，
-   * 按平台分发到各自的重新获取凭据入口（Trae 走 OAuth，WorkBuddy 走本机抓取）。
+   * 打开接入向导。向导种类由渠道注册表（shared/lib/channels.ts）解析，
+   * 调用方只说「哪条接入方式」，不再写「平台 → 弹窗」的分支表。
+   */
+  function openWizard(kind: WizardKind) {
+    if (kind === 'trae-oauth') setShowOauth(true);
+    else if (kind === 'trae-paste') setShowImport(true);
+    else if (kind === 'wb-local') setShowWbImport(true);
+    else if (kind === 'qoder-local') setShowQoderImport(true);
+    else if (kind === 'zcode-local') setShowZcodeImport(true);
+  }
+
+  /**
+   * 行内「重新登录」：token / refreshToken 已过期的账号无法自愈，
+   * 按渠道注册表路由到本平台的重新接入向导。
+   *
+   * 此前只特判了 WorkBuddy，ZCode 与 Qoder 会掉进 Trae 的 OAuth 弹窗——
+   * 对一个 Qoder 账号打开 Trae 授权页是明确的错误入口，且用户拿不到任何提示。
+   * Trae 的重新登录是 OAuth 换票，其余三个平台都是「重新读本机客户端」。
    */
   function relogin(a: Account) {
     const platform = platformOf(a);
-    if (platform === 'workbuddy') {
-      setShowWbImport(true);
-      toast(`WorkBuddy 账号需在「接入 WorkBuddy」里重新抓取本机登录态：${a.label || a.id}`, 'warn');
+    const entry = channelEntry(platform);
+    const kind = entry?.wizards.oauth ?? entry?.wizards.local ?? null;
+    if (!kind) {
+      toast(`该渠道暂无可用的重新登录向导：${a.label || a.id}`, 'warn');
       return;
     }
-    setReloginTarget(a);
-    setShowOauth(true);
+    if (kind === 'trae-oauth') {
+      setReloginTarget(a);
+    } else {
+      toast(
+        `请在「${platformLabel(a)}」接入向导里重新读取本机客户端登录态：${a.label || a.id}`,
+        'warn',
+      );
+    }
+    openWizard(kind);
   }
 
   async function resetDevices() {
@@ -314,20 +379,22 @@ export default function CredentialsPage() {
       <Stack>
         {list.error && <ErrorState message={list.error} onRetry={list.reload} />}
 
-        <Panel title="接入新账号">
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button variant="primary" onClick={() => setShowOauth(true)}>
-              Trae OAuth 登录
-            </Button>
-            <Button onClick={() => setShowWbImport(true)}>接入 WorkBuddy</Button>
-            <Button onClick={() => setShowQoderImport(true)}>接入 Qoder</Button>
-            <Button
-              onClick={() => setShowImport(true)}
-              aria-label="导入凭据 JSON"
-            >
-              粘贴凭据导入
-            </Button>
-          </div>
+        {/*
+          渠道接入：卡片由后端 /v1/admin/channels 驱动——能力位来自
+          platform/variant.js，每条接入方式能不能点来自本机客户端实测。
+          此前这里是四个写死的按钮，ZCode 后端全就绪却没有按钮：
+          写死的入口必然随平台增加而漏，且漏了没有任何提示。
+        */}
+        <Panel
+          title="渠道接入"
+          description="接入方式与可用性由后端探测；本机客户端未安装或未登录时，卡片上会说明原因"
+        >
+          <ChannelGrid
+            channels={channels}
+            onWizard={openWizard}
+            onOps={setOpsChannel}
+            onReload={reloadAll}
+          />
         </Panel>
 
         <Panel
@@ -386,6 +453,8 @@ export default function CredentialsPage() {
                   const keepalive = keepaliveOf(a);
                   const keepaliveNeedsRelogin = keepalive.label === '需重新登录';
                   const platform = platformLabel(a);
+                  const pf = platformOf(a);
+                  const cap = channelById[pf]?.capability;
                   return (
                     <tr key={a.id} className="row-hover">
                         <td className="td" data-label="启用">
@@ -528,13 +597,21 @@ export default function CredentialsPage() {
                                 重新登录
                               </Button>
                             )}
-                            {/* 签到按钮按平台能力显示：ZCode 与 Qoder 均无签到能力（后端也会拒绝），
-                                故隐藏，其奖励分别走 /v1/zcode 与 /v1/qoder 的定时任务；
-                                Trae 与 WorkBuddy 均有签到能力，仅端点不同，
-                                checkin() 内部按 platformOf 分发（m-39）。 */}
-                            {platformOf(a) !== 'zcode' && platformOf(a) !== 'qoder' && (
+                            {/* 行内按钮按**后端能力位**显示，不按平台名硬编码：
+                                签到只有 Trae / WorkBuddy 有（ZCode、Qoder 后端会拒绝）；
+                                活动领取只有 ZCode / Qoder 有（Trae、WorkBuddy 走签到）。
+                                checkin() 内部再按 platformOf 分发到各平台端点（m-39）。 */}
+                            {cap?.checkin === true && (
                               <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
                                 签到
+                              </Button>
+                            )}
+                            {/* 活动领取入口：此前注释写着「其奖励走 /v1/zcode 与
+                                /v1/qoder 的定时任务」，但面板里没有任何手动入口——
+                                用户只能等定时任务，且无从知道有没有可领。 */}
+                            {cap?.rewardClaim === true && (
+                              <Button size="sm" disabled={busy} onClick={() => setOpsChannel(channelById[pf] ?? null)}>
+                                领取
                               </Button>
                             )}
                             <Button size="sm" disabled={busy} onClick={() => checkBalance(a)}>
@@ -596,22 +673,32 @@ export default function CredentialsPage() {
           setShowOauth(false);
           setReloginTarget(null);
         }}
-        onDone={list.reload}
+        onDone={reloadAll}
       />
       <ImportWbDialog
         open={showWbImport}
         onClose={() => setShowWbImport(false)}
-        onImported={list.reload}
+        onImported={reloadAll}
       />
       <ImportQoderDialog
         open={showQoderImport}
         onClose={() => setShowQoderImport(false)}
-        onImported={list.reload}
+        onImported={reloadAll}
+      />
+      <ImportZcodeDialog
+        open={showZcodeImport}
+        onClose={() => setShowZcodeImport(false)}
+        onImported={reloadAll}
       />
       <ImportTraeDialog
         open={showImport}
         onClose={() => setShowImport(false)}
-        onImported={list.reload}
+        onImported={reloadAll}
+      />
+      <ChannelOpsDialog
+        channel={opsChannel}
+        onClose={() => setOpsChannel(null)}
+        onChanged={reloadAll}
       />
       <PackDialog account={packTarget} onClose={() => setPackTarget(null)} />
     </PageShell>

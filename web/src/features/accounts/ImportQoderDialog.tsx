@@ -7,8 +7,11 @@
  *   - realm 由后端扫到哪个客户端目录确定，弹窗不传 realm，只负责展示探测结果；
  *   - 两个区域各自独立账号体系，可只导一个。
  *
- * 导入后账号默认 enabled=false：Qoder 转发面本期只开国际版单账号，
- * 且积分活动领取走 /v1/qoder 自己的定时任务，不参与 Trae 账号池调度。
+ * 导入后账号即为**启用**状态：`qoder/local.js#buildAccountFromLocal` 不带
+ * `enabled` 字段，`store.add` 的默认是 `cred.enabled !== false` → true。
+ * （WorkBuddy 是唯一显式 `enabled:false` 的平台，那是它的上游接入边界，
+ * 与 Qoder 无关。）本弹窗底部的「启用并完成」是幂等的兜底：既保存备注，
+ * 也保证既有账号若曾被停用会被启用。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
@@ -221,8 +224,9 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
               placeholder="留空则保留默认标签"
             />
             <Note>
-              导入的账号默认停用。点击「启用并完成」后即可参与每日积分领取；
-              国际版账号同时可参与对话转发（本期仅单账号，国内版转发未开放）。
+              导入即启用：账号可立即参与每日积分领取；国际版账号同时可参与对话转发
+              （本期仅单账号，国内版转发未开放）。点「启用并完成」会保存备注，
+              并确保该账号处于启用状态。
             </Note>
           </>
         )}
