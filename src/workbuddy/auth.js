@@ -294,8 +294,35 @@ function parseCycleTime(ts) {
 }
 
 /**
+ * 包的到期时刻（ms）：取「周期边界」与「扣费截止」中**较晚**者。
+ *
+ * 上游同时给 `CycleEndTime`（计量周期边界）与 `DeductionEndTime`（额度真正作废时刻）。
+ * 用脚本 `scripts/probe-wb-pack-fields.js` 实测某个真实账号的 70 条包：
+ *   - 69 条两者**完全相等**（单周期包，积分确实在周期边界失效）；
+ *   - 唯一不同的是「CodeBuddy个人体验版」：`CycleEndTime=2026-10-31`（17 天后）
+ *     而 `DeductionEndTime=2034-12-12`（8.1 年后），且该包 `CycleCapacityRemain=500`
+ *     —— 真有 500 可用积分。
+ *
+ * 若取 `CycleEndTime`，FEFO 会把这 500 个「2034 年才作废」的积分当成「17 天后作废」，
+ * 于是排到别的账号真正临期的积分前面被优先烧掉；参照项目在 Trae 上实测到的是同一形态
+ * （其结论原文：「取 CycleEndTime 会把每月刷新的套餐判成'马上作废'」）。
+ *
+ * 取较晚者对单周期包**行为不变**（两者相等），只在对真有长期积分的包上改变排序，
+ * 因此改动面极小。不加这个 max 反而有风险：取 `DeductionEndTime` 单值会让某些
+ * 上游只填了周期边界的包失去到期信息。
+ */
+function packExpireMs(cycleRaw, deductRaw) {
+  const c = parseCycleTime(cycleRaw);
+  const d = parseCycleTime(deductRaw);
+  if (c != null && d != null) return Math.max(c, d);
+  if (d != null) return d;
+  return c;
+}
+
+/**
  * 查询资源包明细（含到期时间），供余额/临期展示。
- * 与网页端 plans-usage 一致：summary 取 PackageCodes，free/paid 取包容量与 CycleEndTime。
+ * 与网页端 plans-usage 一致：summary 取 PackageCodes，free/paid 取包容量与到期时刻
+ * （到期时刻的取法见 packExpireMs：周期边界与扣费截止取较晚者）。
  * 失败不抛错，返回空列表（不影响签到主流程）。
  */
 async function fetchResourcePacks(info) {
@@ -349,7 +376,9 @@ async function fetchResourcePacks(info) {
           const id = a.AccountId || a.accountId;
           if (id != null && seen.has(id)) continue;
           if (id != null) seen.add(id);
-          const expireMs = parseCycleTime(a.CycleEndTime || a.cycleEndTime);
+          const cycleMs = parseCycleTime(a.CycleEndTime || a.cycleEndTime);
+          const deductMs = parseCycleTime(a.DeductionEndTime || a.deductionEndTime);
+          const expireMs = packExpireMs(a.CycleEndTime || a.cycleEndTime, a.DeductionEndTime || a.deductionEndTime);
           const remaining = a.CycleCapacityRemain != null
             ? Number(a.CycleCapacityRemain)
             : (a.remaining != null ? Number(a.remaining) : null);
@@ -366,6 +395,13 @@ async function fetchResourcePacks(info) {
             remaining,
             unlimited: false,
           };
+          // 长期积分是可观测事实，不该只体现在排序里：把「扣费截止远晚于周期边界」
+          // 这件事打出来，用户与排查者才知道 FEFO 为什么这样排。
+          if (cycleMs != null && deductMs != null && deductMs - cycleMs > 86400000) {
+            console.log(`[wb-packs] ${pack.name || pack.packId} 额度扣费截止 `
+              + `${new Date(deductMs).toISOString().slice(0, 10)} 晚于周期边界 `
+              + `${new Date(cycleMs).toISOString().slice(0, 10)}，FEFO 按前者排序（剩 ${remaining}）`);
+          }
           out.packs.push(pack);
           out.totalRemaining += remaining;
         }
@@ -393,6 +429,7 @@ module.exports = {
   checkin,
   fetchResourcePacks,
   parseCycleTime,
+  packExpireMs,
   CHECKIN_CODE_ALREADY,
   UA,
 };

@@ -772,6 +772,40 @@ t('workbuddy parseCycleTime 解析毫秒与字符串', () => {
   assert.ok(typeof s === 'number' && s > 0);
 });
 
+console.log('workbuddy packExpireMs（D11：长期积分取扣费截止而非周期边界）');
+
+t('D11：单周期包（两者相等）取该值，行为与改动前一致', () => {
+  const { packExpireMs } = require('../workbuddy/auth');
+  const cycle = '2026-10-15 09:00:10';
+  const deduct = Date.parse('2026-10-15T09:00:10+08:00');
+  assert.strictEqual(packExpireMs(cycle, deduct), Date.parse('2026-10-15T09:00:10+08:00'));
+});
+
+t('D11：扣费截止远晚于周期边界时取后者（否则 FEFO 会把长期积分当临期先烧）', () => {
+  const { packExpireMs } = require('../workbuddy/auth');
+  // 实测样本：CodeBuddy个人体验版 CycleEndTime=2026-10-31、DeductionEndTime=2034-12-12，剩 500
+  const cycle = '2026-10-31 23:59:59';
+  const deduct = 2049548965000;
+  const got = packExpireMs(cycle, deduct);
+  assert.strictEqual(got, deduct, '必须取较晚的扣费截止，否则 500 个 2034 年才作废的积分会被当临期');
+  assert.ok(got > Date.parse('2034-01-01T00:00:00Z'), '实测量级：8 年后');
+});
+
+t('D11：防御性——扣费截止早于周期边界时仍取较晚者', () => {
+  const { packExpireMs } = require('../workbuddy/auth');
+  const cycle = 2000000000000;
+  const deduct = 1900000000000;
+  assert.strictEqual(packExpireMs(cycle, deduct), 2000000000000);
+});
+
+t('D11：只有一个可解析时用那个；都不可解析返回 null（不得伪造到期时刻）', () => {
+  const { packExpireMs } = require('../workbuddy/auth');
+  assert.strictEqual(packExpireMs(2000000000000, null), 2000000000000);
+  assert.strictEqual(packExpireMs(null, 2000000000000), 2000000000000);
+  assert.strictEqual(packExpireMs(null, null), null);
+  assert.strictEqual(packExpireMs('', undefined), null);
+});
+
 t('routes/workbuddy 跨机导入拒绝 $wbEncrypted 加密 token（不得入库 [object Object]）', () => {
   // 静态校验防护判定式存在（引入 index 会启动服务，不适合单测）
   const { readFileSync } = require('fs');
