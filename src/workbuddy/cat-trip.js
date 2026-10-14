@@ -49,9 +49,28 @@ const PATH_REDEEM = '/redeem';
 const PATH_LOTTERY_CHANCES = '/lottery/chances';
 const PATH_LOTTERY_DRAW = '/lottery/draw';
 
-/** 幂等键：官方前端用 "u-<uuid>"，服务端据此去重。 */
-function clientToken() {
-  return 'u-' + crypto.randomUUID();
+/**
+ * 幂等键。
+ *
+ * 官方前端用 "u-<uuid>"，服务端据此去重：同一个 key 的重复写请求只生效一次。
+ * 早期实现每次调用都新生成 uuid，等于没有幂等键——自动编排被重跑时
+ * （调度补跑、重启后续跑、用户重复点「自动成长」）会以全新 key 再次提交，
+ * 上游认不出这是同一次操作，可重复发奖的接口就会重复入账。
+ *
+ * 因此分两种来源：
+ *   - **传 seed**（自动编排按「账号 + 本地日期」派生）：同一账号同一天内、
+ *     跨进程重启都得到同一个 key，重跑天然幂等。所有这些动作上游本就是
+ *     按日限次的，同一天重放不会让用户少拿东西。
+ *   - **不传 seed**（用户在面板上手动点单次动作）：每次新的 uuid。用户点第二次
+ *     是明确想再执行一次（如再抽一次奖），不能用同一个 key 把它去重掉。
+ *
+ * @param {string} scope 动作标识，保证同一天内不同动作拿到不同 key
+ * @param {string} [seed] 账号 + 本地日期派生串；缺省时退化为随机 uuid
+ */
+function clientToken(scope, seed) {
+  if (!seed) return 'u-' + crypto.randomUUID();
+  const h = crypto.createHash('sha1').update(`${seed}|${scope}`).digest('hex');
+  return 'u-' + h.slice(0, 32);
 }
 
 function growthHeaders(info) {
@@ -244,9 +263,9 @@ async function fetchBuddyQuota(info) {
 }
 
 /** 消耗能量开 Buddy 盲盒（写；需 client_token）。 */
-async function openBuddyBox(info, count = 1) {
+async function openBuddyBox(info, count = 1, opts = {}) {
   const n = Number(count) > 0 ? Math.floor(Number(count)) : 1;
-  const r = await doReq(PATH_BUDDY_OPEN, info, { method: 'POST', body: { count: n, client_token: clientToken() } });
+  const r = await doReq(PATH_BUDDY_OPEN, info, { method: 'POST', body: { count: n, client_token: clientToken('buddy-open', opts.seed) } });
   if (!r.ok) return { ok: false, code: r.code, reason: r.reason };
   const results = Array.isArray(r.data.results) ? r.data.results : [];
   const names = results.map((x) => {
@@ -272,10 +291,10 @@ async function fetchTasks(info) {
 }
 
 /** 批量接单（写；{task_codes:[], client_token}）。 */
-async function acceptTasks(info, codes) {
+async function acceptTasks(info, codes, opts = {}) {
   const list = Array.isArray(codes) ? codes.filter(Boolean).slice(0, 20) : [];
   if (!list.length) return { ok: false, reason: 'task_codes required', code: 400 };
-  const r = await doReq(PATH_TASKS_ACCEPT, info, { method: 'POST', body: { task_codes: list, client_token: clientToken() } });
+  const r = await doReq(PATH_TASKS_ACCEPT, info, { method: 'POST', body: { task_codes: list, client_token: clientToken('tasks-accept', opts.seed) } });
   if (!r.ok) return { ok: false, code: r.code, reason: r.reason };
   const results = Array.isArray(r.data.results) ? r.data.results : [];
   return { ok: true, results };
@@ -325,10 +344,10 @@ async function fetchStreak(info) {
  * /streak 的 makeup_dates 偶尔会列出实际已签到的日期（与 heatmap 不一致），
  * 上游以 400 "date is not broken" 拒绝——属业务常态，非失败。
  */
-async function useMakeupCard(info, targetDate) {
+async function useMakeupCard(info, targetDate, opts = {}) {
   const d = String(targetDate || '').trim();
   if (!d) return { ok: false, reason: 'target_date required', code: 400 };
-  const r = await doReq(PATH_MAKEUP_USE, info, { method: 'POST', body: { target_date: d, client_token: clientToken() } });
+  const r = await doReq(PATH_MAKEUP_USE, info, { method: 'POST', body: { target_date: d, client_token: clientToken('makeup', opts.seed) } });
   if (!r.ok) {
     if (r.code === 400 && /not broken|no makeup needed/i.test(r.reason || '')) {
       return { ok: false, code: 400, result: 'not_broken', reason: r.reason };
@@ -360,12 +379,12 @@ async function fetchRedeemSummary(info) {
  * 兑换连登奖励（写）。tier 必须是档位标识 "7d"/"14d"/"28d"，
  * 传天数或档位名会 400。403 = 连登天数不足（业务常态，不算失败）。
  */
-async function redeemTier(info, tier) {
+async function redeemTier(info, tier, opts = {}) {
   const t = String(tier || '').trim();
   if (!['7d', '14d', '28d'].includes(t)) {
     return { ok: false, reason: 'tier must be one of 7d/14d/28d', code: 400 };
   }
-  const r = await doReq(PATH_REDEEM, info, { method: 'POST', body: { tier: t, client_token: clientToken() } });
+  const r = await doReq(PATH_REDEEM, info, { method: 'POST', body: { tier: t, client_token: clientToken('redeem', opts.seed) } });
   if (!r.ok) {
     if (r.code === 403) return { ok: false, code: 403, result: 'tier_locked', reason: r.reason };
     if (r.code === 409) return { ok: false, code: 409, result: 'already_redeemed', reason: r.reason };
@@ -389,8 +408,8 @@ async function fetchLotteryChances(info) {
 }
 
 /** 抽奖（写；{client_token}）。 */
-async function drawLottery(info) {
-  const r = await doReq(PATH_LOTTERY_DRAW, info, { method: 'POST', body: { client_token: clientToken() } });
+async function drawLottery(info, opts = {}) {
+  const r = await doReq(PATH_LOTTERY_DRAW, info, { method: 'POST', body: { client_token: clientToken('lottery-draw', opts.seed) } });
   if (!r.ok) {
     if (r.code === 400 && /chance/i.test(r.reason)) return { ok: false, code: 400, result: 'no_chance', reason: r.reason };
     return { ok: false, code: r.code, result: 'error', reason: r.reason };

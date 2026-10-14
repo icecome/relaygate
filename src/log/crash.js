@@ -7,11 +7,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { localDateKey } = require('../lib/util');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 
 function todayDir() {
-  return path.join(ROOT, 'logs', new Date().toISOString().slice(0, 10));
+  // 本地日期：与 traffic/audit 共用 logs/<date>/ 目录，日期键必须一致。
+  return path.join(ROOT, 'logs', localDateKey());
 }
 
 function serializeError(err) {

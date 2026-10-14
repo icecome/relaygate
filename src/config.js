@@ -6,7 +6,66 @@
  */
 const fs = require('fs');
 const path = require('path');
-require('dotenv').config();
+
+const ROOT = path.resolve(__dirname, '..');
+const ENV_FILE = path.join(ROOT, '.env');
+
+/**
+ * 进程启动时**真实存在**的环境变量名。
+ *
+ * 这是 .env 与进程环境之间的优先级依据，必须冻结在启动那一刻：
+ * shell / 服务管理器 / 测试脚本显式给出的值优先级高于 .env 文件，
+ * 只有进程环境里没有的键才允许由 .env 填充与刷新。
+ *
+ * 刻意挂在 globalThis 的 Symbol 上而不是用模块级常量：config.js 被
+ * `delete require.cache[...]` 之后重新加载时（测试与若干脚本会这么做，见
+ * test/unit.test.js 的 TRAE_UPSTREAM_FUNCTION 用例），模块级常量会重新快照
+ * 一次——而那一刻 .env 注入的键早已在 process.env 里，会被误判成「进程环境
+ * 显式给出」，此后 reload 再也刷不动它们（热重载静默失效）。
+ * 以进程为单位只快照一次，才是这个集合应有的语义。
+ */
+const BOOT_ENV_SYMBOL = Symbol.for('relaygate.bootEnvKeys');
+if (!globalThis[BOOT_ENV_SYMBOL]) {
+  globalThis[BOOT_ENV_SYMBOL] = new Set(Object.keys(process.env));
+}
+const BOOT_ENV_KEYS = globalThis[BOOT_ENV_SYMBOL];
+
+/**
+ * 加载 / 重载 .env。
+ *
+ * 两处细节缺一个就会静默出错：
+ *
+ * 1. **显式给路径**：不给时 dotenv 按 process.cwd() 查找，从别的目录启动
+ *    （起服务与跑脚本的 cwd 常常不同）就静默读不到任何配置。
+ *
+ * 2. **只刷新「进程环境没有的键」，而不是无脑 `override: true`**：
+ *    早先 reload 里的 `require('dotenv').config()` 因为 dotenv 默认不覆盖
+ *    已存在的 process.env 而完全是空操作——用户改了 .env 点「热重载」，
+ *    日志打了 reloaded，实际一个值都没变。但反过来用 `override: true`
+ *    同样错：那会让 .env 反过来压掉调用方显式设置的环境变量。
+ *    本项目已有真实受害场景——`src/test/unit.test.js:12` 在 require 之前
+ *    把 `WORKSPACE_DIR` 指向临时目录做隔离，而 `.env` 里也有 WORKSPACE_DIR；
+ *    一旦 override，测试就会跑到真实的 output/ 状态目录上（凭据用另一把
+ *    密钥加密，直接解密失败）。
+ *
+ *    故按「启动时的进程环境」逐个键判定：BOOT_ENV_KEYS 里的键永不覆盖，
+ *    其余键每次加载都按文件当前内容刷新。
+ */
+function loadEnv() {
+  let parsed;
+  try {
+    parsed = require('dotenv').parse(fs.readFileSync(ENV_FILE));
+  } catch (e) {
+    // 文件不存在是正常情况（纯环境变量部署），只在确实是解析/读取错误时提示
+    if (e && e.code !== 'ENOENT') console.error(`[config] Failed to load ${ENV_FILE}: ${e.message}`);
+    return;
+  }
+  for (const [k, v] of Object.entries(parsed || {})) {
+    if (BOOT_ENV_KEYS.has(k)) continue;
+    process.env[k] = v;
+  }
+}
+loadEnv();
 
 function readJson(p, fallback) {
   try {
@@ -17,8 +76,6 @@ function readJson(p, fallback) {
     return fallback;
   }
 }
-
-const ROOT = path.resolve(__dirname, '..');
 
 const modelConfig = readJson(path.join(ROOT, 'model-config.json'), {
   models: {}, settings: {}
@@ -117,7 +174,14 @@ const config = {
   notifyDedupeMs: parseInt(process.env.NOTIFY_DEDUPE_MS || String(60 * 60 * 1000), 10),
   // 通知合并窗口：同一事件在窗口内重复触发时，窗口结束补发一条合并摘要（毫秒）
   notifyMergeMs: parseInt(process.env.NOTIFY_MERGE_MS || String(10 * 60 * 1000), 10),
-  workspaceDir: process.env.WORKSPACE_DIR || path.join(ROOT, 'output'),
+  // 状态根目录：一律解析为绝对路径。
+  //
+  // 必须 resolve，不能原样用 env 值：.env 里写的是相对路径 ./output，而
+  // credentials/db.js、lib/paths.js、model-router/store.js 都直接拿它拼文件路径。
+  // 留相对路径意味着「从哪个目录启动，就用哪个库」——换个 cwd 启动会静默打开
+  // 另一个 trae-relay.db，用户看到的是「账号全丢了」。相对路径按项目根解析，
+  // 与 .env 本身的解析基准（ENV_FILE 固定在 ROOT）一致。
+  workspaceDir: path.resolve(ROOT, process.env.WORKSPACE_DIR || 'output'),
   logLevel: process.env.LOG_LEVEL || 'info',
   // 是否写旧格式逐请求 JSON 文件（默认关；默认写 traffic.jsonl + 控制台一行）
   legacyTrafficFiles: process.env.LEGACY_TRAFFIC_FILES === 'true',
@@ -213,8 +277,8 @@ const config = {
 config.reload = function reload() {
   // 重新读取 model-config.json
   const freshModelConfig = readJson(path.join(ROOT, 'model-config.json'), { models: {}, settings: {} });
-  // 重新加载 .env（不覆盖已存在的环境变量，仅刷新可热更项）
-  try { require('dotenv').config(); } catch { /* ignore */ }
+  // 重新加载 .env：只刷新「进程环境未显式给出」的键，见 loadEnv 注释
+  loadEnv();
   // 更新可热更的运行参数
   config.modelConfig = freshModelConfig;
   // 用同一构造函数重建解析器，保证与初始加载的返回形态一致

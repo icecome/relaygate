@@ -114,6 +114,19 @@ async function wbCheckinAccount(accountId) {
     return result;
   }
 
+  // claim 返回成功（code=0，且不是「已签到」）后必须回读 status 才能标 claimed。
+  //
+  // 上游出现过「claim 回 200 且 code=0，但账号级状态仍是未签」的情形（Trae 侧已实测，
+  // 见 upstream/checkin.js#confirmCheckedIn 的同名处理）：把这种响应直接记成 claimed，
+  // 面板显示签到成功、实际没到账，且当天不会重试——失败被永久掩盖。
+  // 回读失败（网络抖动）时不能据此判假成功，只在「明确读到 checkedIn === false」时才推翻。
+  const confirmed = await wbAuth.checkinStatus(info).catch(() => null);
+  if (confirmed && confirmed.ok && confirmed.checkedIn === false) {
+    console.warn(`[wb-checkin] claim code=0 but status still unchecked account=${accountId}`);
+    store.update(accountId, { lastCheckinAt: at, lastCheckinResult: 'claim_unconfirmed' });
+    throw new Error('checkin claim returned success but status still unchecked');
+  }
+
   store.update(accountId, { lastCheckinAt: at, lastCheckinResult: 'claimed' });
   result.claimed = true;
   result.checkedIn = true;
@@ -121,6 +134,12 @@ async function wbCheckinAccount(accountId) {
   if (ck.credited != null) result.checkinCredits = ck.credited;
   if (ck.streakDays != null) result.streakDays = ck.streakDays;
   if (ck.totalCredits != null) result.totalCredits = ck.totalCredits;
+  // 回读成功时以回读值覆盖 claim 响应里的自报值（上游偶尔不回传明细）
+  if (confirmed && confirmed.ok) {
+    if (confirmed.streakDays != null) result.streakDays = confirmed.streakDays;
+    if (confirmed.totalCredits != null) result.totalCredits = confirmed.totalCredits;
+    if (confirmed.todayCredit != null) result.checkinCredits = confirmed.todayCredit;
+  }
   return result;
 }
 

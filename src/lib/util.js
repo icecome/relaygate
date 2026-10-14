@@ -94,6 +94,25 @@ function localDateKey(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * 最近 days 天的本地日期键，新 → 旧。
+ *
+ * 用日历减法（`new Date(y, m, d - i)`）而不是 `Date.now() - i*86400000`：
+ * 后者按固定 24h 平移，遇到夏令时切换日会跳过或重复一天，导致
+ * 「最近 N 天」的窗口与按本地日期切的日志目录错位一格。
+ * 本机为中国时区（无 DST），但该函数被所有按日读取日志的路径共用，
+ * 不能把正确性押在部署时区上。
+ */
+function recentLocalDateKeys(days) {
+  const n = Math.max(0, Math.floor(Number(days) || 0));
+  const now = new Date();
+  const keys = [];
+  for (let i = 0; i < n; i++) {
+    keys.push(localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i)));
+  }
+  return keys;
+}
+
 /** 等到指定绝对时刻；目标已过则立即返回。 */
 async function sleepUntil(targetMs) {
   const wait = Number(targetMs) - Date.now();
@@ -143,4 +162,5 @@ module.exports = {
   planSpread,
   runPlanned,
   localDateKey,
+  recentLocalDateKeys,
 };

@@ -18,6 +18,7 @@ const { readTrafficLines, isMetered, numTok, isMasked, tokenSource, costOf } = r
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
 const { round2, round4 } = require('../lib/round');
+const { localDateKey, recentLocalDateKeys } = require('../lib/util');
 
 // 读优先新位置，旧位置作为最后手段（缓存本身可重建，不做逐文件迁移）
 const CACHE_DIR = () => {
@@ -34,22 +35,19 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
  *   3 补 cacheReadTokens；4 补 token 来源三分类；
  *   5 补 tokensLost；6 estimatedCost 改为按当前标定重算；
  *   7 numTok 接受数字字符串（旧版写入文件的格式），tokensLost 仅计真脱敏行；
- *   8 补 costUpper（缺 cacheRead、按上界计价的行数）。
+ *   8 补 costUpper（缺 cacheRead、按上界计价的行数）；
+ *   9 按日键改为**本地日期**（原为 UTC，东八区 00:00-08:00 的请求落到前一天），
+ *     同时按模型补 errors / promptTokens / completionTokens。
  */
-const BUCKET_VERSION = 8;
+const BUCKET_VERSION = 9;
 
 function todayKey() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return localDateKey();
 }
 
-/** 最近 days 天的日期键（新→旧）。 */
+/** 最近 days 天的日期键（新→旧），本地日期口径，与日志目录一致。 */
 function recentDays(days) {
-  const keys = [];
-  for (let d = 0; d < days; d++) {
-    keys.push(new Date(Date.now() - d * 86400000).toISOString().slice(0, 10));
-  }
-  return keys;
+  return recentLocalDateKeys(days);
 }
 
 function cacheFile(dateKey) {
@@ -111,8 +109,10 @@ function buildDayBucket(rows, dateKey) {
     b.toolCalls += Number(r.toolCalls) || 0;
     if (typeof r.durationMs === 'number') { b.durationSumMs += r.durationMs; b.durationCount++; }
     const m = r.model || 'unknown';
-    const bm = b.byModel[m] || (b.byModel[m] = { requests: 0, tokens: 0, metered: 0, cost: 0, cacheReadTokens: 0 });
+    const bm = b.byModel[m] || (b.byModel[m] = { requests: 0, errors: 0, tokens: 0, metered: 0, cost: 0, cacheReadTokens: 0, promptTokens: 0, completionTokens: 0 });
     bm.requests++; bm.tokens += tok; if (src !== 'none') bm.metered++; bm.cost += cost; bm.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
+    bm.promptTokens += pt; bm.completionTokens += ct;
+    if (r.error || (r.status && r.status >= 400)) bm.errors++;
     const a = r.account || 'unknown';
     const ba = b.byAccount[a] || (b.byAccount[a] = { requests: 0, errors: 0, tokens: 0, metered: 0, cost: 0 });
     ba.requests++;
@@ -188,12 +188,17 @@ function cachedModelStats(days) {
     for (const [m, v] of Object.entries(b.byModel)) {
       const acc = byModel[m] || (byModel[m] = { model: m, requests: 0, errors: 0, tokens: 0, metered: 0, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, estimatedCost: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0 });
       acc.requests += v.requests;
-      // 误差率：桶内没有分模型 error 计数，无法按该模型实际请求/误差计算——用整体近似：
-      // 桶级无 per-model errors，标记 errors 为 0（模型级 error 主要在 traffic 明细里，属可接受近似）
+      // errors / promptTokens / completionTokens 自桶版本 9 起按模型逐个累计，
+      // 是真实值而非 0。桶版本 < 9 的旧桶会被 readCache 按版本号拒绝，不会误读。
+      acc.errors += v.errors || 0;
       acc.tokens += v.tokens;
       acc.metered += v.metered || 0;
+      acc.promptTokens += v.promptTokens || 0;
+      acc.completionTokens += v.completionTokens || 0;
       acc.cacheReadTokens += v.cacheReadTokens || 0;
       acc.estimatedCost += v.cost;
+      // 时长与工具调用数桶内只按天汇总，没有分模型维度，只能按请求数占比摊派——
+      // 这是估算，avgDurationMs 因此是近似值，展示层不标注精确口径。
       acc.durationSumMs += b.durationSumMs * (v.requests / Math.max(1, b.requests));
       acc.durationCount += Math.round(b.durationCount * (v.requests / Math.max(1, b.requests)));
       acc.toolCalls += Math.round(b.toolCalls * (v.requests / Math.max(1, b.requests)));

@@ -11,15 +11,23 @@ const { writeJsonAtomic } = require('../lib/atomic-write');
 const { maskSecret } = require('../lib/mask');
 const config = require('../config');
 const { estimateCost } = require('../models/rates');
+const { localDateKey } = require('../lib/util');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let seq = 0;
 // 已确认存在的日志目录，仅跨日时变化，避免每请求一次 mkdir syscall。
 let ensuredDir = null;
 
+/**
+ * 当日日志目录，按**本地**日期切分。
+ *
+ * 早期实现用 `toISOString().slice(0,10)`（UTC），而统计缓存与面板的
+ * 「今天」用的是本地日期，两者在东八区相差 8 小时：本地 00:00-08:00 的请求
+ * 会被写进前一天的目录，按本地日历画热力图就整体错位一格。
+ * 目录名与读取端（stats.readTrafficLines）必须同为本地日期键。
+ */
 function todayDir() {
-  const d = new Date();
-  return path.join(ROOT, 'logs', d.toISOString().slice(0, 10));
+  return path.join(ROOT, 'logs', localDateKey());
 }
 
 /** 确保目录存在（同一天只 mkdir 一次）。 */

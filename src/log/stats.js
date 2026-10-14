@@ -9,13 +9,13 @@ const path = require('path');
 const config = require('../config');
 const { estimateCost } = require('../models/rates');
 const { round2, round4 } = require('../lib/round');
+const { recentLocalDateKeys } = require('../lib/util');
 
 /** 读取最近 N 天的 traffic.jsonl 行；按日期从新到旧合并，分页时优先命中近期数据。 */
 function readTrafficLines(days) {
   const rows = [];
   const base = path.join(config.ROOT, 'logs');
-  for (let d = 0; d < days; d++) {
-    const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+  for (const day of recentLocalDateKeys(days)) {
     const file = path.join(base, day, 'traffic.jsonl');
     if (!fs.existsSync(file)) continue;
     const text = fs.readFileSync(file, 'utf-8');

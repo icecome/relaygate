@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 const pool = require('../credentials/pool');
+const { localDateKey, recentLocalDateKeys } = require('../lib/util');
 const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
@@ -183,7 +184,8 @@ router.post('/test-chat', admin, async (req, res) => {
 // SSE 调试模式
 
 const SSE_DEBUG_ENABLED = () => process.env.TRAE_DEBUG_SSE === 'true';
-const SSE_DEBUG_DIR = () => path.join(config.ROOT, 'logs', new Date().toISOString().slice(0, 10));
+// 与写入端（upstream/client.js#sseDebugWrite）共用本地日期键，否则跨零点会读写错目录
+const SSE_DEBUG_DIR = () => path.join(config.ROOT, 'logs', localDateKey());
 const SSE_DEBUG_FILE = () => path.join(SSE_DEBUG_DIR(), 'sse-debug.jsonl');
 
 /** SSE 调试状态。 */
@@ -202,8 +204,7 @@ router.get('/debug/sse', admin, (req, res) => {
 
   const rows = [];
   const base = path.join(config.ROOT, 'logs');
-  for (let d = 0; d < days; d++) {
-    const day = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+  for (const day of recentLocalDateKeys(days)) {
     const file = path.join(base, day, 'sse-debug.jsonl');
     if (!fs.existsSync(file)) continue;
     const text = fs.readFileSync(file, 'utf-8');

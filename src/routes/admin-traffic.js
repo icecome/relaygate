@@ -10,6 +10,7 @@
  */
 const { Router } = require('express');
 const { authenticateAdmin } = require('../middleware/auth');
+const { localDateKey } = require('../lib/util');
 const { readTrafficLines, dailyStats, modelStats, accountStats, numTok, isMasked } = require('../log/stats');
 const { loadRateMap } = require('../models/rates');
 const bu = require('../workbuddy/billing-usage');
@@ -21,6 +22,15 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 /** 缓存开关：STATS_CACHE=off 时回退原全量扫描路径。 */
 const statsCacheEnabled = () => process.env.STATS_CACHE !== 'off';
+
+/**
+ * 统计端点的最大查询窗口（天）。
+ *
+ * 面板的日历热力图固定看 17 周 = 119 天，向上取整到 180 天留出余量；
+ * 原先的 90 天上限会让热力图取不满 17 列。窗口上限只是防御性护栏
+ * （避免有人传 days=100000 逐日扫盘），不是产品限制。
+ */
+const MAX_STATS_DAYS = 180;
 
 /** 流量日志（读 logs/YYYY-MM-DD/traffic.jsonl）；page/page_size 开启分页，缺省保持旧行为。 */
 router.get('/traffic', admin, (req, res) => {
@@ -119,7 +129,7 @@ router.get('/credit-history', admin, (req, res) => {
  */
 router.get('/stats/daily', admin, async (req, res) => {
   try {
-    const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), 90);
+    const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), MAX_STATS_DAYS);
     await loadRateMap();
     const data = statsCacheEnabled()
       ? require('../log/stats-cache').cachedDailyStats(days)
@@ -158,7 +168,7 @@ router.get('/stats/daily', admin, async (req, res) => {
 /** 按模型聚合：requests / tokens / avgDurationMs / estimatedCost。 */
 router.get('/stats/models', admin, async (req, res) => {
   try {
-    const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), 90);
+    const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), MAX_STATS_DAYS);
     await loadRateMap();
     if (statsCacheEnabled()) {
       const { cachedModelStats } = require('../log/stats-cache');
@@ -177,7 +187,7 @@ router.get('/stats/models', admin, async (req, res) => {
 /** 按账号聚合：requests / tokens / estimatedCost / errorRate。 */
 router.get('/stats/accounts', admin, async (req, res) => {
   try {
-    const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), 90);
+    const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), MAX_STATS_DAYS);
     await loadRateMap();
     if (statsCacheEnabled()) {
       const { cachedAccountStats } = require('../log/stats-cache');
@@ -235,9 +245,10 @@ router.get('/stats/client', admin, (req, res) => {
     const cl = require('../log/client-logs');
     const r = cl.scan({ force });
 
-    // 按日窗口裁剪（客户端日志保留全部历史，前端只看最近 days 天）
-    const cutoff = new Date(Date.now() - (days - 1) * 86400000);
-    const cutoffKey = `${cutoff.getFullYear()}-${String(cutoff.getMonth() + 1).padStart(2, '0')}-${String(cutoff.getDate()).padStart(2, '0')}`;
+    // 按日窗口裁剪（客户端日志保留全部历史，前端只看最近 days 天）。
+    // 用日历减法取本地日期，不能用固定 24h 平移（夏令时切换日会错位一天）。
+    const now = new Date();
+    const cutoffKey = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - (days - 1)));
     const byDay = r.byDay.filter((d) => d.date >= cutoffKey);
 
     // 模型明细同样按窗口重算：桶里的 byModel 是全量，不能直接截断

@@ -15,7 +15,7 @@ const store = require('../credentials/store');
 const auth = require('../auth');
 const wbAuth = require('../workbuddy/auth');
 const g = require('../workbuddy/cat-trip');
-const { sleep } = require('../lib/util');
+const { sleep, localDateKey } = require('../lib/util');
 const { notify } = require('../notify');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const fs = require('fs');
@@ -63,6 +63,11 @@ async function runAccount(a, opts = {}) {
   const label = a.label || a.id;
   const info = await toInfo(a.id);
 
+  // 幂等键种子：同一账号 + 同一天内稳定，跨进程重启/重跑不变
+  // （见 workbuddy/cat-trip.js#clientToken）。这些写动作上游本就按日限次，
+  // 用稳定键重放不会让用户少拿东西，却能避免「补跑一轮 → 重复入账」。
+  const seed = `${a.id}|${localDateKey()}`;
+
   // 1) 旅行
   try {
     const st = await g.fetchStatus(info);
@@ -99,7 +104,7 @@ async function runAccount(a, opts = {}) {
     } else {
       const pending = t.tasks.filter((x) => x.status === 'available' && x.code).map((x) => x.code);
       if (pending.length) {
-        const ar = await g.acceptTasks(info, pending);
+        const ar = await g.acceptTasks(info, pending, { seed });
         if (ar.ok) {
           const bad = ar.results.filter((r) => r.status === 'error');
           actions.push({ seg: 'tasks', ok: true, msg: `接单 ${ar.results.length - bad.length}/${ar.results.length}${bad.length ? `（${bad.length} 项未就绪）` : ''}` });
@@ -137,7 +142,7 @@ async function runAccount(a, opts = {}) {
       let errMsg = null;
       for (const date of s.makeupDates) {
         if (done) break;
-        const mr = await g.useMakeupCard(info, date);
+        const mr = await g.useMakeupCard(info, date, { seed });
         if (mr.ok) {
           actions.push({ seg: 'makeup', ok: true, msg: `补登 ${date}（剩 ${mr.cardsLeft ?? '?'} 张）` });
           done = true;
@@ -160,7 +165,7 @@ async function runAccount(a, opts = {}) {
     if (rs.ok) {
       for (const t of rs.tiers) {
         if (!t.status || t.status === 'claimed' || t.status === 'locked') continue;
-        const rr = await g.redeemTier(info, t.tier);
+        const rr = await g.redeemTier(info, t.tier, { seed });
         if (rr.ok) {
           actions.push({ seg: 'redeem', ok: true, msg: `兑换 ${t.tier}（+credit${rr.credit ?? 0} +energy${rr.energy ?? 0}）` });
           notify('growth_claimed', { accountId: a.id, label, message: `连登兑换 ${t.tier} 成功` }, 'WorkBuddy 连登兑换').catch(() => {});
@@ -178,7 +183,7 @@ async function runAccount(a, opts = {}) {
   try {
     const lc = await g.fetchLotteryChances(info);
     if (lc.ok && lc.balance > 0) {
-      const dr = await g.drawLottery(info);
+      const dr = await g.drawLottery(info, { seed });
       if (dr.ok) {
         const extra = dr.needAddress ? '（实物奖，需到成长中心填收件信息）' : '';
         actions.push({ seg: 'lottery', ok: true, msg: `开盲盒获得：${dr.prize || '未知'}${extra}` });
@@ -196,7 +201,7 @@ async function runAccount(a, opts = {}) {
     const q = await g.fetchBuddyQuota(info);
     if (q.ok && q.affordable > 0) {
       const count = Math.min(q.affordable, q.maxOpenCount || 1);
-      const ob = await g.openBuddyBox(info, count);
+      const ob = await g.openBuddyBox(info, count, { seed });
       if (ob.ok) actions.push({ seg: 'buddy', ok: true, msg: `开 Buddy 盲盒 ×${ob.count}${ob.names.length ? `（${ob.names.join('、')}）` : ''}` });
       else actions.push({ seg: 'buddy', ok: false, msg: `开箱失败：${ob.reason}` });
     }

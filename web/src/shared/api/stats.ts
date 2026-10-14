@@ -38,6 +38,14 @@ export interface DailyStat {
   officialRequests?: number;
   /** 该日是否存在账单缓存文件（不代表有消耗——Trae 入账有 1~2 天滞后）。 */
   officialCovered?: boolean;
+  /** 该日按模型拆分（后端 stats.js:196-199 已返回）。tokens 为该模型已计量合计。 */
+  byModel?: Record<string, {
+    requests: number;
+    tokens: number;
+    metered: number;
+    unmetered: number;
+    estimatedCost: number;
+  }>;
 }
 
 export interface ModelStat {

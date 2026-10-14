@@ -17,6 +17,7 @@
     "test:protocol": "node src/test/protocol.test.js",
     "test:concurrency": "node src/test/store-concurrency.test.js",
     "test:shutdown": "node src/test/shutdown.test.js",
+    "verify:store": "node scripts/verify-store-encryption.js",
     "check": "npm test && npm run lint"
   },
   "engines": {

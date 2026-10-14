@@ -21,6 +21,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
+// 必须在 require 任何项目模块之前隔离状态目录与加密密钥（否则测试会写真实账号库）。
+// 本文件早先漏了这一步，是 10 个测试文件里唯一没隔离的。
+process.env.WORKSPACE_DIR = path.join(os.tmpdir(), `trae-qoder-${Date.now()}`);
+process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
+process.env.API_KEY = 'test-api-key';
+process.env.ADMIN_KEY = 'test-admin-key';
+require('./isolation-guard')('qoder');
+
 let passed = 0, failed = 0;
 const failures = [];
 async function t(name, fn) {

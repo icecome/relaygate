@@ -9,6 +9,7 @@ const auth = require('../auth');
 const libAuth = require('../lib/auth');
 const headersLib = require('../lib/headers');
 const { v4: uuidv4 } = require('../lib/uuid');
+const { localDateKey } = require('../lib/util');
 const { retryWithBackoff } = require('./errors');
 const { createStreamHandler } = require('../transform/sse');
 const { isTruncatedFinish } = require('../transform/finish');
@@ -23,7 +24,7 @@ function sseDebugWrite(requestId, accountId, model, event) {
   if (!SSE_DEBUG()) return;
   try {
     sseDebugSeq += 1;
-    const dir = path.join(config.ROOT, 'logs', new Date().toISOString().slice(0, 10));
+    const dir = path.join(config.ROOT, 'logs', localDateKey());
     fs.mkdirSync(dir, { recursive: true });
     const line = JSON.stringify({
       ts: new Date().toISOString(),

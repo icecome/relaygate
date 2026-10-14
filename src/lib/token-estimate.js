@@ -112,11 +112,17 @@ function estimateTokensOf(messages, precise) {
  *
  * tools 按 JSON 序列化后走同一字符口径；每条工具 schema 记一笔固定开销，
  * 与 messages 的结构开销同理（schema 之外的 name/description 嵌套结构）。
+ *
+ * @param {object[]} messages
+ * @param {object[]} [tools]
+ * @param {boolean} [precise] true 时 messages 走真实分词器（供 count_tokens 类比精确值）；
+ *   tools 仍走启发式——工具 schema 是结构化的英文键名，两种口径差异很小，
+ *   而 tiktoken 逐条编码大 schema 的代价不值得。
  */
-function estimateRequestTokens(messages, tools) {
-  let total = estimateTokensOf(messages, false);
+function estimateRequestTokens(messages, tools, precise) {
+  let total = estimateTokensOf(messages, !!precise);
   if (Array.isArray(tools) && tools.length) {
-    const tokOf = textTokens;
+    const tokOf = precise ? textTokensPrecise : textTokens;
     for (const t of tools) {
       if (!t) continue;
       total += TOOL_OVERHEAD;

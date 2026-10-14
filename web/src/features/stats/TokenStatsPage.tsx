@@ -36,6 +36,7 @@ import {
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { DailyTrendChart } from './DailyTrendChart';
+import { TokenHeatmap } from './TokenHeatmap';
 
 type Range = '1' | '7' | '30';
 
@@ -130,6 +131,8 @@ export default function TokenStatsPage() {
   }
 
   const daily = useAsyncData((signal) => getStatsDaily(days, key, signal), [days, key], { enabled: !!key });
+  // 热力图固定 17 周（119 天），不跟随顶部时间范围，故单独请求一次；180 天覆盖 119 天后仍有富余
+  const heatmap = useAsyncData((signal) => getStatsDaily(180, key, signal), [key], { enabled: !!key });
   const models = useAsyncData((signal) => getStatsModels(days, key, signal), [days, key], { enabled: !!key });
   const accounts = useAsyncData((signal) => getStatsAccounts(days, key, signal), [days, key], { enabled: !!key });
   const client = useAsyncData((signal) => getClientStats(days, key, signal), [days, key], { enabled: !!key });
@@ -448,6 +451,25 @@ export default function TokenStatsPage() {
             />
           ) : (
             <DailyTrendChart rows={daily.data?.data ?? []} />
+          )}
+        </Panel>
+
+        <Panel
+          title="Token 热力图"
+          description="最近 17 周 · 按本地日期；虚线格＝有请求但上游未回传计量，不代表零消耗"
+        >
+          {/* 用 180 天单独取数，老后端若不接受该参数，错误只落在本面板内，不影响页面其余部分 */}
+          {heatmap.error ? (
+            <ErrorState message={heatmap.error} onRetry={heatmap.reload} />
+          ) : heatmap.loading && !heatmap.data ? (
+            <LoadingBlock />
+          ) : (heatmap.data?.data ?? []).length === 0 ? (
+            <EmptyState
+              label="最近 17 周内没有 Token 记录。"
+              hint="产生转发请求后即会出现；本图不随顶部时间范围切换。"
+            />
+          ) : (
+            <TokenHeatmap rows={heatmap.data?.data ?? []} />
           )}
         </Panel>
 

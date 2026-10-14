@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const config = require('../config');
+const { localDateKey } = require('../lib/util');
 
 function table() {
   try {
@@ -16,7 +17,9 @@ function table() {
 }
 
 function jsonlFile() {
-  const day = new Date().toISOString().slice(0, 10);
+  // 本地日期：audit.jsonl 与 traffic.jsonl 同处 logs/<date>/ 目录，
+  // 两处必须用同一个日期键，否则同一目录会被拆到两个日期名下。
+  const day = localDateKey();
   const dir = path.join(config.workspaceDir || process.cwd(), 'logs', day);
   return path.join(dir, 'audit.jsonl');
 }

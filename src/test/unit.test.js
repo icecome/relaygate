@@ -14,6 +14,10 @@ process.env.TRAE_API_ENCRYPT_KEY = 'a'.repeat(64);
 process.env.API_KEY = 'test-api-key';
 process.env.ADMIN_KEY = 'test-admin-key';
 
+// 硬护栏：状态目录必须落在临时目录内，否则当场退出，绝不进入测试体。
+// 判据与事故经过见 src/test/isolation-guard.js。
+require('./isolation-guard')('unit');
+
 const assert = require('assert');
 const { normalizeTraeMessages } = require('../transform/request');
 const { createStreamHandler } = require('../transform/sse');
@@ -2998,6 +3002,61 @@ t('reload 后已登记模型的 reasoning 与 scene 取值正确', () => {
   const meta = cfg.resolveModelOptions('doubao-1-6');
   assert.strictEqual(meta.scene, 'chat');
   assert.strictEqual(meta.reasoning, true);
+});
+
+/*
+ * .env 与进程环境的优先级 —— 事故回归测试。
+ *
+ * 曾把 config 的 .env 加载改成 dotenv override:true 来修「reload 读不到新值」，
+ * 结果 .env 反过来压掉了调用方显式设置的环境变量：本文件第 12 行用
+ * WORKSPACE_DIR 把状态目录指到临时目录做隔离，而仓库 .env 里也有
+ * WORKSPACE_DIR=./output，于是整个测试套件跑到了真实 output/ 状态目录上，
+ * 用测试假密钥在真实账号库里写了 73 行账号。
+ *
+ * 两条不可动摇的规则，缺一条就会重演：
+ *   1. 进程环境显式给出的键，.env 永不覆盖（含 reload）；
+ *   2. .env 提供过的键，reload 必须按文件现值刷新（否则「热重载」是空操作）。
+ */
+t('进程环境显式给出的键不被 .env 覆盖（含 reload）', () => {
+  const cfg = require('../config');
+  assert.strictEqual(
+    cfg.workspaceDir,
+    process.env.WORKSPACE_DIR,
+    '.env 不得覆盖启动时由进程环境给出的 WORKSPACE_DIR',
+  );
+  assert.ok(
+    String(cfg.workspaceDir).startsWith(os.tmpdir()),
+    `状态目录必须留在测试临时目录内，实际为 ${cfg.workspaceDir}`,
+  );
+  cfg.reload();
+  assert.strictEqual(
+    cfg.workspaceDir,
+    process.env.WORKSPACE_DIR,
+    'reload 后同样不得用 .env 覆盖进程环境的 WORKSPACE_DIR',
+  );
+  assert.strictEqual(
+    process.env.WORKSPACE_DIR,
+    cfg.workspaceDir,
+    'reload 不得改动进程环境里的 WORKSPACE_DIR',
+  );
+});
+
+t('.env 提供过的键在 reload 时按文件现值刷新（热重载不是空操作）', () => {
+  const cfg = require('../config');
+  const envFile = path.join(__dirname, '..', '..', '.env');
+  // 纯环境变量部署（无 .env）时无从此断言，跳过而不是失败
+  if (!fs.existsSync(envFile)) return;
+  const parsed = require('dotenv').parse(fs.readFileSync(envFile, 'utf-8')) || {};
+  const key = 'LOG_LEVEL';
+  if (!(key in parsed)) return; // .env 未声明该键则无从验证
+  assert.strictEqual(process.env[key], parsed[key], `前置：.env 的 ${key} 应已注入进程环境`);
+  process.env[key] = '__mutated_by_test__';
+  cfg.reload();
+  assert.strictEqual(
+    process.env[key],
+    parsed[key],
+    `reload 应把 .env 提供的 ${key} 刷回文件现值（否则热重载是空操作）；实际=${JSON.stringify(process.env[key])} 期望=${JSON.stringify(parsed[key])}`,
+  );
 });
 
 console.log('middleware/auth checkAdminToken');
