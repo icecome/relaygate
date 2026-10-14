@@ -46,6 +46,15 @@ export interface DailyStat {
     unmetered: number;
     estimatedCost: number;
   }>;
+  /**
+   * 逻辑回合口径：一次客户端请求 = 一个回合。降级换候选会给同一回合写多行
+   * traffic（每候选一行），故只按行数算成功率会把「降级后成功」记成失败。
+   * turns 为该日回合数；turnsFailed 为全部尝试都失败的回合数；
+   * recoveredTurns 为至少失败过一次、最终成功的回合数。
+   */
+  turns?: number;
+  turnsFailed?: number;
+  recoveredTurns?: number;
 }
 
 export interface ModelStat {
@@ -78,11 +87,13 @@ export interface AccountStat {
 }
 
 export const getStatsDaily = (days: number, key: string, signal?: AbortSignal) =>
-  api<{ days: number; totalRequests: number; data: DailyStat[] }>(
-    `/v1/admin/stats/daily?days=${days}`,
-    { signal },
-    key,
-  );
+  api<{
+    days: number;
+    totalRequests: number;
+    /** 窗口内逻辑回合汇总（与 totalRequests 不同口径：后者按上游请求行计）。 */
+    turns?: { turns: number; turnsFailed: number; recoveredTurns: number };
+    data: DailyStat[];
+  }>(`/v1/admin/stats/daily?days=${days}`, { signal }, key);
 
 export const getStatsModels = (days: number, key: string, signal?: AbortSignal) =>
   api<{ days: number; totalRequests: number; data: ModelStat[] }>(

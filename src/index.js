@@ -39,6 +39,19 @@ const apiKeyStore = require('./credentials/api-keys');
 const app = express();
 app.use(express.json({ limit: '10mb' }));
 
+/**
+ * 请求级上下文：为每次客户端请求生成一个**回合同** id，经 AsyncLocalStorage
+ * 透传给该请求内所有 `logRequest` 调用。
+ *
+ * 为什么不逐个调用点显式传：一次客户端请求会产出多行 traffic（降级换候选时每个
+ * 候选一行），这些行散落在 openai / anthropic / responses / model-router 的十余处
+ * `logRequest` 里；逐个补字段既容易漏、也会被将来新增的调用点绕过。
+ * 用 AsyncLocalStorage 让「同一请求」这件事由运行上下文承载，新调用点自动继承。
+ * 详见 src/log/traffic.js#newTurnId 与 lib/stats 的 turnBuckets。
+ */
+const requestContext = require('./lib/request-context');
+app.use((_req, _res, next) => requestContext.run({ turnId: requestContext.newTurnId() }, next));
+
 // 管理面板的登录密钥存于 localStorage（web/src/stores/useAuth.ts），同源任意脚本可读，
 // 故以 CSP 收紧脚本与连接来源，并禁止被嵌入、禁止类型嗅探。
 // style 放开 'unsafe-inline' 是 Tailwind 构建产物含内联样式所需；script 不放开任何 unsafe-*。

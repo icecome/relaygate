@@ -13,6 +13,7 @@ const config = require('../config');
 const { estimateCost } = require('../models/rates');
 const { localDateKey } = require('../lib/util');
 const { logsDir } = require('../lib/paths');
+const requestContext = require('../lib/request-context');
 
 let seq = 0;
 // 已确认存在的日志目录，仅跨日时变化，避免每请求一次 mkdir syscall。
@@ -60,15 +61,22 @@ function sanitize(obj, depth = 0) {
 
 /**
  * 记录一个请求：一行控制台 + jsonl。
+ *
+ * `turnId`（逻辑回合）：优先取 `entry.turnId`，否则从请求上下文继承
+ * （见 lib/request-context.js）。同一次客户端请求产生的多行 traffic 共享它，
+ * 统计层据此按回合而非按行算成功率——否则降级换候选会把一次请求记成多次失败。
  * @param {object} entry
  */
 function logRequest(entry) {
   try {
     seq += 1;
+    // 回合同 id：entry 显式给的优先（可覆盖），否则继承当前请求上下文
+    const ctx = requestContext.current();
     const base = {
       ts: new Date().toISOString(),
       seq,
       tag: 'traffic',
+      ...(ctx && ctx.turnId ? { turnId: ctx.turnId } : {}),
       ...entry,
     };
     // 费用估算：有 token 用量且未显式提供时按模型费率估算积分

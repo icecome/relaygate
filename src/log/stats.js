@@ -141,16 +141,62 @@ function tokenSource(r) {
  * （实测两者单价差 4~8 倍），界面需要它解释为何 20 万 token 只花 0.7 积分。
  * exact / estimated / none 三个来源分开计数，前端才能标出多少 token 是真值。
  */
+/**
+ * 逐日汇总「逻辑回合」口径。
+ *
+ * 一次客户端请求 = 一个回合同（`turnId`）；降级换候选会为同一次客户端请求
+ * 产生**多行** traffic（每个候选一行）。只按行数算成功率会把「降级 3 次后成功」
+ * 记成「3 次失败 + 1 次成功」——实测虚拟模型 22,890 成功 / 1,936 失败，
+ * 该口径下成功率被低估的上界是 7.80%。
+ *
+ * 历史行没有 turnId：每行各自算一个回合（等价于「无降级的单次尝试」），
+ * 这样旧数据仍有意义，且不需要 ?? 0 之类的兜底——「没测量」与「测得 0」
+ * 在这里不会混淆，因为回合数就是行数。
+ */
+function turnBuckets() {
+  return new Map();
+}
+
+/** 累计一行到回合桶。 */
+function addTurn(buckets, r, fallbackKey) {
+  const key = r.turnId != null ? String(r.turnId) : fallbackKey;
+  let slot = buckets.get(key);
+  if (!slot) {
+    slot = { ok: 0, err: 0 };
+    buckets.set(key, slot);
+  }
+  if (r.error || (r.status && r.status >= 400)) slot.err++;
+  else slot.ok++;
+}
+
+/** 由回合桶得出三个计数：总回合 / 全败回合 / 失败后恢复的回合。 */
+function turnCounters(buckets) {
+  let turnsFailed = 0;
+  let recoveredTurns = 0;
+  for (const v of buckets.values()) {
+    if (!v.ok) turnsFailed++;
+    else if (v.err) recoveredTurns++;
+  }
+  return { turns: buckets.size, turnsFailed, recoveredTurns };
+}
+
 function dailyStats(lines) {
   const byDay = {};
+  const turnsByDay = {};
+  // 无 turnId 的历史行用它兜底成「一行一回合」；只需在单日内唯一
+  let noTurnN = 0;
   for (const r of lines) {
     const day = r._day || String(r.ts || '').slice(0, 10);
-    if (!byDay[day]) byDay[day] = {
-      date: day, requests: 0, errors: 0, tokens: 0, metered: 0,
-      exact: 0, estimated: 0, none: 0, tokensLost: 0, priced: 0, costUpper: 0,
-      estimatedCost: 0, cacheReadTokens: 0, byModel: {},
-    };
+    if (!byDay[day]) {
+      byDay[day] = {
+        date: day, requests: 0, errors: 0, tokens: 0, metered: 0,
+        exact: 0, estimated: 0, none: 0, tokensLost: 0, priced: 0, costUpper: 0,
+        estimatedCost: 0, cacheReadTokens: 0, byModel: {},
+      };
+      turnsByDay[day] = turnBuckets();
+    }
     const d = byDay[day];
+    addTurn(turnsByDay[day], r, `#noturn${noTurnN++}`);
     d.requests++;
     if (r.error || (r.status && r.status >= 400)) d.errors++;
     const src = tokenSource(r);
@@ -176,6 +222,7 @@ function dailyStats(lines) {
     .sort((a, b) => b.date.localeCompare(a.date))
     .map((d) => ({
       ...d,
+      ...turnCounters(turnsByDay[d.date] || turnBuckets()),
       unmetered: d.none,
       tokens: round2(d.tokens),
       cacheReadTokens: round2(d.cacheReadTokens),
@@ -267,4 +314,6 @@ function accountStats(lines) {
 module.exports = {
   readTrafficLines, dailyStats, modelStats, accountStats,
   isMetered, numTok, isMasked, pricedModelOf, tokenSource, costOf,
+  // 逻辑回合聚合（stats-cache 复用同一实现，避免两处口径漂移）
+  turnBuckets, addTurn, turnCounters,
 };

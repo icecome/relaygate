@@ -160,10 +160,16 @@ export default function TokenStatsPage() {
         // 官方账单按日合计（与估算同窗口，可直接对照）
         officialCredit: acc.officialCredit + (r.officialCredit ?? 0),
         officialTokens: acc.officialTokens + (r.officialTokens ?? 0),
+        // 逻辑回合口径：一次客户端请求 = 一个回合。降级换候选会给同一回合写多行
+        // traffic，故回合数与请求行数不是一回事（后端 stats.js#turnBuckets）。
+        turns: acc.turns + (r.turns ?? 0),
+        turnsFailed: acc.turnsFailed + (r.turnsFailed ?? 0),
+        recoveredTurns: acc.recoveredTurns + (r.recoveredTurns ?? 0),
       }),
       {
         requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0,
         tokensLost: 0, unmetered: 0, cacheRead: 0, cost: 0, officialCredit: 0, officialTokens: 0,
+        turns: 0, turnsFailed: 0, recoveredTurns: 0,
       },
     );
   }, [daily.data]);
@@ -347,8 +353,25 @@ export default function TokenStatsPage() {
             loading={daily.loading && !daily.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
-              <CaliberRow k="总请求" v={formatNumber(totals.requests)} />
-              <CaliberRow k="错误" v={formatNumber(totals.errors)} />
+              <CaliberRow k="总请求（上游请求行）" v={formatNumber(totals.requests)} />
+              <CaliberRow k="错误行" v={formatNumber(totals.errors)} />
+              {/* 回合口径：降级换候选会给同一客户端请求写多行，只按行算成功率会把
+                  「降级后成功」记成失败。回合数通常小于请求行数，故必须写明口径。 */}
+              {totals.turns > 0 && (
+                <>
+                  <CaliberRow
+                    k="逻辑回合（客户端请求）"
+                    v={`${formatNumber(totals.turns)} · 成功率 ${(((totals.turns - totals.turnsFailed) / totals.turns) * 100).toFixed(1)}%`}
+                  />
+                  {totals.recoveredTurns > 0 && (
+                    <CaliberRow
+                      k="其中降级后成功"
+                      v={`${formatNumber(totals.recoveredTurns)} 回合`}
+                      tone="warn"
+                    />
+                  )}
+                </>
+              )}
               <CaliberRow
                 k="估算口径"
                 v={calibCount > 0 ? `账单标定 · ${calibCount} 模型` : '内置费率表推算'}

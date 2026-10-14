@@ -4132,4 +4132,121 @@ t('credit-history.summary：zcode 快照即使手工存在，口径仍按积分�
   }
 });
 
+console.log('log/stats 逻辑回合聚合（一次客户端请求 = 一个回合）');
+
+t('dailyStats：降级换候选的多行共享 turnId，按回合而非按行算成功率', () => {
+  const { dailyStats } = require('../log/stats');
+  const day = '2026-10-14';
+  const row = (extra) => ({
+    _day: day, ts: `${day}T10:00:00.000Z`, model: 'vm/unified-chat', status: 200, totalTokens: 10, ...extra,
+  });
+  const lines = [
+    // 回合 A：先失败两次，第三次成功（真实形态：降级换候选）
+    row({ turnId: 'tA', status: 429, error: 'rate limited', attempt: 1 }),
+    row({ turnId: 'tA', status: 500, error: 'boom', attempt: 2 }),
+    row({ turnId: 'tA', status: 200, attempt: 3 }),
+    // 回合 B：两次尝试全部失败
+    row({ turnId: 'tB', status: 400, error: 'bad request', attempt: 1 }),
+    row({ turnId: 'tB', status: 500, error: 'boom', attempt: 2 }),
+    // 历史行（无 turnId）：每行各自算一个回合，与旧口径一致
+    row({ status: 200 }),
+    row({ status: 500, error: 'legacy fail' }),
+  ];
+  const [d] = dailyStats(lines);
+  assert.strictEqual(d.requests, 7, '行数口径（上游请求数）不变');
+  assert.strictEqual(d.errors, 5, '失败行数不变');
+  assert.strictEqual(d.turns, 4, '回合数 = 2 个显式回合 + 2 个历史行各自成回合');
+  assert.strictEqual(d.turnsFailed, 2, '回合 B 全败 + 历史失败行各算一个全败回合');
+  assert.strictEqual(d.recoveredTurns, 1, '回合 A 失败后恢复——按行口径会把它记成 2 次失败');
+  // 按行口径的「成功率」= 2/7；按回合口径 = 2/4。差异正是本口径存在的理由。
+  assert.ok(d.turns < d.requests, '同一回合的多行不得各算一个回合');
+});
+
+t('dailyStats：未提供 turnId 时逐行成回合（历史数据口径不变，不需要 ?? 0 兜底）', () => {
+  const { dailyStats } = require('../log/stats');
+  const day = '2026-10-13';
+  const lines = [
+    { _day: day, model: 'glm-5', status: 200 },
+    { _day: day, model: 'glm-5', status: 200 },
+    { _day: day, model: 'glm-5', status: 500, error: 'x' },
+  ];
+  const [d] = dailyStats(lines);
+  assert.strictEqual(d.turns, 3);
+  assert.strictEqual(d.turnsFailed, 1);
+  assert.strictEqual(d.recoveredTurns, 0);
+});
+
+t('stats-cache：桶内三计数与逐日聚合口径一致，且桶版本已递增', () => {
+  const fs = require('fs');
+  const { localDateKey } = require('../lib/util');
+  const { logsDir } = require('../lib/paths');
+  const sc = require('../log/stats-cache');
+  assert.ok(sc.BUCKET_VERSION >= 10, '桶版本必须递增，否则旧桶（无三计数）会继续被读');
+  const day = localDateKey();
+  const dir = path.join(logsDir(), day);
+  fs.mkdirSync(dir, { recursive: true });
+  const rows = [
+    { ts: `${day}T01:00:00.000Z`, model: 'vm/unified-chat', account: 'a1', status: 429, error: 'rl', turnId: 'tX', attempt: 1 },
+    { ts: `${day}T01:00:01.000Z`, model: 'vm/unified-chat', account: 'a2', status: 200, totalTokens: 5, turnId: 'tX', attempt: 2 },
+    { ts: `${day}T01:00:02.000Z`, model: 'vm/unified-chat', account: 'a1', status: 500, error: 'boom', turnId: 'tY', attempt: 1 },
+  ];
+  fs.writeFileSync(path.join(dir, 'traffic.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+  sc.clearCache();
+  const got = sc.cachedDailyStats(1).find((d) => d.date === day);
+  assert.ok(got, '应能从桶里取到当天');
+  assert.strictEqual(got.turns, 2);
+  assert.strictEqual(got.turnsFailed, 1, 'tY 两次都没成功（这里只有一行）——全败');
+  assert.strictEqual(got.recoveredTurns, 1, 'tX 失败一次后成功');
+  assert.strictEqual(got.requests, 3);
+  // 清掉，避免影响其它用例
+  fs.rmSync(dir, { recursive: true, force: true });
+  sc.clearCache();
+});
+
+t('请求上下文：logRequest 继承 turnId——跨 await 不丢、并发请求不串号、无请求时不写', async () => {
+  const fs = require('fs');
+  const rc = require('../lib/request-context');
+  const { logRequest } = require('../log/traffic');
+  const { logsDir } = require('../lib/paths');
+  const { localDateKey } = require('../lib/util');
+  const dir = path.join(logsDir(), localDateKey());
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'traffic.jsonl');
+  fs.rmSync(file, { force: true });
+  const readRows = () => fs.readFileSync(file, 'utf-8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+
+  // 两个"请求"并发且 await 交错：ALS 必须在异步边界之后仍指向正确的请求
+  await Promise.all([
+    rc.run({ turnId: 'req-1' }, async () => {
+      logRequest({ model: 'm', status: 200 });
+      await new Promise((r) => setTimeout(r, 12));
+      logRequest({ model: 'm', status: 500, error: 'x' });
+    }),
+    rc.run({ turnId: 'req-2' }, async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      logRequest({ model: 'm', status: 200 });
+    }),
+  ]);
+
+  let rows = readRows();
+  const t1 = rows.filter((r) => r.turnId === 'req-1');
+  const t2 = rows.filter((r) => r.turnId === 'req-2');
+  assert.strictEqual(t1.length, 2, '同一请求的两行共享 turnId（跨 await 仍正确）');
+  assert.strictEqual(t2.length, 1);
+  assert.strictEqual(rows.filter((r) => r.turnId).length, 3, '三个有上下文的行都带上 turnId');
+  assert.strictEqual(t1.filter((r) => r.error).length, 1, '同回合内既有成功行也有失败行——正是要聚合的情形');
+
+  // 显式传入优先于上下文（供调用方覆盖）
+  rc.run({ turnId: 'req-1' }, () => logRequest({ model: 'm', status: 200, turnId: 'explicit' }));
+  rows = readRows();
+  assert.strictEqual(rows[rows.length - 1].turnId, 'explicit');
+
+  // 非请求路径（定时任务/脚本）没有上下文：不写 turnId，统计层逐行成回合
+  logRequest({ model: 'm', status: 200 });
+  rows = readRows();
+  assert.strictEqual(rows[rows.length - 1].turnId, undefined);
+
+  fs.rmSync(file, { force: true });
+});
+
 main();

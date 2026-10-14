@@ -135,6 +135,13 @@ router.get('/stats/daily', admin, async (req, res) => {
       ? require('../log/stats-cache').cachedDailyStats(days)
       : dailyStats(readTrafficLines(days));
     const totalRequests = data.reduce((s, d) => s + d.requests, 0);
+    // 逻辑回合汇总：一次客户端请求 = 一个回合；降级换候选会给同一回合写多行。
+    // 按行算成功率会把「降级后成功」记成失败，故单独给出回合口径。
+    const turns = data.reduce((s, d) => ({
+      turns: s.turns + (d.turns || 0),
+      turnsFailed: s.turnsFailed + (d.turnsFailed || 0),
+      recoveredTurns: s.recoveredTurns + (d.recoveredTurns || 0),
+    }), { turns: 0, turnsFailed: 0, recoveredTurns: 0 });
 
     // 官方账单按日积分（读本地缓存，不打上游）
     let official = null;
@@ -159,7 +166,7 @@ router.get('/stats/daily', admin, async (req, res) => {
       }
     } catch { /* 账单聚合失败不影响网关口径 */ }
 
-    res.json({ object: 'list', days, totalRequests, data, official, cached: statsCacheEnabled() });
+    res.json({ object: 'list', days, totalRequests, turns, data, official, cached: statsCacheEnabled() });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }

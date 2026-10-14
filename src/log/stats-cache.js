@@ -13,7 +13,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { numTok, isMasked, tokenSource, costOf } = require('./stats');
+const { numTok, isMasked, tokenSource, costOf, turnBuckets, addTurn, turnCounters } = require('./stats');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir, logsDir } = require('../lib/paths');
 const { round2, round4 } = require('../lib/round');
@@ -36,9 +36,11 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
  *   7 numTok 接受数字字符串（旧版写入文件的格式），tokensLost 仅计真脱敏行；
  *   8 补 costUpper（缺 cacheRead、按上界计价的行数）；
  *   9 按日键改为**本地日期**（原为 UTC，东八区 00:00-08:00 的请求落到前一天），
- *     同时按模型补 errors / promptTokens / completionTokens。
+ *     同时按模型补 errors / promptTokens / completionTokens；
+ *   10 补逻辑回合三计数 turns / turnsFailed / recoveredTurns（降级换候选会让
+ *      同一次客户端请求产生多行 traffic，只按行数算成功率会系统性偏低）。
  */
-const BUCKET_VERSION = 9;
+const BUCKET_VERSION = 10;
 
 function todayKey() {
   return localDateKey();
@@ -84,7 +86,12 @@ function buildDayBucket(rows, dateKey) {
     estimatedCost: 0, cacheReadTokens: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0,
     byModel: {}, byAccount: {},
   };
+  // 逻辑回合聚合（见 stats.js#turnBuckets）：只存三个计数，不把每回合的明细
+  // 留在桶里——桶要覆盖历史每一天，逐回合存会让体积膨胀十倍以上。
+  const turns = turnBuckets();
+  let noTurnN = 0;
   for (const r of rows) {
+    addTurn(turns, r, `#noturn${noTurnN++}`);
     b.requests++;
     if (r.error || (r.status && r.status >= 400)) b.errors++;
     const src = tokenSource(r);
@@ -119,7 +126,7 @@ function buildDayBucket(rows, dateKey) {
     if (src !== 'none') ba.metered++;
     ba.tokens += tok; ba.cost += cost;
   }
-  return b;
+  return { ...b, ...turnCounters(turns) };
 }
 
 /** 取最近 days 天的桶：命中缓存取缓存，未命中则读日志构建并回填。 */
@@ -166,6 +173,10 @@ function cachedDailyStats(days) {
       costUpper: b.costUpper || 0,
       cacheReadTokens: round2(b.cacheReadTokens || 0),
       estimatedCost: round4(b.estimatedCost),
+      // 逻辑回合口径（桶版本 >= 10 才有；旧桶会被 readCache 按版本号拒绝并重建）
+      turns: b.turns || 0,
+      turnsFailed: b.turnsFailed || 0,
+      recoveredTurns: b.recoveredTurns || 0,
       byModel: Object.fromEntries(Object.entries(b.byModel).map(([k, v]) => [
         k,
         {

@@ -27,7 +27,6 @@ const { providerAllowedForKey } = require('../middleware/model-access');
 const { estimateRequestTokens } = require('../lib/token-estimate');
 const autotier = require('./autotier');
 const windowCalib = require('./window-calibration');
-const { runWithContinuation } = require('../transform/continue');
 // 账号池只在这里被引用（惰性）以取「池级账号权益信号」：候选排序需要知道
 // trae 池与 workbuddy 池各自的临期/余额状态。require 放函数体内，
 // 避免 model-router ← pool 的静态循环依赖（pool 的 dispatch 反向引用 model-router）。
@@ -469,6 +468,9 @@ async function handleChat(req, res, ctx) {
         platform: platformTag,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
+        // 逻辑回合：turnId 由请求上下文（AsyncLocalStorage）自动带上，同一客户端
+        // 请求的所有尝试共享它；attempt 是本回合内的第几次上游尝试。
+        attempt: attempts.length,
         // 本轮为拿到答案换过几个候选：可观测性用。长期为 0 说明提交闸门没起作用，
         // 长期偏高说明候选健康度或上游稳定性有问题。
         ...(switched > 0 ? { failoverSwitches: switched } : {}),
@@ -496,6 +498,8 @@ async function handleChat(req, res, ctx) {
         model: virtualId,
         account: cand.id,
         status: err.status && err.status >= 400 ? err.status : 500,
+        // 同一次客户端请求的第几次尝试（回合聚合用，见 log/stats.js#turnBuckets）
+        attempt: attempts.length,
         toolCalls: 0,
         toolsIn: ctx.tools ? ctx.tools.length : 0,
         durationMs: Date.now() - t0,
