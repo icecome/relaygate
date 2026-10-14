@@ -10,6 +10,7 @@ const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
 const { createLineFeeder } = require('../lib/sse-lines');
 const { exportOpenAI } = require('../transform/emitters');
+const { commitsAnswerEvent, commitsAnswerLine } = require('./stream-gate');
 
 function resolveApiKey(p) {
   // M-S6：明文 apiKey 已从存储剥离，密钥统一经环境变量注入（apiKeyEnv）
@@ -66,7 +67,14 @@ async function dispatchOpenAINonStream(provider, remoteModel, body) {
   }
 }
 
-/** 通用 OpenAI 兼容：流式（SSE 原样传给下游，失败且未写头时抛错以便切换候选）。 */
+/**
+ * 通用 OpenAI 兼容：流式（SSE 原样传给下游，失败且未提交答案时抛错以便切换候选）。
+ *
+ * 注意 `res` 可能是 stream-gate（见 dispatchStream）：闸门实现了这里用到的
+ * 全部接口（setHeader/flushHeaders/write/end/headersSent/writableEnded），
+ * 唯一差别是它会把「未成行的残片」扣住并在换候选时丢弃，
+ * 从而允许在只输出过思考的情况下继续降级。见 stream-gate.js 的说明。
+ */
 async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {}) {
   const base = safeBaseUrl(provider.baseUrl);
   const key = resolveApiKey(provider);
@@ -104,8 +112,13 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
   const dec = new TextDecoder();
   let usage = null;
   try {
-    // 旁路窥探 usage（转发字节原样写出，不经解析改写，保持原样传给下游的语义）
+    // 旁路窥探 usage（转发字节原样写出，不经解析改写，保持原样传给下游的语义），
+    // 同时判定「承载答案的完整行」以提交闸门：透传路径无法靠归一化事件判定，
+    // 只能在这里解析 data 行。reasoning_content 等纯思考帧不提交。
     const feeder = createLineFeeder((line) => {
+      if (!res.answerCommitted && typeof res.commit === 'function' && commitsAnswerLine(line)) {
+        res.commit('openai_frame');
+      }
       const t = line.trim();
       if (!t.startsWith('data:')) return;
       const payload = t.slice(5).trim();
@@ -119,6 +132,7 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
       const { done, value } = await reader.read();
       if (done) break;
       const chunk = dec.decode(value, { stream: true });
+      // 先喂解析器（可能在此提交），再写出：提交后残片缓冲已清空，顺序仍正确
       feeder.feed(chunk);
       if (chunk && !res.writableEnded) res.write(chunk);
     }
@@ -303,13 +317,17 @@ async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
  *   上游失败时抛错，交由 handleChat 切换候选或补错误帧（与旧聚合行为一致）。
  */
 function dispatchStream(provider, remoteModel, body, res, opts = {}) {
+  // 出口 sink：handleChat 传入的是「答案提交闸门」（只扣住未成行的残片，
+  // 从而允许在尚未交付答案时继续降级）；其它调用方（测试、内部工具）没有闸门，
+  // 直接写真实 res，行为与改动前完全一致。
+  const out = opts.gate || res;
   if (provider.type === 'openai') {
-    return dispatchOpenAIStream(provider, remoteModel, body, res, opts);
+    return dispatchOpenAIStream(provider, remoteModel, body, out, opts);
   }
   if (provider.builtin === 'workbuddy') {
-    return dispatchWorkBuddyStream(provider, remoteModel, body, res, opts);
+    return dispatchWorkBuddyStream(provider, remoteModel, body, out, opts);
   }
-  return dispatchTraeStream(provider, remoteModel, body, res, opts);
+  return dispatchTraeStream(provider, remoteModel, body, out, opts);
 }
 
 /**
@@ -334,6 +352,7 @@ function peekUsageDetail(u) {
  * 内置 Trae 真流式：pool.run 租约 + llmUtilsChat(stream=true) + createStreamHandler。
  * 事件边界（text/tool_call/done/token_usage/error）与 routes/openai.js 用同一套解析层，
  * 差异仅在出口：这里直接写 SSE 字节（echoModel 改写 model 字段），无续写聚合。
+ * `res` 可能是 stream-gate，接口与语义同 dispatchOpenAIStream 的说明。
  */
 async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   const pool = require('../credentials/pool');
@@ -381,6 +400,9 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
           if (evt.content || evt.reasoning) {
             // 输出侧 token 补算的原料（usage 缺失时由 handleChat 使用）
             if (evt.content) outText += evt.content;
+            // 承载答案才提交闸门：纯 reasoning 帧照常下发给客户端（不改 UX），
+            // 但不算「已交付答案」，换候选时客户端只会先看到上一候选的思考。
+            if (commitsAnswerEvent(evt) && typeof res.commit === 'function') res.commit('answer');
             ensureStart();
             for (const s of out.text(completionId, shownModel, evt.content, evt.reasoning)) {
               if (!res.writableEnded) res.write(s);
@@ -389,6 +411,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
           break;
         case 'tool_call':
           sawToolCalls = true;
+          if (typeof res.commit === 'function') res.commit('tool_call');
           ensureStart();
           for (const s of out.toolCall(completionId, shownModel, evt.call)) {
             if (!res.writableEnded) res.write(s);
@@ -446,7 +469,8 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   return { streamed: true, finishReason: outFinish, usage: outUsage, outputText: outText, messages: body.messages };
 }
 
-/** WorkBuddy 流式：上游 OpenAI SSE 原样写入，必要时改写 model。 */
+/** WorkBuddy 流式：上游 OpenAI SSE 原样写入，必要时改写 model。
+ *  `res` 可能是 stream-gate，接口与语义同 dispatchOpenAIStream 的说明。 */
 async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = {}) {
   const pool = require('../credentials/pool');
   const auth = require('../auth');
@@ -516,6 +540,12 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
         if (d.content) outText += d.content;
         if (d.reasoning_content) delete d.reasoning_content;
         if (Array.isArray(d.tool_calls) && d.tool_calls.length) sawToolCalls = true;
+        // 承载答案才提交闸门（reasoning 已在上一行被剥掉，不会误判）
+        if (typeof res.commit === 'function'
+          && ((typeof d.content === 'string' && d.content.trim() !== '')
+            || (Array.isArray(d.tool_calls) && d.tool_calls.length))) {
+          res.commit('answer');
+        }
       }
       if (ev.choices && ev.choices[0] && ev.choices[0].finish_reason) {
         lastFinish = ev.choices[0].finish_reason;

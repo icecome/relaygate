@@ -3241,6 +3241,138 @@ t('dispatchTraeStream：上游 error 事件抛错（未写头时可切换候选�
   }
 });
 
+t('dispatchTraeStream + 提交闸门：只出过思考就失败时，降级窗口仍然开着（本次修复的目标）', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const { createStreamGate } = require('../model-router/stream-gate');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async (body, onText) => {
+    // 先吐一个纯思考增量（上游因此 flushHeaders），随后报错——原实现用
+    // res.headersSent 判可切换，此时窗口已关，整轮失败且客户端一个字都没拿到。
+    onText(`data: ${JSON.stringify({ content: '', reasoning_content: '让我想想…' })}\n\n`);
+    onText('event: error\n');
+    onText(`data: ${JSON.stringify({ message: 'rate limited' })}\n\n`);
+  };
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; }, write() { return true; }, end() { this.writableEnded = true; },
+  };
+  const gate = createStreamGate(res, { keepaliveMs: 0 });
+  try {
+    await assert.rejects(
+      () => dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, { gate }),
+      (e) => e.code === 'UPSTREAM_STREAM_ERROR',
+    );
+    assert.strictEqual(res.headersSent, true, '前置：思考帧已下发，HTTP 头已发出');
+    assert.strictEqual(gate.answerCommitted, false, '只有思考时不得提交，否则该场景永远无法降级');
+  } finally {
+    gate.dispose();
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+t('dispatchTraeStream + 提交闸门：交付答案后立即提交，禁止再换候选', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const { createStreamGate } = require('../model-router/stream-gate');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async (body, onText) => {
+    onText(`data: ${JSON.stringify({ content: '你好' })}\n\n`);
+    onText(`data: ${JSON.stringify({ done: true, finish_reason: 'stop' })}\n\n`);
+  };
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; }, write() { return true; }, end() { this.writableEnded = true; },
+  };
+  const gate = createStreamGate(res, { keepaliveMs: 0 });
+  try {
+    await dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, { gate });
+    assert.strictEqual(gate.answerCommitted, true, '交付过答案就必须提交（换候选会让客户端看到两个模型的输出）');
+  } finally {
+    gate.dispose();
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+t('提交闸门对正常路径零影响：带闸门与不带闸门下发的字节必须完全一致', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const { createStreamGate } = require('../model-router/stream-gate');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+
+  // 覆盖四类帧：思考增量、文本增量、工具调用、结束。
+  // 我们的 emitter 每次 write 都是完整帧（以 \n\n 收尾），闸门应原样立即下发。
+  const frames = [
+    `data: ${JSON.stringify({ content: '', reasoning_content: '先想' })}\n\n`,
+    `data: ${JSON.stringify({ content: '你好' })}\n\n`,
+    `data: ${JSON.stringify({ tool_calls: [{ id: 'c1', function: { name: 'f', arguments: '{}' } }] })}\n\n`,
+    `data: ${JSON.stringify({ done: true, finish_reason: 'stop' })}\n\n`,
+  ];
+  const collect = async (useGate) => {
+    const chunks = [];
+    const res = {
+      writableEnded: false, headersSent: false,
+      setHeader() {}, flushHeaders() { this.headersSent = true; },
+      write(s) { chunks.push(String(s)); return true; },
+      end() { this.writableEnded = true; },
+    };
+    client.consumeStream = async (body, onText) => { for (const f of frames) onText(f); };
+    const gate = useGate ? createStreamGate(res, { keepaliveMs: 0 }) : null;
+    try {
+      await dispatch.dispatchStream(
+        { type: 'builtin', builtin: 'trae' }, 'glm-5.3',
+        { messages: [{ role: 'user', content: 'hi' }] },
+        res, gate ? { gate } : {},
+      );
+    } finally {
+      if (gate) gate.dispose();
+    }
+    return chunks.join('');
+  };
+
+  // completionId 每次随机，比较前归一化；除它之外不得有任何字节差异
+  const norm = (s) => s.replace(/"id":"chatcmpl-[a-z0-9]+"/g, '"id":"chatcmpl-X"');
+  try {
+    const plain = norm(await collect(false));
+    const gated = norm(await collect(true));
+    let diff = -1;
+    for (let i = 0; i < Math.max(plain.length, gated.length); i++) {
+      if (plain[i] !== gated[i]) { diff = i; break; }
+    }
+    assert.strictEqual(
+      gated, plain,
+      `闸门不得改变正常路径下发给客户端的任何字节。长度 plain=${plain.length} gated=${gated.length}，`
+      + `首个差异 @${diff}：plain=...${JSON.stringify(plain.slice(Math.max(0, diff - 30), diff + 60))} `
+      + `gated=...${JSON.stringify(gated.slice(Math.max(0, diff - 30), diff + 60))}`,
+    );
+    assert.ok(plain.includes('"content":"你好"'), '前置：样本里应确有内容帧');
+    assert.ok(plain.includes('reasoning_content'), '前置：样本里应确有思考帧（它必须照常下发，不改 UX）');
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
 console.log('log/retention（m-29）');
 t('ageInDays：合法日期目录计算天数，非法名返回 null', () => {
   const { ageInDays } = require('../log/retention');

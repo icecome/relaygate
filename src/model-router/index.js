@@ -17,6 +17,7 @@
 const store = require('./store');
 const health = require('./health');
 const dispatch = require('./dispatch');
+const { createStreamGate } = require('./stream-gate');
 const { classifyError } = require('../upstream/errors');
 const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
@@ -331,6 +332,19 @@ async function handleChat(req, res, ctx) {
   const attempts = [];
   let lastErr = null;
 
+  /**
+   * 流式出口的答案提交闸门。
+   *
+   * 它把「HTTP 响应可提交」与「答案可提交」拆开：完整帧立即下发（正常路径的
+   * 字节流与时序与改动前一致），只扣住未成行的残片，因此换候选既不会把残片
+   * 拼进下一个候选的流，也不会让客户端少收到完整帧。
+   * 能不能换候选的判据由此从 `res.headersSent` 变为 `gate.answerCommitted`：
+   * 上游只输出过思考（reasoning）就失败时，窗口仍然是开着的——这正是原实现
+   * 因为「首个增量即 flushHeaders」而丢掉的那类场景。
+   */
+  const gate = ctx.stream !== false ? createStreamGate(res) : null;
+  let switched = 0;
+
   for (let i = 0; i < maxAttempts; i++) {
     let candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
     // 候选级窗口守门：只把「装得下当前输入」的候选视为可用（有候选声明窗口时才启用）
@@ -380,6 +394,7 @@ async function handleChat(req, res, ctx) {
           stickyAccountId: ctx.stickyAccountId,
           echoModel: virtualId,
           onAccount,
+          gate,
         });
       } else {
         result = await dispatch.dispatchNonStream(provider, cand.model, body, {
@@ -444,6 +459,9 @@ async function handleChat(req, res, ctx) {
         platform: platformTag,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
+        // 本轮为拿到答案换过几个候选：可观测性用。长期为 0 说明提交闸门没起作用，
+        // 长期偏高说明候选健康度或上游稳定性有问题。
+        ...(switched > 0 ? { failoverSwitches: switched } : {}),
         ...usageFields,
         ...(tokensEstimated ? { tokensEstimated: true } : {}),
         // 守门估算 vs 上游真实 promptTokens：长期累积可看出启发式估算在哪些
@@ -476,20 +494,39 @@ async function handleChat(req, res, ctx) {
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
       });
+      // 可切换判据：答案（content/tool_call 的完整帧）是否已交付客户端。
+      // 不能用 res.headersSent：dispatchTraeStream 在上游第一个增量（可能只是
+      // reasoning）就会 flushHeaders，用它当判据会让「只思考过、随后上游失败」
+      // 的场景永远无法降级——而那正是最该降级的情形。
+      // 非流式路径没有闸门，维持原行为（响应体还没写出去，随时可换）。
       const canSwitch = shouldSwitch(kind, vm) && i < maxAttempts - 1
-        && !(ctx.stream !== false && res.headersSent);
+        && (gate ? !gate.answerCommitted : !res.headersSent);
       if (!canSwitch) break;
+      if (gate) {
+        // 丢弃未成行的残片：绝不能让上一个候选的半行拼进下一个候选的流里。
+        // 完整帧早已下发，这个操作不会让客户端少收到任何东西。
+        const dropped = gate.discardHeld();
+        if (dropped > 0) {
+          console.log(`[model-router] 换候选前丢弃未成行残片 ${dropped}B（候选 ${cand.provider}/${cand.model}）`);
+        }
+      }
+      switched += 1;
       console.log(`[model-router] ${kind} on ${cand.provider}/${cand.model}, switching (attempt ${i + 1}/${maxAttempts}, cool ${cooled.cooledForMs}ms)`);
     }
   }
 
   // 全部失败：统一错误出口（流已开始则尽量补错误帧，否则返回 JSON）
   const err = lastErr || new Error(`virtual model "${virtualId}": all candidates failed`);
+  if (gate) gate.dispose();
   if (res.writableEnded) return { ok: false, error: err.message, attempts };
-  if (res.headersSent) {
+  // 走同一个 sink：若闸门里还扣着未成行的残片，必须先丢弃，
+  // 否则错误帧会被拼到半行后面，客户端解析整行失败、连错误都看不到。
+  const sink = gate || res;
+  if (sink.headersSent) {
     try {
-      res.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error', code: err.upstreamCode ?? (err.status === 429 ? 429 : null) } })}\n\n`);
-      res.write('data: [DONE]\n\n');
+      if (gate) gate.discardHeld();
+      sink.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error', code: err.upstreamCode ?? (err.status === 429 ? 429 : null) } })}\n\n`);
+      sink.write('data: [DONE]\n\n');
     } catch { /* ignore */ }
     if (!res.writableEnded) res.end();
     return { ok: false, error: err.message, attempts };
