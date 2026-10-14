@@ -324,6 +324,9 @@ async function handleChat(req, res, ctx) {
   // 估算口径含 tools：上游把工具 schema 计入输入（见 lib/token-estimate.js）。
   const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, ctx.messages, ctx.tools);
   const hasCandidateWindows = (vm.candidates || []).some((c) => effectiveCandidateWindow(c) > 0);
+  // 模态过滤：发图请求只保留「未明确声明不支持」的候选（未知一律放行）。
+  // 与窗口过滤同构——请求时过滤，纯文本请求仍可用全部候选。
+  const modality = autotier.filterCandidatesByModality(vm, ctx.messages);
 
   const startedAt = ctx.startedAt || Date.now();
   const keyPlatform = ctx.keyPlatform || 'all';
@@ -349,16 +352,23 @@ async function handleChat(req, res, ctx) {
     let candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
     // 候选级窗口守门：只把「装得下当前输入」的候选视为可用（有候选声明窗口时才启用）
     if (hasCandidateWindows) candidates = candidates.filter((c) => fittingAll.some((f) => f.id === c.id));
+    // 候选级模态守门：发图请求排掉明确不支持多模态的候选
+    if (modality.image) candidates = candidates.filter((c) => modality.list.some((m) => m.id === c.id));
     if (!candidates.length) {
       if (!lastErr) {
         const windowBlocked = hasCandidateWindows && estTokens > 0;
+        // 模态阻塞优先于窗口阻塞报告：用户看到「这个入口没有能读图的候选」
+        // 才能对症处理（换入口/补候选），而不是去清历史记录。
+        const modalityBlocked = modality.blocked;
         const e = new Error(
-          windowBlocked
-            ? `virtual model "${virtualId}": no candidate can fit estimated input ${estTokens} tokens (all candidates below 75% of their context window, or disabled/cooling)`
-            : `virtual model "${virtualId}": no available candidate (platform=${keyPlatform}; disabled/cooling/rate-limited or not in platform scope)`,
+          modalityBlocked
+            ? `virtual model "${virtualId}": no candidate supports image input (all enabled candidates declare multimodal=false). Use a virtual model that includes a vision candidate, or remove the image.`
+            : windowBlocked
+              ? `virtual model "${virtualId}": no candidate can fit estimated input ${estTokens} tokens (all candidates below 75% of their context window, or disabled/cooling)`
+              : `virtual model "${virtualId}": no available candidate (platform=${keyPlatform}; disabled/cooling/rate-limited or not in platform scope)`,
         );
-        e.status = windowBlocked ? 400 : 429;
-        e.code = windowBlocked ? 'context_length_exceeded' : 'VIRTUAL_NO_CANDIDATE';
+        e.status = modalityBlocked ? 400 : (windowBlocked ? 400 : 429);
+        e.code = modalityBlocked ? 'MODALITY_UNSUPPORTED' : (windowBlocked ? 'context_length_exceeded' : 'VIRTUAL_NO_CANDIDATE');
         lastErr = e;
       }
       break;
@@ -525,14 +535,20 @@ async function handleChat(req, res, ctx) {
   if (sink.headersSent) {
     try {
       if (gate) gate.discardHeld();
-      sink.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error', code: err.upstreamCode ?? (err.status === 429 ? 429 : null) } })}\n\n`);
+      sink.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error', code: err.upstreamCode ?? err.code ?? (err.status === 429 ? 429 : null) } })}\n\n`);
       sink.write('data: [DONE]\n\n');
     } catch { /* ignore */ }
     if (!res.writableEnded) res.end();
     return { ok: false, error: err.message, attempts };
   }
   res.status(err.status && err.status >= 400 ? err.status : 500).json({
-    error: { message: err.message, type: 'upstream_error' },
+    // code 原样带出：客户端要能区分「窗口装不下」「没有能读图的候选」「池里没可用账号」，
+    // 否则只能拿到一句 message，无法程序化处理（上游错误码走 upstreamCode）。
+    error: {
+      message: err.message,
+      type: 'upstream_error',
+      ...(err.code ?? err.upstreamCode) != null ? { code: err.code ?? err.upstreamCode } : {},
+    },
   });
   return { ok: false, error: err.message, attempts };
 }

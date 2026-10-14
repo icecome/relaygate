@@ -189,6 +189,9 @@ async function fetchCatalog(info) {
     maxOutputTokens: m.maxOutputTokens || null,
     supportsToolCall: !!m.supportsToolCall,
     supportsReasoning: !!m.supportsReasoning,
+    // 多模态：目录返回布尔就用，未返回留 null（未知）。路由侧发图只排除明确的 false，
+    // 因此这里不给默认值 —— 默认 false 会把它自家的视觉模型排除掉。
+    multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
   }));
 }
 

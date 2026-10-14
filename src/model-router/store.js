@@ -116,6 +116,11 @@ function normalizeVirtual(id, vm) {
       contextWindow: Number.isFinite(Number(c.contextWindow)) && Number(c.contextWindow) > 0 ? Number(c.contextWindow) : null,
       promptMaxTokens: Number.isFinite(Number(c.promptMaxTokens)) && Number(c.promptMaxTokens) > 0 ? Number(c.promptMaxTokens) : null,
       maxOutputTokens: Number.isFinite(Number(c.maxOutputTokens)) && Number(c.maxOutputTokens) > 0 ? Number(c.maxOutputTokens) : null,
+      // 多模态能力：**保留三态**（true / false / null=未知）。
+      // 发图请求只会排除明确声明 false 的候选；null 必须放行——WorkBuddy 目录
+      // 不提供该字段，把「未知」当「不支持」会把它自家的视觉模型（wb/glm-5v-turbo、
+      // wb/glm-4.6v 等）全部排除，那比现在「交给上游判错」更糟。
+      multimodal: c.multimodal === true ? true : (c.multimodal === false ? false : null),
       rate: Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : null,
     });
   }

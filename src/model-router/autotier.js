@@ -69,7 +69,46 @@ const DEFAULTS = () => ({
   failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'other'], cooldownMs: 20000 },
 });
 
-/** 已知的平台模型目录（由 catalog 与 wbChat 提供）。 */
+/** 请求是否含图片块（OpenAI image_url / Anthropic image / Responses input_image）。 */
+function requestsImages(messages) {
+  for (const m of messages || []) {
+    const c = m && m.content;
+    if (!Array.isArray(c)) continue;
+    for (const part of c) {
+      if (!part || typeof part !== 'object') continue;
+      const t = String(part.type || '');
+      if (t === 'image' || t === 'image_url' || t === 'input_image') return true;
+      // 少数客户端用 anthropic 的 source.media_type 形态但 type 写作别的值
+      if (part.source && /^image\//.test(String(part.source.media_type || ''))) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 按模态过滤候选（报告 §1.4 的「模态维度」）。
+ *
+ * 与窗口过滤同构：**请求时**按模态过滤，而不是在声明期取交集——这样纯文本请求
+ * 仍能用全部候选，只有发图时才收窄。
+ *
+ * 只排除**明确声明** `multimodal === false` 的候选；`null`（目录未提供该字段）
+ * 一律放行。这不只是为了宽容：WorkBuddy 目录根本不返回该字段，若把「未知」
+ * 当「不支持」，发图请求会把 wb/glm-5v-turbo、wb/glm-4.6v 这些视觉模型全排掉，
+ * 反而比现状（交给上游判错）更差。
+ *
+ * @returns {{image:boolean, list:object[], blocked:boolean}}
+ *   list = 启用且可接图的候选；blocked = 有启用候选但没一个能接图（供上层报明确错误）
+ */
+function filterCandidatesByModality(vm, messages) {
+  const image = requestsImages(messages);
+  const enabled = (vm.candidates || []).filter((c) => c && c.enabled);
+  if (!image) return { image: false, list: enabled, blocked: false };
+  const list = enabled.filter((c) => c.multimodal !== false);
+  return { image: true, list, blocked: enabled.length > 0 && list.length === 0 };
+}
+
+/**
+ * 已知的平台模型目录（由 catalog 与 wbChat 提供）。
 let _dirProvider = null;
 
 /** 注入目录提供者（避免与 routes 循环依赖；启动时调用一次）。 */
@@ -100,6 +139,7 @@ async function fetchAllModels() {
         rate: Number.isFinite(Number(m.rate)) ? Number(m.rate) : null,
         displayName: m.display_name || m.id,
         maxTier: m.maxTier || null,
+        multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
       });
       // 带长上下文档（__max）的模型：额外以 `<id>@max` 形态参与高层分配
       // （窗口取 context_window_tokens.max，输出与输入上限取 maxTier 实测值）
@@ -113,6 +153,7 @@ async function fetchAllModels() {
           rate: Number.isFinite(Number(m.rate)) ? Number(m.rate) : null,
           displayName: (m.display_name || m.id) + '（长上下文档）',
           maxTier: null,
+          multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
         });
       }
     }
@@ -136,6 +177,8 @@ async function fetchAllModels() {
         rate: Number.isFinite(Number(m.rate)) ? Number(m.rate) : null,
         displayName: m.name || m.id,
         maxTier: null,
+        // WorkBuddy 目录目前不返回该字段 → null（未知，路由侧放行）
+        multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
       });
     }
   } catch (e) {
@@ -265,6 +308,7 @@ async function syncAutoTiers(opts = {}) {
         contextWindow: m.window,
         promptMaxTokens: m.promptMax,
         maxOutputTokens: m.maxOut,
+        multimodal: m.multimodal === true ? true : (m.multimodal === false ? false : null),
         rate: m.rate,
       };
     });
@@ -339,6 +383,8 @@ module.exports = {
   deriveWeights,
   syncAutoTiers,
   filterCandidatesByInput,
+  filterCandidatesByModality,
+  requestsImages,
   clampMaxTokens,
   isAutoVm,
   effectiveCandidateWindow,

@@ -2124,6 +2124,84 @@ t('autotier：按窗口分层、倍率排序、候选级守门与输出钳制', 
   );
   assert.strictEqual(autotier.NULL_WINDOW_FLOOR, 100000, '平台安全地板为 100000');
 });
+
+console.log('model-router 模态过滤（发图只排除明确不支持的候选）');
+
+t('requestsImages：识别三种协议的图片块，纯文本/字符串 content 不误判', () => {
+  const { requestsImages } = require('../model-router/autotier');
+  assert.strictEqual(requestsImages([{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }]), true, 'OpenAI image_url');
+  assert.strictEqual(requestsImages([{ role: 'user', content: [{ type: 'image', source: { type: 'base64' } }] }]), true, 'Anthropic image');
+  assert.strictEqual(requestsImages([{ role: 'user', content: [{ type: 'input_image', image_url: 'x' }] }]), true, 'Responses input_image');
+  assert.strictEqual(requestsImages([{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]), false, '纯文本');
+  assert.strictEqual(requestsImages([{ role: 'user', content: 'abc' }]), false, '字符串 content');
+  assert.strictEqual(requestsImages([]), false);
+  assert.strictEqual(requestsImages(null), false);
+});
+
+t('模态过滤：发图时排除明确 multimodal=false，保留 true 与未知(null)', () => {
+  const { filterCandidatesByModality } = require('../model-router/autotier');
+  const vm = {
+    candidates: [
+      { id: 'trae/vision', enabled: true, multimodal: true },
+      { id: 'trae/text-only', enabled: true, multimodal: false },
+      { id: 'workbuddy/wb/glm-5v-turbo', enabled: true, multimodal: null },
+      { id: 'trae/off', enabled: false, multimodal: true },
+    ],
+  };
+  const img = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }];
+  const r = filterCandidatesByModality(vm, img);
+  assert.strictEqual(r.image, true);
+  assert.deepStrictEqual(r.list.map((c) => c.id), ['trae/vision', 'workbuddy/wb/glm-5v-turbo'],
+    '未知(null)必须放行——WorkBuddy 目录不返回该字段，当 false 会把它自家视觉模型全排掉');
+  assert.strictEqual(r.blocked, false);
+});
+
+t('模态过滤：纯文本请求不受影响，全部候选可用', () => {
+  const { filterCandidatesByModality } = require('../model-router/autotier');
+  const vm = { candidates: [
+    { id: 'a', enabled: true, multimodal: true },
+    { id: 'b', enabled: true, multimodal: false },
+  ] };
+  const r = filterCandidatesByModality(vm, [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }]);
+  assert.strictEqual(r.image, false);
+  assert.strictEqual(r.list.length, 2, '纯文本请求不该因模态损失任何候选');
+  assert.strictEqual(r.blocked, false);
+});
+
+t('模态过滤：启用候选全为 false → blocked（供上层报 MODALITY_UNSUPPORTED）', () => {
+  const { filterCandidatesByModality } = require('../model-router/autotier');
+  const vm = { candidates: [
+    { id: 'a', enabled: true, multimodal: false },
+    { id: 'b', enabled: true, multimodal: false },
+  ] };
+  const img = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }];
+  const r = filterCandidatesByModality(vm, img);
+  assert.deepStrictEqual(r.list, []);
+  assert.strictEqual(r.blocked, true);
+});
+
+t('模态过滤：池里本就没有启用候选时 blocked=false（不能把「无人可用」报成模态问题）', () => {
+  const { filterCandidatesByModality } = require('../model-router/autotier');
+  const vm = { candidates: [{ id: 'a', enabled: false, multimodal: false }] };
+  const img = [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'x' } }] }];
+  const r = filterCandidatesByModality(vm, img);
+  assert.strictEqual(r.blocked, false, '真实原因是「没有可用候选」，不是模态不支持');
+});
+
+t('候选归一化：multimodal 三态被保留（true/false/null 不得被压成布尔）', () => {
+  const store = require('../model-router/store');
+  const r = store.upsertVirtual('vm/modality-tri', {
+    candidates: [
+      { provider: 'trae', model: 'v1', multimodal: true },
+      { provider: 'trae', model: 'v2', multimodal: false },
+      { provider: 'workbuddy', model: 'wb/glm-5v-turbo' },
+    ],
+  });
+  assert.ok(r.ok, `写入应成功：${r.message}`);
+  const got = store.getVirtual('vm/modality-tri').candidates.map((c) => c.multimodal);
+  assert.deepStrictEqual(got, [true, false, null], '未知必须留在 null，不能变 false');
+});
+
 t('orderCandidates：auto+sort=rate 按倍率升序，禁用候选被过滤', () => {
   const store = require('../model-router/store');
   const mr = require('../model-router');

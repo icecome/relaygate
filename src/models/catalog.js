@@ -113,7 +113,10 @@ function normalizeItem(item) {
     id: item.config_name,
     display_name: dc.display_name || item.config_name,
     capability: capability || null,
-    multimodal: !!dc.multimodal,
+    // 三态保留：上游给了布尔就用它，未给留 null（=未知）。
+    // 不能 !!(undefined) 压成 false：路由侧发图时只排除「明确声明不支持」的候选，
+    // 把「上游没给」当「不支持」会误排真正能读图的模型。
+    multimodal: typeof dc.multimodal === 'boolean' ? dc.multimodal : null,
     reasoning: capability === 'reasoning_model',
     custom: isUserCustom(item),
     config_source: item.config_source != null ? Number(item.config_source) : null,
