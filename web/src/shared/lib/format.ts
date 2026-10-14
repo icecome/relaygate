@@ -1,6 +1,6 @@
 /** 格式化与纯函数工具。集中口径，避免各页面各写一套。 */
 
-/** 账号三态：仅这三种，源于accountState() 的判定规则。 */
+/** 账号三态：仅这三种，源于 accountState() 的判定规则。 */
 export type AccountState = 'off' | 'cool' | 'ok';
 
 export function accountState(a: {
@@ -40,7 +40,7 @@ export function formatNumber(n: number | null | undefined): string {
   return n.toLocaleString('zh-CN');
 }
 
-/** 成本保留4 位小数，避免把估算值显示得像精确账单。 */
+/** 成本保留 4 位小数，避免把估算值显示得像精确账单。 */
 export function formatCost(n: number | null | undefined): string {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
   if (n === 0) return '0';
@@ -96,20 +96,20 @@ export function coolRemaining(coolUntil: string | null | undefined, now = Date.n
   return formatDuration(until - now);
 }
 
-/* --------------------------------------------------------------- 平台归类 */
+/* 平台归类 */
 
 /**
  * 账号所属平台：'trae' | 'workbuddy' | 'zcode'。
  *
- * 为什么不能直接显示 `source`：source 记录的是「凭据怎么进来的」
+ * 为什么不直接显示 `source`：source 记录的是「凭据怎么进来的」
  * （import / oauth / local / workbuddy），不是「账号属于哪个平台」。
  * Trae 账号无论粘贴导入还是 OAuth 登录，source 都是 import，
- * 直接展示会把 Trae 账号显示成 import —— 与「来源」这一列名的语义不符。
+ * 直接展示会与「来源」这一列名的语义不符。
  *
  * 判定与后端 platform/variant.js 一致，且与筛选器同源：
  * edition 优先，WorkBuddy 的历史值含 'wb' 前缀变体，其余按 Trae 处理。
  */
-export type Platform = 'trae' | 'workbuddy' | 'zcode';
+export type Platform = 'trae' | 'workbuddy' | 'zcode' | 'qoder';
 
 export function platformOf(a: {
   edition?: string | null;
@@ -117,9 +117,10 @@ export function platformOf(a: {
 }): Platform {
   const edition = String(a.edition || '').toLowerCase();
   const source = String(a.source || '').toLowerCase();
-  // edition 是平台的正源；source 仅在 edition 缺失时兜底
+  // edition 是平台的正源；source 仅在 edition 缺失时作为最后手段
   const raw = edition || source;
   if (raw === 'zcode') return 'zcode';
+  if (raw === 'qoder') return 'qoder';
   if (raw === 'workbuddy' || raw.startsWith('wb')) return 'workbuddy';
   return 'trae';
 }
@@ -128,6 +129,7 @@ const PLATFORM_LABEL: Record<Platform, string> = {
   trae: 'Trae',
   workbuddy: 'WorkBuddy',
   zcode: 'ZCode',
+  qoder: 'Qoder',
 };
 
 /** 平台的展示名。 */

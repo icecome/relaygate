@@ -1,9 +1,9 @@
 'use strict';
 /**
- * jobs/task-log.js — 定时任务执行日志（追加式 JSONL，环形保留最近 N 条/每任务）。
+ * jobs/task-log.js — 定时任务执行日志（追加式 JSONL，环形保留每个任务最近 N 条）。
  *
- * 供面板「任务日志」查询：每次定时/手动任务执行写一行，含任务名、触发方式、结果汇总。
- * 文件：.trae-api/task-log.jsonl；上限 MAX_ENTRIES（默认 500），超出后截断（保留最近）。
+ * 供面板「任务日志」查询：每次定时或手动任务执行写一行，含任务名、触发方式、结果汇总。
+ * 文件为 .trae-api/task-log.jsonl，上限 MAX_ENTRIES（默认 500），超出后截断保留最近记录。
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,7 +17,7 @@ const FILE = () => process.env.TASK_LOG_FILE
 const MAX_ENTRIES = Number(process.env.TASK_LOG_MAX_ENTRIES) || 500;
 
 // 进程内行数计数器（m-31 根因修复）：此前按「文件字节 > MAX_ENTRIES*512」粗估
-// 触发整文件重写，阈值偏大且长日志行下周期性全量重写代价随文件线性增长。
+// 触发整文件重写，阈值偏大，长日志行下周期性全量重写的代价随文件线性增长。
 // 现按真实行数精确计数，超限立即裁剪一次。
 let lineCount = null;
 
@@ -25,11 +25,11 @@ let lineCount = null;
 function appendTaskLog(entry) {
   try {
     fs.mkdirSync(path.dirname(FILE()), { recursive: true });
-    // 首次写入新位置时把旧位置的历史并过来，避免升级后「日志突然变空」
+    // 首次写入新位置时把旧位置的历史合并过来，避免升级后「日志突然变空」
     migrateLegacyLog();
     const line = JSON.stringify({ ts: new Date().toISOString(), ...entry }) + '\n';
     fs.appendFileSync(FILE(), line, 'utf-8');
-    // 首次写入时校准计数器（含迁移历史行）；此后增量维护
+    // 首次写入时校准计数器（含迁移的历史行）；此后增量维护
     if (lineCount == null) {
       lineCount = fs.readFileSync(FILE(), 'utf-8').split('\n').filter(Boolean).length;
     } else {
@@ -51,7 +51,7 @@ function appendTaskLog(entry) {
 /** 新位置尚无文件而旧位置有内容时，把旧日志复制到新位置（一次性迁移）。 */
 function migrateLegacyLog() {
   try {
-    // 显式指定路径时不做迁移：调用方已明确要求用这个文件
+    // 显式指定路径时不做迁移：调用方已明确要求使用这个文件
     if (process.env.TASK_LOG_FILE) return;
     // 仅在新位置为空时迁移；否则会把新日志覆盖回旧内容
     if (fs.existsSync(FILE())) return;

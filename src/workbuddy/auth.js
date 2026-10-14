@@ -2,13 +2,12 @@
 /**
  * workbuddy/auth.js — WorkBuddy（腾讯 CodeBuddy 系）认证与账号接入。
  *
- * 凭据来源（对标 trae 的 storage.json 抓取）：
- *   桌面客户端登录态为明文 JSON：
- *   %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info
- *   结构：{ account:{uid,nickname,phoneNumber,...}, auth:{accessToken, refreshToken,
- *          expiresIn(60d), refreshExpiresIn(90d), expiresAt(ms), domain} }
+ * 凭据来源（对标 trae 的 storage.json 抓取）：桌面客户端登录态为明文 JSON，
+ * 位于 %LOCALAPPDATA%\CodeBuddyExtension\Data\Public\auth\workbuddy-desktop.info，
+ * 结构为 { account:{uid,nickname,phoneNumber,...}, auth:{accessToken, refreshToken,
+ * expiresIn(60d), refreshExpiresIn(90d), expiresAt(ms), domain} }。
  *
- * 上游（规格对齐 TraeWorkAssistant workbuddy-product-design.md）：
+ * 上游（规格见 TraeWorkAssistant workbuddy-product-design.md）：
  *   - chat:        POST {chatHost}/v2/chat/completions（OpenAI 兼容 SSE）
  *   - 刷新:        POST https://www.codebuddy.cn/v2/plugin/auth/token/refresh（X-Refresh-Token 头，空体 {}）
  *   - 余额/验证:   POST {billingBase}/billing/meter/get-user-resource-summary
@@ -39,7 +38,7 @@ const BILLING_BASES = WB_HOSTS.billing;
 const DOMAINS = WB_HOSTS.domain;
 
 /** 由 domain/host 字符串推导区域枚举（无法识别时归为 cn）。
- *  region 判定与规范化统一取自 platform/variant（平台差异单一事实源），
+ *  region 判定与规范化取自 platform/variant（平台差异单一事实源），
  *  本地不再各写一份，避免与 Trae 侧的判定口径分叉。 */
 const regionOf = variant.regionOf;
 const validRegion = variant.validRegion;
@@ -61,7 +60,7 @@ function locateAuthFile() {
 
 /** 读取并归一化 auth 文件（region 为枚举）。
  *  新版桌面客户端将 accessToken/refreshToken 存为 {$wbEncrypted:1, envelope} 加密对象，
- *  本项目无法解密——这类字段归一化为 null，避免垃圾值流进请求头或账号库。 */
+ *  本项目无法解密——这类字段归一化为 null，避免无效值流进请求头或账号库。 */
 function plainToken(v) {
   return (typeof v === 'string' && v && !v.startsWith('[object')) ? v : null;
 }
@@ -296,7 +295,7 @@ function parseCycleTime(ts) {
 
 /**
  * 查询资源包明细（含到期时间），供余额/临期展示。
- * 对齐网页端 plans-usage：summary 取 PackageCodes，free/paid 取包容量与 CycleEndTime。
+ * 与网页端 plans-usage 一致：summary 取 PackageCodes，free/paid 取包容量与 CycleEndTime。
  * 失败不抛错，返回空列表（不影响签到主流程）。
  */
 async function fetchResourcePacks(info) {

@@ -2,8 +2,8 @@
 /**
  * credentials/db.js — SQLite 底座（Node 原生 node:sqlite）。
  *
- * 承载多账号凭据 + 账号路由统计（余额/失败/冷却/设备头）。
- * 敏感字段（token/refreshToken）以 AES-256-GCM 密文落库，密钥见 src/lib/crypto.js（持久化）。
+ * 承载多账号凭据与账号路由统计（余额、失败、冷却、设备头）。
+ * 敏感字段（token/refreshToken）以 AES-256-GCM 密文写入数据库，密钥见 src/lib/crypto.js（持久化）。
  *
  * 数据库文件：{WORKSPACE_DIR}/.trae-api/trae-relay.db
  */
@@ -55,18 +55,23 @@ function ensureSchema(db) {
   if (!names.has('auth_client_id')) db.exec('ALTER TABLE accounts ADD COLUMN auth_client_id TEXT');
   if (!names.has('auth_host')) db.exec('ALTER TABLE accounts ADD COLUMN auth_host TEXT');
   if (!names.has('cost_tier')) db.exec('ALTER TABLE accounts ADD COLUMN cost_tier INTEGER DEFAULT 1');
-  // 模型级冷却（P0：6004 类模型限流只冷 (账号,模型)；rateStreak/modelCoolStreak 供指数退避计数）
+  // 模型级冷却（P0：6004 类模型限流只冷 (账号, 模型)；rateStreak/modelCoolStreak 供指数退避计数）
   if (!names.has('model_cooldowns')) db.exec('ALTER TABLE accounts ADD COLUMN model_cooldowns TEXT');
   if (!names.has('rate_streak')) db.exec('ALTER TABLE accounts ADD COLUMN rate_streak INTEGER DEFAULT 0');
   if (!names.has('model_cool_streak')) db.exec('ALTER TABLE accounts ADD COLUMN model_cool_streak INTEGER DEFAULT 0');
   // 保活结果：每个账号最近一次 keepalive 刷新的时刻与结果（失败时带原因）。
-  // 保活是逐账号调用的（scheduler.runKeepalive），此前只在进程内记一个全局时间戳，
-  // 面板无法回答「这个号上次保活是什么时候、还活着吗」。
+  // 保活逐账号调用（scheduler.runKeepalive），此前只在进程内记一个全局时间戳，
+  // 面板无法回答该账号上次保活是什么时候、是否仍存活。
   if (!names.has('last_keepalive_at')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_at TEXT');
   if (!names.has('last_keepalive_result')) db.exec('ALTER TABLE accounts ADD COLUMN last_keepalive_result TEXT');
+  // Qoder 区域（仅 qoder 账号使用）：'cn' | 'intl'。
+  // 域名选择、对话协议（新版 OpenAI vs COSY）、模型目录获取方式三者都依赖它，
+  // 因此必须持久化——不能每次从 host 猜（国际版客户端的 fastEndpoint 实测指向
+  // .com.cn 域名，靠后缀判断会误判）。只在凭据导入时由扫到的客户端目录确定。
+  if (!names.has('qoder_realm')) db.exec("ALTER TABLE accounts ADD COLUMN qoder_realm TEXT");
   // 乐观锁版本号（P0-001）：store.update 改为「按 patch 生成 SET + version CAS」后，
   // 每次成功写入 version+1。并发写入方读到旧 version 时 UPDATE 影响 0 行，
-  // 重读重试即可避免「用陈旧快照覆盖对方刚写的字段」这类静默丢更新。
+  // 重读重试即可避免用陈旧快照覆盖对方刚写的字段这类静默丢更新。
   if (!names.has('version')) db.exec('ALTER TABLE accounts ADD COLUMN version INTEGER NOT NULL DEFAULT 0');
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
@@ -78,7 +83,7 @@ function ensureSchema(db) {
   if (!names.has('api_key_enc')) db.exec('ALTER TABLE accounts ADD COLUMN api_key_enc TEXT');
   if (!names.has('fingerprint')) db.exec('ALTER TABLE accounts ADD COLUMN fingerprint TEXT');
   if (!names.has('mode')) db.exec("ALTER TABLE accounts ADD COLUMN mode TEXT");
-  // 转发面 API Key：必须绑定平台（trae|workbuddy），废弃无平台语义
+  // 转发面 API Key：必须绑定平台（trae|workbuddy），废弃无平台语义。
   // kind: 'access'（转发访问密钥）| 'login'（管理面板登录密钥）
   db.exec(`
     CREATE TABLE IF NOT EXISTS api_keys (
@@ -210,7 +215,7 @@ function db() {
  * 关闭连接（优雅停机链调用）。
  * 幂等：未打开时是空操作；重复调用安全。
  * node:sqlite 的 DatabaseSync 在进程退出时通常也能释放，但显式关闭能让
- * journal 落盘完成，并让第二个进程立刻拿到写锁（否则要等 busy_timeout）。
+ * journal 写入文件完成，并让第二个进程立刻拿到写锁（否则要等 busy_timeout）。
  */
 function close() {
   if (!_db) return false;
@@ -248,6 +253,7 @@ function rowToAcct(r) {
     lastCheckinResult: r.last_checkin_result,
     lastKeepaliveAt: r.last_keepalive_at,
     lastKeepaliveResult: r.last_keepalive_result,
+    qoderRealm: r.qoder_realm || null,
     entitlementSnapshot: parseSnapshot(r.entitlement_snapshot),
   };
 }

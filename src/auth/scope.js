@@ -1,11 +1,11 @@
 'use strict';
 /**
  * auth/scope.js — scope 与资源路径 ACL（P1）。
- *
  * 资源语法：
  *   *                      全部
  *   model:trae/*           Trae 平台模型
  *   model:workbuddy/*      WorkBuddy 模型
+ *   model:qoder/*          Qoder 国际版对话面模型
  *   model:virtual:vm/*     虚拟模型前缀
  *   model:virtual:vm/x     单个虚拟模型
  *   provider:deepseek/*    通用 Provider
@@ -15,13 +15,14 @@ function modelResourcePath(model, meta = {}) {
   const id = String(model == null ? '' : model);
   if (meta.virtual || meta.isVirtual) return `model:virtual/${id}`;
   if (id.startsWith('wb/') || meta.platform === 'workbuddy') return `model:workbuddy/${id.replace(/^wb\//, '')}`;
+  if (meta.platform === 'qoder') return `model:qoder/${id}`;
   if (meta.platform === 'openai' || meta.providerType === 'openai') {
     return `provider/${meta.providerId || 'openai'}/${id}`;
   }
   return `model:trae/${id}`;
 }
 
-/** 通配匹配：* / 前缀* / 精确 */
+/** 通配匹配：支持 *、前缀* 与精确匹配。 */
 function resourceMatch(pattern, resource) {
   const p = String(pattern || '');
   const r = String(resource || '');
@@ -54,7 +55,7 @@ function authorize(key, need) {
   return { ok: true };
 }
 
-/** 便捷：校验能否 invoke 某模型 */
+/** 便捷判定：校验能否 invoke 某模型。 */
 function canInvokeModel(key, model, meta = {}) {
   return authorize(key, {
     scope: 'models:invoke',

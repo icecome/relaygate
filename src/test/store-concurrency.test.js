@@ -1,16 +1,14 @@
 'use strict';
 /**
- * test/store-concurrency.test.js — 账号写入的丢失更新回归（P0-001）。
- *
- * 背景：store.update() 原实现是「get(id) 全列读 → merge → UPDATE 全部 34 列」。
- * 单进程内 node:sqlite 是同步 API、pick() 也没有 await，所以不存在进程内竞态；
- * 真正的风险是**跨进程**（第二个 node 进程 / 运维脚本）与**多客户端同时写库**：
- * 另一写入方在「读」与「写」之间落的字段，会被本次的陈旧快照覆盖回去，且无任何报错。
- *
- * 本文件用「两个独立 Node 进程」复现该场景 —— 这也是唯一能真实构造出
- * 「读到旧快照 → 别人写入 → 自己再写」时序的方式。
- *
+ * test/store-concurrency.test.js——账号写入的丢失更新回归（P0-001）。
  * 运行：node src/test/store-concurrency.test.js
+ *
+ * 背景：store.update() 原实现是「get(id) 全列读，merge，UPDATE 全部 34 列」。
+ * 单进程内 node:sqlite 是同步 API，pick() 也没有 await，不存在进程内竞态；
+ * 真正的风险是跨进程（第二个 Node 进程或运维脚本）与多客户端同时写库：
+ * 另一写入方在「读」与「写」之间写入的字段，会被本次的陈旧快照覆盖回去，且无任何报错。
+ * 本文件用两个独立 Node 进程复现该场景，这也是唯一能真实构造出
+ * 「读到旧快照、别人写入、自己再写」时序的方式。
  */
 const os = require('os');
 const path = require('path');
@@ -66,7 +64,7 @@ function runInChild(script) {
   return (r.stdout || '').trim();
 }
 
-// ---------------------------------------------------------------- 场景构造
+// 场景构造
 
 console.log('credentials/store — 并发写入（跨进程）');
 
@@ -78,9 +76,9 @@ t('seed：主进程建一个账号', () => {
 });
 
 t('两个字段由两个进程分别写入时都必须保留（原实现会丢一个）', () => {
-  // 子进程 A：把 priority 改成 7，然后把「改之前的快照」写到临时文件
+  // 子进程 A：把 priority 改成 7
   // 子进程 B：读到不含 A 修改的快照后写入 enabled=false
-  // 关键：B 的写入必须不能把 A 的 priority 覆盖回旧值
+  // 关键：B 的写入不能把 A 的 priority 覆盖回旧值
   const child = `
     const store = require(${JSON.stringify(STORE)});
     require(${JSON.stringify(DB)}).db();
@@ -90,7 +88,7 @@ t('两个字段由两个进程分别写入时都必须保留（原实现会丢�
   `;
   runInChild(child);
 
-  // 主进程此刻再写 enabled —— 若 update 仍是全列重写，且它读的是 A 写之前的快照，
+  // 主进程此刻再写 enabled：若 update 仍是全列重写，且它读的是 A 写之前的快照，
   // priority 就会被打回 0
   const store = require('../credentials/store');
   store.update('acct_conc_1', { enabled: false });
@@ -146,7 +144,7 @@ t('空 patch 返回当前账号而不报错', () => {
 });
 
 /**
- * CAS 谓词本身必须生效 —— 这是防「跨进程丢失更新」的机制。
+ * CAS 谓词本身必须生效：这是防「跨进程丢失更新」的机制。
  * 真实丢更新需要 OS 级抢占才能复现，无法在测试里稳定构造；
  * 但「用陈旧 version 发起的写入被拒绝」是它的等价可测断言。
  */
@@ -162,13 +160,13 @@ t('用陈旧 version 发起的 UPDATE 必须 0 行生效', () => {
   assert.notStrictEqual(after.label, '不该被写入');
 });
 
-// ------------------------------------------------- 只读接口不得产生写库
+// 只读接口不得产生写库
 
 console.log('credentials/pool — 只读接口无写副作用');
 
 /**
- * 造一个「已过期的模型冷却条目」。原实现里 snapshot()/explainCandidates()
- * 会顺手把它落库（store.update 全列重写）—— 于是免鉴权的 GET /status
+ * 构造一个「已过期的模型冷却条目」。原实现里 snapshot()/explainCandidates()
+ * 会顺手把它写入数据库（store.update 全列重写），于是免鉴权的 GET /status
  * 与 GET /v1/admin/runtime 每次调用都产生 N 次数据库写。
  * 有了这条过期数据，「只读不写」才是可验证的断言。
  */
@@ -215,7 +213,7 @@ t('过期冷却条目由 sweepModelCooldowns 显式清理并落库', () => {
   assert.ok(!left['trae/expired-probe'], '过期条目应已被清理落库');
 });
 
-// ---------------------------------------------------------------- 汇总
+// 汇总
 
 async function main() {
   await runAll();

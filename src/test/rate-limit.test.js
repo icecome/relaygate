@@ -1,12 +1,11 @@
 'use strict';
 /**
- * test/rate-limit.test.js — 转发面限流的默认值与边界（P1-008）。
- *
- * 背景：middleware/rate-limit.js 此前 fallback 是 0（不限），且面板从不给
- * 新密钥写 rpmLimit、.env.example 从不定义 KEY_DEFAULT_RPM —— 实际部署中
- * 每把密钥都不限流。烧的是真实账号积分，必须默认收紧。
- *
+ * test/rate-limit.test.js——转发面限流的默认值与边界（P1-008）。
  * 运行：node src/test/rate-limit.test.js
+ *
+ * 背景：middleware/rate-limit.js 此前默认值为 0（不限流），面板从不给新密钥写
+ * rpmLimit，.env.example 也从未定义 KEY_DEFAULT_RPM，实际部署中每把密钥都不限流，
+ * 消耗的是真实账号积分，必须默认收紧。
  */
 const os = require('os');
 const path = require('path');
@@ -28,7 +27,7 @@ function t(name, fn) {
   queue.push({ name, fn });
 }
 
-/** 构造带可重置 env 的用例执行器（env 改动只在用例内生效）。 */
+/** 构造带可重置 env 的用例执行器，env 改动只在用例内生效。 */
 function withEnv(value, fn) {
   const old = process.env.KEY_DEFAULT_RPM;
   try {
@@ -62,7 +61,7 @@ function makeRes() {
   };
 }
 
-/** 跑一次中间件，返回 { status, body }；next 被调用则返回 { next:true }。 */
+/** 跑一次中间件，返回 { status, body }；next 被调用则返回 { next: true }。 */
 function attempt(mw, keyId, rpmLimit) {
   const req = { apiKeyId: keyId, authKey: rpmLimit == null ? null : { rpmLimit } };
   let nexted = false;
@@ -73,7 +72,7 @@ function attempt(mw, keyId, rpmLimit) {
   return nexted ? { next: true } : { status: res.statusCode, body: res.body };
 }
 
-// ------------------------------------------------------------ 默认值
+// 默认值
 
 console.log('middleware/rate-limit — 默认值收紧');
 
@@ -99,7 +98,7 @@ t('密钥自身的 rpmLimit 优先于默认值', () => {
   });
 });
 
-// ------------------------------------------------------------ 中间件行为
+// 中间件行为
 
 console.log('middleware/rate-limit — 中间件边界');
 
@@ -149,7 +148,7 @@ t('密钥 rpmLimit=5 时第 6 次被限（优先于默认值）', () => {
   });
 });
 
-// ---------------------------------------------------------------- 汇总
+// 汇总
 
 async function main() {
   for (const { name, fn } of queue) {

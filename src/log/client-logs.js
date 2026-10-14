@@ -1,20 +1,15 @@
 'use strict';
 /**
  * log/client-logs.js — WorkBuddy 客户端会话日志扫描与 token 聚合。
- *
- * 背景：上游不回传 usage 时，网关侧统计覆盖率长期偏低（WorkBuddy 平台尤甚）。
- * 客户端会把每次调用的 usage 写进自己的会话日志，该数据源接近全量，
- * 因此单独作为「客户端消耗」一侧，与「网关转发」并列展示，两者不混算。
- *
- * 数据源：%USERPROFILE%\.workbuddy\projects\**\*.jsonl
- *   每条 assistant 行含 providerData.usage（驼峰）与 providerData.rawUsage（蛇形），
- *   两者实测完全等值，故 token 只取 usage 一份，避免重复计数；
- *   credit 仅存在于 rawUsage。
- *
- * 隐私约束：只提取 usage 数字与时间戳，绝不落盘消息正文、arguments 或认证信息。
- *
- * 性能：单机实测 235 个 jsonl、约 291 MB。按文件 mtime+size 做增量缓存，
- * 缓存粒度是「单文件聚合桶」，未变更的文件直接复用，避免每次全量读盘。
+ * 上游不回传 usage 时网关侧统计覆盖率长期偏低（WorkBuddy 平台尤为明显）；客户端会把
+ * 每次调用的 usage 写进自己的会话日志，该数据源接近全量，因此单独作为「客户端消耗」
+ * 一侧，与「网关转发」并列展示，两者不混算。
+ * 数据源：%USERPROFILE%\.workbuddy\projects\**\*.jsonl。每条 assistant 行含
+ * providerData.usage（驼峰）与 providerData.rawUsage（蛇形），两者实测完全等值，
+ * token 只取 usage 一份以避免重复计数；credit 仅存在于 rawUsage。
+ * 隐私约束：只提取 usage 数字与时间戳，绝不把消息正文、arguments 或认证信息写入文件。
+ * 性能：单机实测 235 个 jsonl、约 291 MB；按文件 mtime+size 做增量缓存，粒度是
+ * 「单文件聚合桶」，未变更的文件直接复用，避免每次全量读盘。
  */
 const fs = require('fs');
 const path = require('path');
@@ -28,7 +23,7 @@ function logRoot() {
   return path.join(process.env.USERPROFILE || process.env.HOME || '', '.workbuddy', 'projects');
 }
 
-// 读优先新位置，旧位置兜底（缓存可重建，不做逐文件迁移）
+// 读优先新位置，旧位置作为最后手段（缓存可重建，不做逐文件迁移）
 const CACHE_DIR = () => {
   const fresh = path.join(stateDir(), 'client-log-cache');
   if (fs.existsSync(fresh)) return fresh;
@@ -40,9 +35,9 @@ const WRITE_DIR = () => path.join(stateDir(), 'client-log-cache');
 const CACHE_VERSION = 5;
 
 /**
- * 单文件标定样本上限。样本只用于拟合「积分/千 token」三系数，
- * 单文件几十条已足够；上限同时防止缓存 JSON 体积失控
- * （实测全量 4936 条样本 × 40B ≈ 200KB，尚可接受，但配合 235 个文件会放大）。
+ * 单文件标定样本上限。样本只用于拟合「积分/千 token」三系数，单文件几十条已足够；
+ * 上限同时防止缓存 JSON 体积失控（实测全量 4936 条样本 × 40B ≈ 200KB，
+ * 尚可接受，但配合 235 个文件会放大）。
  */
 const SAMPLE_CAP = 400;
 
@@ -95,7 +90,7 @@ function writeCacheFileFor(file) {
 }
 
 /**
- * 从一行日志中提取 usage（不读正文）。
+ * 从一行日志中提取 usage（不读消息正文）。
  * 返回 { ts, model, requestId, input, output, cacheRead, cacheWrite, credit, total } 或 null。
  */
 function extractUsage(o) {
@@ -144,7 +139,7 @@ function extractUsage(o) {
  * 去重：同一 messageId/callId 在流式写入中可能重复出现（实测占比极低），
  * 保留 total 较大的一条。注意不能用 conversationRequestId 去重——那是整轮
  * 对话的 id，一轮 agentic 含数十次独立调用，用它去重会把整轮压成一条。
- * 只保留数字与日期键，不留正文。
+ * 只保留数字与日期键，不留消息正文。
  */
 function parseFile(file, stat) {
   const bucket = {
@@ -199,7 +194,7 @@ function parseFile(file, stat) {
     bucket.credit += u.credit;
     // 标定样本：带 credit 的逐请求行是「token ↔ 积分」回归的唯一可用原料
     // （官方账单接口只给 credit 不给 token）。上限 SAMPLE_CAP 条/文件，
-    // 只保留数字，不落正文；超出后按等距抽样，保证覆盖全时段而非只取开头。
+    // 只保留数字，不落消息正文；超出后按等距抽样，保证覆盖全时段而非只取开头。
     if (u.credit > 0 && (u.input + u.output) > 0) bucket.creditSamples.push(sampleOf(u));
     if (u.ts != null) {
       if (bucket.minTs == null || u.ts < bucket.minTs) bucket.minTs = u.ts;
@@ -365,7 +360,7 @@ function scan(opts = {}) {
 /** 清空解析缓存。 */
 function clearCache() {
   try {
-    // 两处都清，避免旧目录残留继续被读取
+    // 新旧两处都清，避免旧目录残留继续被读取
     fs.rmSync(WRITE_DIR(), { recursive: true, force: true });
     fs.rmSync(path.join(legacyStateDir(), 'client-log-cache'), { recursive: true, force: true });
     return true;
@@ -379,9 +374,9 @@ function clearCache() {
  *
  * 供 models/pricing-calib.js 拟合 WorkBuddy 侧「积分/token」系数：
  * 官方账单接口只回 credit 不回 token，token 只能取自客户端日志的 usage，
- * 二者在同一行内天然配对，无需按时间戳猜。
+ * 二者在同一行内天然配对，无需按时间戳推断。
  *
- * 走的是同一份 mtime+size 增量缓存，重复调用几乎零成本；
+ * 复用同一份 mtime+size 增量缓存，重复调用几乎零成本；
  * 缓存缺失时全量解析一次（实测 235 文件约数秒），之后复用。
  * 旧版本缓存桶没有 creditSamples 字段 → 自动重解析补齐。
  */
@@ -391,7 +386,7 @@ function collectCreditSamples(opts = {}) {
   const out = [];
   for (const f of listJsonlFiles(root)) {
     let bucket = opts.force ? null : readCached(f.file, f);
-    if (bucket && !Array.isArray(bucket.creditSamples)) bucket = null; // 旧桶缺字段，重解析
+    if (bucket && !Array.isArray(bucket.creditSamples)) bucket = null; // 旧桶缺字段，全量重解析
     if (!bucket) {
       bucket = parseFile(f.file, f);
       writeCached(f.file, bucket);

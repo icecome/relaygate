@@ -1,10 +1,10 @@
 'use strict';
 /**
- * test/unit.test.js — 纯函数层最小单测（node 内置 assert，无需依赖）。
+ * test/unit.test.js——纯函数层最小单测（Node.js 内置 assert，无外部依赖）。
  * 运行：node src/test/unit.test.js
  *
- * 注意：必须在 require 任何模块之前设置 WORKSPACE_DIR / TRAE_API_ENCRYPT_KEY，
- * 否则 config.workspaceDir 会被固化到默认 output/，污染真实账号库。
+ * 必须在 require 任何模块之前设置 WORKSPACE_DIR / TRAE_API_ENCRYPT_KEY，
+ * 否则 config.workspaceDir 会固化到默认 output/，污染真实账号库。
  */
 const os = require('os');
 const path = require('path');
@@ -20,7 +20,7 @@ const { createStreamHandler } = require('../transform/sse');
 const { exportOpenAI, exportAnthropic } = require('../transform/emitters');
 const { buildBody } = require('../upstream/client');
 const { classifyError } = require('../upstream/errors');
-// store/import 在 credentials.pool 段落再 require，避免与 WORKSPACE 初始化顺序冲突
+// store/import 在 credentials.pool 段落再 require，避免与 WORKSPACE 初始化顺序冲突。
 
 let pass = 0;
 const queue = [];
@@ -69,7 +69,7 @@ t('跨 chunk 拆分裸工具 JSON (feedLine)', () => {
   const calls = [];
   const h = createStreamHandler((e) => { if (e.type === 'tool_call') calls.push(e.call); });
   const json = '{"name":"run","arguments":{"cmd":"ls"}}';
-  // 先把整段作为一次 output 内的 content 经 feedLine 喂入（JSON.parse 一次）
+  // 整段作为一次 output 内的 content 经 feedLine 喂入（JSON.parse 一次）
   for (const part of [json.slice(0, 10), json.slice(10, 20), json.slice(20)]) {
     h.feedLine('event:output');
     h.ingest({ content: part });
@@ -408,11 +408,11 @@ t('summarizeExpiry 按自然日窗口汇总 3/7 天', () => {
     return Math.floor(d.getTime() / 1000) + 3600 * 10; // 当天 10:00
   };
   const packs = [
-    { remaining: 10, expireTime: dayStart(1) },  // 明天 → 3天内
-    { remaining: 20, expireTime: dayStart(3) },  // 第3天 → 3天内
-    { remaining: 30, expireTime: dayStart(5) },  // 第5天 → 仅7天内
+    { remaining: 10, expireTime: dayStart(1) },  // 明天 → 3 天内
+    { remaining: 20, expireTime: dayStart(3) },  // 第 3 天 → 3 天内
+    { remaining: 30, expireTime: dayStart(5) },  // 第 5 天 → 仅 7 天内
     { remaining: 40, expireTime: dayStart(10) }, // 更远 → 不计入
-    { remaining: 5, expireTime: dayStart(0) },   // 今天 → 3天内
+    { remaining: 5, expireTime: dayStart(0) },   // 今天 → 3 天内
   ];
   const r = summarizeExpiry(packs, nowMs);
   assert.strictEqual(r.d3, 35);
@@ -427,8 +427,7 @@ t('summarizeExpiry 空列表返回 0', () => {
 
 t('模型可用性状态只取 availability 三态', () => {
   // 契约：/v1/models/status 的 status 必须来自 availability 三态。
-  // 回归防护 —— 此前 WorkBuddy 分支硬编码 'available'，与本模块声明不一致，
-  // 导致前端映射表查不到值而整页崩溃。
+  // 回归防护：此前 WorkBuddy 分支硬编码 'available'，前端映射表查不到值导致整页崩溃。
   const availability = require('../models/availability');
 
   // 未登记的模型回落 unknown，不产生第四种取值
@@ -526,7 +525,7 @@ t('分组：PATCH 白名单 + 分组过滤', () => {
   process.env.POOL_GROUPS = 'work';
   try {
     const picked = pool.pick(null, { exclude: [] });
-    // 只允许 work 组：若选到账号必属 work 组（可能为 null——池内其它测试账号无分组且会被排除）
+    // 只允许 work 组：选到账号则必属 work 组（可能为 null——池内其它测试账号无分组且会被排除）
     if (picked) assert.strictEqual(picked.group, 'work');
   } finally {
     delete process.env.POOL_GROUPS;
@@ -543,9 +542,8 @@ t('积分快照：差分统计消耗', () => {
   ch.add(a.id, { remaining: 960, used: 60, source: 'test' }); // 余额上涨不计消耗
   ch.add(a.id, { remaining: 900, used: 120, source: 'test' });
   const row = ch.summary(1).find((d) => d.accountId === a.id);
-  // usedTotal：上游 used（累计已用）的增量口径（字段改名自旧 todayUsed）。
-  // 快照序列 used=0→60→60→120，正向增量 60+0+60=120；同时 remaining 的中途上涨
-  // （940→960）不影响该口径。
+  // usedTotal 取上游 used（累计已用）的增量口径（字段改名自旧 todayUsed）。
+  // 快照序列 used=0→60→60→120，正向增量 60+0+60=120；remaining 中途上涨（940→960）不影响该口径。
   assert.strictEqual(row.usedTotal, 120);
   assert.strictEqual(row.snapshots, 4);
   assert.strictEqual(row.latestRemaining, 900);
@@ -555,7 +553,7 @@ t('积分快照：差分统计消耗', () => {
 t('least_balance 优先选余额更高账号', () => {
   const low = pStore.add({ label: 'bal-low', token: 'l', balance: 10 }, 'import');
   const high = pStore.add({ label: 'bal-high', token: 'h', balance: 9999 }, 'import');
-  // 禁用其它 enabled 以免干扰
+  // 禁用其它 enabled 账号，避免干扰选号
   for (const a of pStore.list()) {
     if (a.id !== low.id && a.id !== high.id) pStore.update(a.id, { enabled: false });
   }
@@ -564,12 +562,12 @@ t('least_balance 优先选余额更高账号', () => {
   const chosen = pool.pick(null, { exclude: [] });
   assert.ok(chosen);
   assert.strictEqual(chosen.id, high.id, '应选中余额更高的账号');
-  // 恢复
+  // 恢复被改动的账号状态
   pStore.update(high.id, { enabled: false });
   pStore.update(low.id, { enabled: false });
 });
 
-// packSec：指定第 offset 天 10:00 到期的秒级时间戳
+// packSec：第 offset 天 10:00 的到期秒级时间戳
 const packSec = (offset) => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
@@ -619,7 +617,7 @@ t('quota 错误硬冷却到次日', () => {
   assert.ok(pool.inCooldown(after));
 });
 
-// ===== 模型级冷却 + 429 退避（P0-1/P0-2）=====
+// 模型级冷却 + 429 退避（P0-1/P0-2）
 t('parseRateLimitReset 解析中文 UTC+8 恢复时刻', () => {
   const { parseRateLimitReset } = require('../upstream/errors');
   const iso = parseRateLimitReset('您的使用量已超出频率限制，将在 2026-09-29 20:48:47 UTC+8 重置，您也可以切换其他模型继续使用。');
@@ -664,7 +662,7 @@ t('rate_limit 无精确时刻时指数退避（连续翻倍，封顶 RATE_COOLDO
   let cur = pStore.get(a.id);
   const wait1 = new Date(cur.coolUntil).getTime() - Date.now();
   assert.ok(wait1 > base * 0.8 && wait1 <= base + 1000, `第一次应约等于基数，实际 ${wait1}ms`);
-  // 连续第二次：带 model 时模型冷却翻倍（账号级不动，因模型维度已有精确路径外退避）
+  // 连续第二次：带 model 时模型冷却翻倍（账号级不动，模型维度已有精确路径外的退避）
   pool.record(a.id, 'rate_limit', { model: 'm-x' });
   pool.record(a.id, 'rate_limit', { model: 'm-x' });
   cur = pStore.get(a.id);
@@ -689,7 +687,7 @@ t('record ok 清除限流计数与过期模型冷却', () => {
   assert.strictEqual(after.coolUntil, null);
   pStore.remove(a.id);
 });
-// ===== 模型级冷却 + 429 退避 结束 =====
+// 模型级冷却 + 429 退避 用例结束
 
 t('sticky 映射绑定与查询', () => {
   const sticky = require('../session/sticky');
@@ -705,7 +703,46 @@ t('classifyError 识别 quota', () => {
   assert.strictEqual(classifyError(e), 'quota');
 });
 
-// checkin 批次拆分依赖 store；真实网络不在单测内。
+t('classifyError：上下文超限归为终端错误 context_length（不 failover）', () => {
+  const { classifyError: ce, isRetryable } = require('../upstream/errors');
+  // WorkBuddy 真实报文（traffic 日志实测）
+  const e = new Error('WorkBuddy upstream HTTP 400 {"code":11115,"msg":"prompt is too long: 100001 tokens > 100000 maximum"}');
+  e.status = 400;
+  assert.strictEqual(ce(e), 'context_length', '11115 / prompt is too long 归 context_length');
+  assert.strictEqual(isRetryable('context_length'), false, 'context_length 不可重试');
+
+  // 网关本地守门抛出的错（checkContextLimit）同语义
+  const local = new Error('context length exceeded: estimated 100001 tokens exceeds input limit 75000');
+  local.status = 400;
+  local.code = 'context_length_exceeded';
+  assert.strictEqual(ce(local), 'context_length', '本地守门错误同样归 context_length');
+
+  // 上游只给业务码（无 code 字段文本）也要识别
+  const bare = new Error('upstream rejected');
+  bare.status = 400;
+  bare.upstreamCode = 11115;
+  assert.strictEqual(ce(bare), 'context_length');
+
+  // 不得把 5xx / 限流误判成 context_length
+  const rl = new Error('rate limited');
+  rl.status = 429;
+  assert.notStrictEqual(ce(rl), 'context_length');
+  const five = new Error('boom');
+  five.status = 503;
+  assert.notStrictEqual(ce(five), 'context_length');
+});
+
+t('shouldSwitch：context_length 不切换候选（换候选解决不了窗口问题）', () => {
+  const mr = require('../model-router');
+  // orderCandidates 未导出 shouldSwitch，经 classifyError 语义间接验证：
+  // 该分支只依赖 kind 字符串，此处验证分类器产出的 kind 与守门约定一致。
+  const { classifyError } = require('../upstream/errors');
+  const e = new Error('{"code":11115,"msg":"prompt is too long: 100001 tokens > 100000 maximum"}');
+  assert.strictEqual(classifyError(e), 'context_length');
+  assert.ok(typeof mr.handleChat === 'function');
+});
+
+// checkin 批次拆分依赖 store；真实网络请求不在单测范围内。
 t('checkin 模块导出', () => {
   const c = require('../upstream/checkin');
   assert.strictEqual(typeof c.checkinAccount, 'function');
@@ -803,10 +840,10 @@ t('model availability 默认 unknown', () => {
 /**
  * 探测路由的平台声明（回归：2026-10-06 wb/* 全量误标 unavailable）。
  *
- * 根因是 pool.run 的 edition 缺省语义为「只选非 workbuddy 账号」：
- * 漏传时 wb 模型被发给 Trae 上游，上游回 PARAM_INVALID，被误判成模型不可用。
- * 此处直接桩掉 pool.run / store，断言 helper 传出的 edition 与用号平台一致，
- * 避免将来重构时静默回归（该缺陷不报错、不告警，只表现为面板变红）。
+ * 根因：pool.run 的 edition 缺省语义为「只选非 workbuddy 账号」，漏传时 wb 模型
+ * 被发给 Trae 上游，上游回 PARAM_INVALID，被误判成模型不可用。
+ * 此处桩掉 pool.run / store，断言 helper 传出的 edition 与用号平台一致；
+ * 该缺陷不报错、不告警，只表现为面板变红。
  */
 t('chatViaPlatform 按 wb/ 前缀声明 edition', async () => {
   const adminDebug = require('../routes/admin-debug');
@@ -1623,7 +1660,7 @@ t('exchangeToken 不再因版本指纹函数缺失而 ReferenceError', async () 
   // m-35 把 getAppVersion/getIdeVersion/getIdeVersionCode 搬去 headers.js 后，
   // exchangeToken 的调用点没跟着迁移，运行即抛 "getAppVersion is not defined"，
   // Trae 账号 token 自 2026-10-06 起全部无法自动续期。守门：换票必须能构造出
-  // 请求头并到达上游（这里用不可达 host，网络层错误 ≠ 模块内符号缺失）。
+  // 请求头并到达上游（此处用不可达 host，网络层错误 ≠ 模块内符号缺失）。
   const { exchangeToken } = require('../lib/auth');
   let err = null;
   try {
@@ -1923,6 +1960,30 @@ t('token 粗估：多部分 content、图片、tool_calls', () => {
   assert.strictEqual(estimatePromptTokens([]), 0);
   assert.strictEqual(estimatePromptTokens(null), 0);
 });
+t('token 粗估：tools 声明计入输入（上游把工具 schema 一并计限额）', () => {
+  const { estimateRequestTokens, estimatePromptTokens } = require('../lib/token-estimate');
+  const msgs = [{ role: 'user', content: 'abcdwxyz' }];
+  assert.strictEqual(estimateRequestTokens(msgs, null), estimatePromptTokens(msgs), '无 tools 时与 messages 口径一致');
+  assert.strictEqual(estimateRequestTokens(msgs, []), estimatePromptTokens(msgs), '空 tools 不计入');
+  const tools = [{ type: 'function', function: { name: 'abcdwxyz', description: 'x'.repeat(4000), parameters: { type: 'object', properties: { a: { type: 'string' } } } } }];
+  const withTools = estimateRequestTokens(msgs, tools);
+  assert.ok(withTools > estimatePromptTokens(msgs), 'tools 应显著抬升估算');
+  // 27 个工具的规模不应低于单条工具的量级（实测 toolsIn=27 的请求被上游按 100001 拒）
+  const many = Array.from({ length: 27 }, () => tools[0]);
+  assert.ok(estimateRequestTokens(msgs, many) > estimateRequestTokens(msgs, [tools[0]]), '工具数与估算同向增长');
+});
+t('窗口守门：候选有效窗口取校准值（hy3 100000 优先于虚高声明 192000）', () => {
+  const { calibratedWindow, calibratedWindowOf, CALIBRATED_WINDOW } = require('../model-router/window-calibration');
+  assert.strictEqual(calibratedWindowOf('workbuddy/wb/hy3'), 100000);
+  assert.strictEqual(calibratedWindowOf('workbuddy/wb/space-bunny'), 100000);
+  // 声明 192000（目录虚高值）但校准表命中 → 取 100000
+  assert.strictEqual(calibratedWindow({ provider: 'workbuddy', model: 'wb/hy3', contextWindow: 192000 }), 100000);
+  // 未校准的候选：声明值优先
+  assert.strictEqual(calibratedWindow({ provider: 'workbuddy', model: 'wb/step-5-preview', contextWindow: 1000000 }), 1000000);
+  // 既未校准也未声明 → null（由调用方套平台地板）
+  assert.strictEqual(calibratedWindow({ provider: 'trae', model: 'x' }), null);
+  assert.ok(Object.keys(CALIBRATED_WINDOW).length > 0, '校准表非空');
+});
 t('store：contextWindow 声明持久化与归一化', () => {
   const store = require('../model-router/store');
   store.upsertVirtual('vm/win-test', {
@@ -2005,7 +2066,25 @@ t('autotier：按窗口分层、倍率排序、候选级守门与输出钳制', 
   assert.ok(estimated > 116000 * 0.75, '估算应超过小候选的 75% 窗口');
   assert.deepStrictEqual(list.map((c) => c.id), ['big'], '只保留装得下的候选');
   const vm2 = { candidates: [{ id: 'x', enabled: true, contextWindow: null }] };
-  assert.strictEqual(autotier.filterCandidatesByInput(vm2, msgs).list.length, 1, '未声明窗口的候选全放行');
+  // 未声明窗口不再无条件放行：按平台安全地板（NULL_WINDOW_FLOOR=100000）守门，
+  // 杜绝「全部候选都没声明窗口 → 候选级守门整体失效 → 直接撞上游 11115」。
+  assert.strictEqual(
+    autotier.filterCandidatesByInput(vm2, msgs).list.length,
+    0,
+    '未声明窗口的候选按平台安全地板守门，不再全放行',
+  );
+  // 输入远低于地板时仍放行（守门不误伤正常请求）
+  const small = [{ role: 'user', content: 'x'.repeat(400) }];
+  assert.strictEqual(autotier.filterCandidatesByInput(vm2, small).list.length, 1, '低于地板阈值时放行');
+  // 校准表命中时以实测窗口为准（hy3 目录值 192000 虚高，实测 100000）
+  const vm3 = { candidates: [{ id: 'hy3', provider: 'workbuddy', model: 'wb/hy3', enabled: true, contextWindow: 192000 }] };
+  const mid = [{ role: 'user', content: 'x'.repeat(4 * 90000) }];
+  assert.strictEqual(
+    autotier.filterCandidatesByInput(vm3, mid).list.length,
+    0,
+    '校准窗口 100000 优先于虚高的目录声明 192000',
+  );
+  assert.strictEqual(autotier.NULL_WINDOW_FLOOR, 100000, '平台安全地板为 100000');
 });
 t('orderCandidates：auto+sort=rate 按倍率升序，禁用候选被过滤', () => {
   const store = require('../model-router/store');
@@ -2716,9 +2795,8 @@ function codeOf(js) {
 }
 
 t('轮换循环不因单账号 startClient 失败而中止整遍', () => {
-  // 服务会话（Session 0）下 startClient 必返回 reason=service_session；
-  // 若此时 break，整遍轮换在第一个账号就断链，剩余账号连 auth 都不切换，
-  // 表现为「轮换触发不了」。守门：循环体内不得出现 break。
+  // 服务会话（Session 0）下 startClient 必返回 reason=service_session；此时 break 会让整遍
+  // 轮换在第一个账号断链，剩余账号连 auth 都不切换，表现为「轮换触发不了」。守门：循环体内不得出现 break。
   const src = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'rotate-accounts.js'), 'utf-8');
   const loop = src.match(/for \(const acct of accounts\) \{[\s\S]*?\n  \}/);
   assert.ok(loop, '应能定位轮换主循环');
@@ -2968,7 +3046,7 @@ t('parseRate：兼容旧格式 x2.5 与新格式 x0.00 credits', async () => {
     assert.strictEqual(byId['m-free'].rate, 1);
     assert.strictEqual(byId['m-none'].rateText, null);
     assert.strictEqual(byId['m-none'].rate, null);
-    // 畸形倍率（解析为 NaN）归一为 null，不得流入费率链路
+    // 畸形倍率（解析为 NaN）归一为 null，不得流入费率计算
     assert.strictEqual(byId['m-bad'].rate, null);
   } finally {
     global.fetch = origFetch;
@@ -3018,7 +3096,7 @@ t('dispatchTraeStream：文本事件逐块写出（首帧先于上游流结束�
   const origChat = client.llmUtilsChat;
   const origConsume = client.consumeStream;
   // 事件到达顺序记录：sse:xxx 追加于事件下发时刻，consumeEnd 追加于上游流
-  // 读取结束时刻。真流式 ⇒ 首个内容帧先于 consumeEnd。
+  // 读取结束时刻。真流式时首个内容帧先于 consumeEnd。
   const timeline = [];
   const line = (obj) => 'data: ' + JSON.stringify(obj) + '\n\n';
   const firstPromise = new Promise((r) => { global.__probeFirstWrite = r; });
@@ -3227,7 +3305,97 @@ t('least_balance 按 FEFO 到期时刻升序（先到期先用）', () => {
   assert.strictEqual(ordered[0].id, 'a_early', '到期更近的账号应排在前面');
 });
 
-// ── zcode 运营面 ────────────────────────────────────────────────────────────
+// ── 跨平台账号级调度（POOL_ACCOUNT_PRIORITY）─────────────────────────────
+t('poolSignals：无临期包时返回 tier=2 且 balance 为池内余额合计', () => {
+  const pool = require('../credentials/pool');
+  const store = require('../credentials/store');
+  const a = store.add({ label: 'sig-a', token: 'sa', edition: 'cn', balance: 1000, entitlementSnapshot: { packs: [{ name: 'x', expireTime: packSec(60), remaining: 500 }] } }, 'import');
+  const b = store.add({ label: 'sig-b', token: 'sb', edition: 'cn', balance: 300, entitlementSnapshot: { packs: [] } }, 'import');
+  pool.invalidateSignalCache();
+  const sig = pool.poolSignals('trae');
+  assert.strictEqual(sig.tier, 2, '60 天后到期不是临期');
+  assert.strictEqual(sig.balance, 1300, '余额取 pool 合计');
+  store.remove(a.id);
+  store.remove(b.id);
+  pool.invalidateSignalCache();
+});
+
+t('poolSignals：窗口内临期包使 tier=1 且 soonestMs 取最早到期', () => {
+  const pool = require('../credentials/pool');
+  const store = require('../credentials/store');
+  pool.invalidateSignalCache();
+  const a = store.add({ label: 'sig-far', token: 'sf', edition: 'cn', balance: 9999, entitlementSnapshot: { packs: [{ expireTime: packSec(20), remaining: 100 }] } }, 'import');
+  const b = store.add({ label: 'sig-near', token: 'sn', edition: 'cn', balance: 5, entitlementSnapshot: { packs: [{ expireTime: packSec(2), remaining: 50 }] } }, 'import');
+  pool.invalidateSignalCache();
+  const sig = pool.poolSignals('trae');
+  assert.strictEqual(sig.tier, 1, '2 天后到期在 7 天窗口内');
+  assert.strictEqual(sig.soonestMs, new Date(packSec(2) * 1000).getTime(), '取窗口内最早到期');
+  store.remove(a.id);
+  store.remove(b.id);
+  pool.invalidateSignalCache();
+});
+
+t('候选排序：临期池整体抢占非临期池（跨平台账号优先）', () => {
+  const pool = require('../credentials/pool');
+  const store = require('../credentials/store');
+  const mr = require('../model-router');
+  // 两个内置 Provider 各一个候选：trae 与 workbuddy
+  mr.store.upsertVirtual('vm/test-cross', {
+    enabled: true,
+    strategy: 'priority',
+    auto: true,
+    sort: 'rate',
+    rotateTopN: 0,
+    contextWindow: 100000,
+    candidates: [
+      { id: 'workbuddy/wb/m', provider: 'workbuddy', model: 'wb/m', rate: 0.01, enabled: true, contextWindow: 100000 },
+      { id: 'trae/m', provider: 'trae', model: 'm', rate: 0.5, enabled: true, contextWindow: 100000 },
+    ],
+  });
+  // workbuddy 无临期、余额大（tier 2、balance 高）——非临期档按余额合计
+  store.add({ label: 'x-trae', token: 'xt', edition: 'cn', balance: 10, entitlementSnapshot: { packs: [{ expireTime: packSec(9), remaining: 1 }] } }, 'import');
+  store.add({ label: 'x-wb', token: 'xw', edition: 'workbuddy', balance: 500, entitlementSnapshot: { packs: [{ expireTime: packSec(9), remaining: 1 }] } }, 'import');
+  pool.invalidateSignalCache();
+  let vm = mr.store.getVirtual('vm/test-cross');
+  let ordered = mr.orderCandidates('vm/test-cross', vm, 'all');
+  // 都无临期，按余额合计：wb(500) > trae(10)
+  assert.strictEqual(ordered[0].provider, 'workbuddy', '无临期时余额多的池优先');
+
+  // 给 trae 加一个 2 天内的临期包 → trae 变成 tier 1，必须抢占 wb 的成本序
+  const traeAcct = store.list().find((x) => x.edition === 'cn' && x.label === 'x-trae');
+  store.update(traeAcct.id, { entitlementSnapshot: { packs: [{ expireTime: packSec(1), remaining: 99 }] } });
+  pool.invalidateSignalCache();
+  vm = mr.store.getVirtual('vm/test-cross');
+  ordered = mr.orderCandidates('vm/test-cross', vm, 'all');
+  assert.strictEqual(ordered[0].provider, 'trae', '临期池应整体抢占非临期池');
+  mr.store.removeVirtual('vm/test-cross');
+  // 清理测试账号
+  for (const a of store.list()) {
+    if (a.label === 'x-trae' || a.label === 'x-wb') store.remove(a.id);
+  }
+  pool.invalidateSignalCache();
+});
+
+t('stickyAllowed：绑定账号无临期且池内有临期时让位', () => {
+  const pool = require('../credentials/pool');
+  const store = require('../credentials/store');
+  // 场景 1：池内无临期 → 复用绑定账号（让位无收益）
+  const near = store.add({ label: 'sa-near', token: 'san', edition: 'cn', balance: 100, entitlementSnapshot: { packs: [{ expireTime: packSec(2), remaining: 50 }] } }, 'import');
+  const far = store.add({ label: 'sa-far', token: 'saf', edition: 'cn', balance: 100, entitlementSnapshot: { packs: [{ expireTime: packSec(30), remaining: 50 }] } }, 'import');
+  pool.invalidateSignalCache();
+  assert.strictEqual(pool.stickyAllowed(far, 'trae'), false, '同池有临期账号时应让位');
+  assert.strictEqual(pool.stickyAllowed(near, 'trae'), true, '绑定账号自己临期则继续复用');
+  store.remove(near.id);
+  store.remove(far.id);
+  // 场景 2：池内无任何临期 → 复用（保持会话缓存命中）
+  const only = store.add({ label: 'sa-only', token: 'sao', edition: 'cn', balance: 100, entitlementSnapshot: { packs: [{ expireTime: packSec(30), remaining: 50 }] } }, 'import');
+  pool.invalidateSignalCache();
+  assert.strictEqual(pool.stickyAllowed(only, 'trae'), true, '无临期账号时让位无收益');
+  store.remove(only.id);
+  pool.invalidateSignalCache();
+});
+
+// zcode 运营面
 console.log('platform/variant (zcode)');
 t('zcode 变体已注册且能力位正确', () => {
   const v = require('../platform/variant');
@@ -3270,7 +3438,7 @@ t('pool.editionOk 拒绝 zcode 账号进 Trae 转发池', () => {
   try {
     const t1 = store.add({ label: 'trae-test', edition: 'trae', token: 'y'.repeat(50), userId: 'ttest-pool-1' }, 'test');
     try {
-      // zcode 账号 enabled 且无冷却：若 editionOk 兜底为 Trae，这里会被选中
+      // zcode 账号 enabled 且无冷却：若 editionOk 把未知值当 Trae 处理，这里会被选中
       const picked = require('../credentials/pool').pick(null, { edition: 'trae' });
       assert.notStrictEqual(picked && picked.id, z.id, 'zcode 账号绝不能被 Trae 池选中');
       void t1;

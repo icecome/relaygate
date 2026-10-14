@@ -83,7 +83,7 @@ export default function Modal({
     const first = initialFocusTarget(panel);
     (first || panel)?.focus();
 
-    // 面板内最近一次获得焦点的元素：Tab 逃逸兜底时据此归还
+    // 面板内最近一次获得焦点的元素：Tab 逃逸到最后手段时据此归还
     let lastInPanel: HTMLElement | null = first || panel;
     const onFocusIn = (e: FocusEvent) => {
       const target = e.target as HTMLElement | null;

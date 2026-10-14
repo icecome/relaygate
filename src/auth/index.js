@@ -1,13 +1,12 @@
 'use strict';
 /**
  * auth/index.js — 认证统一入口（多账号版）。
- *
- * 需求演进：不依赖本机 Trae storage.json，凭据来自 credentials/store（导入/OAuth）。
- * 职责：
- *   - 按账号 ID 取凭据；token 将过期时用 refreshToken 换新续期（复用 lib/auth.js exchangeToken）
- *   - 构造上游请求头（复用 buildCommonHeaders/buildStreamHeaders 的设备/头构造）
- *
- * 兼容回退：未配置任何账号时退回本机登录态（第 0 号内部账号 source='local'），保证旧用法可用。
+ * 不依赖本机 Trae storage.json，凭据来自 credentials/store（导入或 OAuth）。
+ * 职责：按账号 ID 取凭据，token 将过期时用 refreshToken 换新续期（复用
+ * lib/auth.js exchangeToken）；构造上游请求头（复用 buildCommonHeaders 与
+ * buildStreamHeaders 的设备与请求头构造）。
+ * 兼容回退：未配置任何账号时退回本机登录态（第 0 号内部账号 source='local'），
+ * 保证旧用法可用。
  */
 const credStore = require('../credentials/store');
 const legacy = require('../lib/auth.js');
@@ -118,7 +117,7 @@ function headersFor(authInfo, requestId, lastEventId) {
   const headers = requestId
     ? headersLib.buildStreamHeaders(like, legacy.getDeviceIds(), requestId, lastEventId)
     : headersLib.buildCommonHeaders(like, legacy.getDeviceIds());
-  // TraeWork 身份：补齐真机 Work 线的功能头（值与 solo_work_lite 对齐）
+  // TraeWork 身份：补齐真机 Work 线的功能头（值与 solo_work_lite 一致）
   if (process.env.TRAE_WORK_IDENTITY === 'on') {
     headers['X-App-Function'] = 'solo_work_lite';
     headers['X-Ide-Function'] = 'solo_work_lite';

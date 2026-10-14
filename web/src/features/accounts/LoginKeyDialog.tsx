@@ -1,11 +1,8 @@
 /**
  * 登录密钥输入弹窗。
- *
- * 解决「已配置但手头没有密钥」的场景：粘贴已有登录密钥即可进入面板，
- * 无需先重置（重置会使旧密钥立即失效，且需要重新分发）。
- *
- * 校验方式：用该密钥请求一个轻量只读接口；
- * 401 说明密钥无效或已被删除，其它错误另行提示。
+ * 用于「已配置但手头没有密钥」的场景：粘贴已有登录密钥即可进入面板，无需先重置
+ * （重置会使旧密钥立即失效，且需要重新分发）。
+ * 校验方式：用该密钥请求一个轻量只读接口；401 说明密钥无效或已被删除，其它错误另行提示。
  */
 import { useEffect, useRef, useState } from 'react';
 import { listLoginKeys } from '../../shared/api/apiKeys';
@@ -24,7 +21,7 @@ export function LoginKeyDialog({ open, onClose, onVerified }: {
   const [value, setValue] = useState('');
   const [busy, setBusy] = useState(false);
   // Modal 打开时会把初始焦点交给首个可聚焦元素（此处即输入框）；
-  // 若用户关闭后重新打开，焦点需再次归位，因此显式聚焦。
+  // 若用户关闭后重新打开，焦点需再次归位，故显式聚焦。
   const inputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {

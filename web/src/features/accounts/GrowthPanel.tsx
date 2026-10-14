@@ -1,20 +1,12 @@
 /**
- * WorkBuddy 成长中心面板（只读版）。
- *
- * 定位说明（为什么没有操作按钮）：
- * 后台定时任务（scheduler.js 的 growth poll，默认每 4h）已经自动执行
- * 旅行/领奖/兑换/抽奖，并通过通知渠道播报结果（如「旅行奖励已领取 +200」）。
- * 原面板暴露了一整套手动写操作（领奖/抽奖/兑换/一键执行），出现两个问题：
- *   1. 与定时任务是同一 job 的第二入口，且自带 4 state + 4 ref 的轮询状态机；
- *   2. 「网关」界面里出现「抽奖」「稀有度」「补登卡」会让任何技术用户
- *      对产品定位产生怀疑（Product Professor P2-001 / USER_COMPLAINTS 角色五）。
- *
- * 现在面板只做两件事：
- *   - 展示各账号的成长状态（连登、抽奖机会、旅行进度），让主人知道
- *     后台任务在干什么、干得怎么样；
- *   - 展示最近一次后台任务运行时间与结果摘要。
- * 需要手动干预的极少数场景走 CLI（node scripts/growth-*.js）或临时开
- * 后台任务的调试入口，不在常驻 UI 里。
+ * WorkBuddy 成长中心面板（只读）。
+ * 后台定时任务（scheduler.js 的 growth poll，默认每 4 小时）已自动执行旅行、领奖、
+ * 兑换与抽奖，并通过通知渠道播报结果（如「旅行奖励已领取 +200」）。原面板另有整套手动
+ * 写操作（领奖/抽奖/兑换/一键执行），既与定时任务构成同一 job 的第二入口并自带 4 state +
+ * 4 ref 的轮询状态机，又在管理界面暴露抽奖、稀有度、补登卡等与定位不符的元素
+ * （Product Professor P2-001 / USER_COMPLAINTS 角色五）。
+ * 现仅展示各账号的成长状态（连登、抽奖机会、旅行进度）与最近一次后台任务运行时间及结果摘要。
+ * 需手动干预的极少数场景走 CLI（node scripts/growth-*.js）或后台任务的调试入口。
  */
 import { useAuth } from '../../shared/api/auth';
 import { growthLastRun, growthOverview, growthStatusAll, type GrowthOverviewRow, type GrowthStatusRow } from '../../shared/api/growth';
@@ -32,7 +24,7 @@ export function GrowthPanel() {
   const statusRows: GrowthStatusRow[] = statusAll.data?.data ?? [];
   const overviewRows: GrowthOverviewRow[] = overview.data?.data ?? [];
 
-  /** 连登天数（各账号最大值）与抽奖机会（合计）——后台任务的两个关键健康指标。 */
+  /** 连登天数（各账号最大值）与抽奖机会（合计），为后台任务的两个关键健康指标。 */
   const maxStreak = Math.max(0, ...overviewRows.map((r) => r.streakDays ?? 0));
   const lotteryChances = overviewRows.reduce((s, r) => s + (r.lotteryChances ?? 0), 0);
   const traveling = statusRows.filter((r) => r.ok && r.state && r.state !== 'idle').length;
@@ -82,7 +74,7 @@ export function GrowthPanel() {
                   <li key={i}>· {a}</li>
                 ))}
                 {lastRun.data.actions.length > 5 && (
-                  <li>… 另有 {lastRun.data.actions.length - 5} 条</li>
+                  <li>另有 {lastRun.data.actions.length - 5} 条未显示</li>
                 )}
               </ul>
             )}

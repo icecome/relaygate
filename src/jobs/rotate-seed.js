@@ -2,14 +2,13 @@
 /**
  * jobs/rotate-seed.js — 从账号库把 WorkBuddy 账号登录态写入客户端 auth 目录（备份种子）。
  *
- * 用途：账号轮换依赖 auth 目录中的 .info 备份（客户端登录后自动写出）。
- * 若 auth 目录尚无备份，可调用本模块：把 credentials 库中 edition=workbuddy 的
- * 账号（含 token/refreshToken/uid/region）按 workbuddy-desktop.info 的
- * {account:{...}, auth:{...}} 结构写入 auth 目录，文件名与客户端轮转命名一致，
- * 之后 rotate-accounts.discoverAccounts() 即可发现并参与轮换。
+ * 账号轮换依赖 auth 目录中的 .info 备份（客户端登录后自动写出）。若 auth 目录尚无备份，
+ * 本模块把 credentials 库中 edition=workbuddy 的账号（含 token/refreshToken/uid/region）
+ * 按 workbuddy-desktop.info 的 {account:{...}, auth:{...}} 结构写入 auth 目录，文件名与客户端
+ * 轮转命名一致，之后 rotate-accounts.discoverAccounts() 即可发现并参与轮换。
  *
- * 注意：仅当该 uid 在 auth 目录尚无可用备份时才生成，避免覆盖客户端最新登录态。
- * 明文 accessToken 仅落本机 auth 目录（与客户端一致），绝不写入日志/返回前端。
+ * 仅当该 uid 在 auth 目录尚无可用备份时才生成，避免覆盖客户端最新登录态。
+ * 明文 accessToken 仅落在本机 auth 目录（与客户端一致），不写入日志，也不返回前端。
  */
 const fs = require('fs');
 const path = require('path');
@@ -28,7 +27,7 @@ function chatDomain(region) {
   return variant.hostFor(variant.variantOf(variant.WORKBUDDY).hosts.domain, variant.validRegion(region));
 }
 
-/** 该 uid 在 auth 目录是否已有可用备份（或为当前 auth）。 */
+/** 该 uid 在 auth 目录是否已有可用备份（或为当前 auth 文件）。 */
 function hasBackupFor(uid) {
   if (!uid) return false;
   if (fs.existsSync(AUTH_FILE)) {
@@ -82,7 +81,8 @@ function seedAccount(acct) {
 
 /**
  * 为 auth 目录尚无备份的全部启用 WorkBuddy 账号生成备份种子。
- * @returns {{ok:number, skipped:number, failed:Array<{accountId:string,reason:string}>}}
+ * @returns {{ok:{accountId:string,uid:string,file:string,label?:string}[], skipped:{accountId:string,uid:string|null,reason:string}[], failed:Array<{accountId:string,reason:string}>, total:number}}
+ *          ok 与 skipped 是对象数组而非数量计数。
  */
 function seedAll() {
   const accounts = store.list().filter((a) => a.edition === 'workbuddy' && a.enabled);

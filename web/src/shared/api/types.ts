@@ -58,11 +58,30 @@ export interface Account {
   /** 积分口径权益包。ZCode 为空（其额度走 tokenBuckets） */
   packs?: Pack[];
   /**
-   * ZCode 专用：token 计量剩余额度（**非积分**，量级 1e8）。
+   * ZCode 专用：token 计量剩余额度（非积分，量级 1e8）。
    * 与 packs/balance 分属两套口径，任何积分汇总都必须排除它。
    */
   tokenRemaining?: number;
   tokenBuckets?: TokenBucket[];
+  /**
+   * Qoder 专用：两段额度快照（src/upstream/balance.js 的 refreshQoderBalance）。
+   * userQuota（基础）与 addOnQuota（赠送/签到）是**两段独立**额度，
+   * 单位都是 credit，但语义不同（addOn 由每日活动产生）。
+   * 与 packs/balance 分属两套口径，任何积分汇总都必须排除它，
+   * totalRemaining 仅供展示。
+   */
+  quota?: QoderQuota;
+}
+
+/** Qoder 账号的两段额度（口径隔离，见 Account.quota）。 */
+export interface QoderQuota {
+  updatedAt?: string | null;
+  userType?: string | null;
+  usageType?: string | null;
+  base?: { total: number; remaining: number; used: number; expiresAt?: string | null } | null;
+  addOn?: { total: number; remaining: number; used: number; expiresAt?: string | null } | null;
+  totalRemaining: number;
+  isQuotaExceeded?: boolean;
 }
 
 export interface Summary {
@@ -70,7 +89,7 @@ export interface Summary {
   enabled: number;
   disabled: number;
   cooling: number;
-  /** 3 日内到期的**积分额度**，非账号数（后端 summarizeExpiry 的 d3） */
+  /** 3 日内到期的积分额度，非账号数（后端 summarizeExpiry 的 d3） */
   expiring3d: number;
   /** 7 日内到期的积分额度 */
   expiring7d: number;

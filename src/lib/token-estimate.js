@@ -4,33 +4,33 @@
  *
  * 用途：虚拟模型声明 contextWindow 后，网关在分发前估算 prompt token，
  * 超限显式返回 400（context_length_exceeded），避免上游静默截断头部
- * 导致会话记忆错乱、幻觉。
+ * 导致会话记忆错乱与幻觉。
  *
- * 估算是量级近似（非 tokenizer 精确值）：中文按 0.7 token/字，
- * 其它按 4 字符/token，每条消息附加 8 token 结构开销，图片计固定值。
- * 已知偏差（可接受）：CJK 检测范围 \u3400-\u9fff 不含全角标点，
- * 全角标点按 0.25 token/字计，中文文本整体约低估 3-7%——
- * 只影响守门阈值精度，不改变拦截"量级偏差"的设计目标。
- * 精度目标是拦住"客户端按 1M 规划、真实窗口 168K"这类量级偏差，
- * 不是计费口径。
+ * 估算是量级近似（非 tokenizer 精确值）：中文按 0.7 token/字，其它按
+ * 4 字符/token，每条消息附加 8 token 结构开销，图片计固定值。
+ * 已知偏差（可接受）：CJK 检测范围 \u3400-\u9fff 不含全角标点，全角标点
+ * 按 0.25 token/字计，中文文本整体约低估 3-7%，只影响守门阈值精度。
+ * 目标是拦住「客户端按 1M 规划、真实窗口 168K」这类量级偏差，不是计费口径。
  */
 
 const IMAGE_TOKENS = 1000;
 const PER_MESSAGE_OVERHEAD = 8;
+/** 每条工具声明的固定结构开销（与 PER_MESSAGE_OVERHEAD 同理）。 */
+const TOOL_OVERHEAD = 8;
 const CJK_TOKEN_PER_CHAR = 0.7;
 const CHARS_PER_TOKEN = 4;
 
 /**
- * 精确模式的字符上限。js-tiktoken 为同步 BPE，40K 字符约 150ms，
- * 超限输入（如 1M 窗口装满的会话）会阻塞事件循环数百毫秒——
- * 估算口径下这个代价不值，超过上限直接回退启发式。
+ * 精确模式的字符上限。js-tiktoken 为同步 BPE，40K 字符约 150 ms，
+ * 超限输入（如 1M 窗口装满的会话）会阻塞事件循环数百毫秒；
+ * 估算口径下这个代价不划算，超过上限直接回退启发式。
  */
 const PRECISE_CHAR_LIMIT = 60_000;
 
 let _encoder = null;
 let _encoderFailed = false;
 
-/** 懒加载 tiktoken 编码器（首次调用约 100-300ms，之后复用）。失败则永久回退启发式。 */
+/** 懒加载 tiktoken 编码器（首次调用约 100-300 ms，之后复用）。失败则永久回退启发式。 */
 function getEncoder() {
   if (_encoder) return _encoder;
   if (_encoderFailed) return null;
@@ -54,8 +54,8 @@ function textTokens(text) {
 /**
  * 真实分词器计数（cl100k_base）。上游未回传 usage 时的补算口径。
  * 已知偏差：Trae/WorkBuddy 侧模型（Doubao/GLM/Kimi/DeepSeek 等）并非
- * OpenAI 分词器，cl100k 对 CJK 约 1 token/字，与上述模型普遍接近但非一致；
- * 结果仍标注 estimated，不当作账单精确值。
+ * OpenAI 分词器，cl100k 对中文约 1 token/字，与这些模型普遍接近但不一致，
+ * 因此结果仍标注 estimated，不当作账单精确值。
  */
 function textTokensPrecise(text) {
   const s = String(text == null ? '' : text);
@@ -102,6 +102,30 @@ function estimateTokensOf(messages, precise) {
   return total;
 }
 
+/**
+ * 粗估一次完整请求的输入 token（含 tools 声明）。
+ *
+ * 为何必须计 tools：实测 WorkBuddy 侧 27 个工具声明的请求，上游按
+ * 「prompt is too long: 100001 tokens」判定超限，而 messages 本身远没到 100K
+ * ——工具 JSON schema 也计入上游输入。只算 messages 会让估算系统性偏低，
+ * 窗口守门在边界失效，表现为某些请求突然全部 400。
+ *
+ * tools 按 JSON 序列化后走同一字符口径；每条工具 schema 记一笔固定开销，
+ * 与 messages 的结构开销同理（schema 之外的 name/description 嵌套结构）。
+ */
+function estimateRequestTokens(messages, tools) {
+  let total = estimateTokensOf(messages, false);
+  if (Array.isArray(tools) && tools.length) {
+    const tokOf = textTokens;
+    for (const t of tools) {
+      if (!t) continue;
+      total += TOOL_OVERHEAD;
+      total += tokOf(JSON.stringify(t));
+    }
+  }
+  return total;
+}
+
 function estimatePromptTokens(messages) {
   return estimateTokensOf(messages, false);
 }
@@ -114,9 +138,11 @@ function estimatePromptTokensPrecise(messages) {
 module.exports = {
   estimatePromptTokens,
   estimatePromptTokensPrecise,
+  estimateRequestTokens,
   textTokens,
   textTokensPrecise,
   IMAGE_TOKENS,
   PER_MESSAGE_OVERHEAD,
+  TOOL_OVERHEAD,
   PRECISE_CHAR_LIMIT,
 };

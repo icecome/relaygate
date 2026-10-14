@@ -7,13 +7,13 @@
  * notify-settings.json、task-log.jsonl、encrypt.key 等 12 处写死 config.ROOT。
  * 后果有二：
  *   1. 测试无法隔离：把 WORKSPACE_DIR 指到临时目录也拦不住这些写入，
- *      测试会污染真实运行配置（已实际发生过一次：冒烟测试改写了真实
- *      的 scheduler-settings.json）。
+ *      测试会污染真实运行配置（已实际发生过一次：冒烟测试改写了真实的
+ *      scheduler-settings.json）。
  *   2. 部署不可移植：搬迁项目目录会丢掉签到时刻、通知渠道等用户设置。
  *
  * 统一规则：状态目录 = <workspaceDir>/.trae-api。
  * 读取时回退到旧位置 <ROOT>/.trae-api，保证既有部署升级后配置不丢；
- * 写入一律落新位置，首次保存即完成迁移。
+ * 写入一律写到新位置，首次保存即完成迁移。
  *
  * 说明：不做「读哪写哪」的兼容，否则两处并存会长期分叉。
  * 若需回退到旧版本代码，应先把 .trae-api 目录从 workspaceDir 拷回 ROOT。
@@ -41,7 +41,7 @@ function stateFile(name) {
 }
 
 /**
- * 状态文件的读取路径候选（新位置优先，旧位置兜底）。
+ * 状态文件的读取路径候选（新位置优先，旧位置为最后手段）。
  * 调用方按顺序探测存在性即可。
  * @param {string} name
  * @returns {string[]}

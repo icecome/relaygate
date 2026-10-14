@@ -1,45 +1,24 @@
 'use strict';
 /**
- * models/pricing-calib.js — 从官方账单反向标定「积分/token」系数。
+ * models/pricing-calib.js — 从官方账单反向标定「积分/token」系数，把 estimatedCost
+ * 从「tier 猜测倍率」升级为账单实测的分模型费率。沿用 DSH @deepseek-ai/dsh-token-meter
+ * 的四桶口径（uncachedInput / output / cacheRead / cacheWrite 互斥，usage 仅在四桶可精确
+ * 加和时被采纳，normalizeUsage 拒绝总量对不上的样本），积分建模为
+ * credits ≈ a·uncachedInput + b·output + c·cacheRead（系数单位：积分/token）。
  *
- * 目标：把 estimatedCost 从「tier 猜测倍率」升级为「用官方账单实测出的
- * 各模型分段费率」，让网关侧的积分估算收敛到官方账单 ±几个百分点。
+ * 数据源两路（官方口径，自动合并）：Trae 逐会话账单（trae-usage-cache/，行含 extra_info
+ * 四桶与 credits_float，usage_group_details 单模型时可直接配对）；WorkBuddy 逐请求账单
+ * （official-usage-cache/，行只含 credit + model + requestId，token 需与客户端日志
+ * log/client-logs.js 的 usage、rawUsage.credit 按模型 + 时间窗配对）。当前先落地 Trae 一路。
+ * 模型名查找前先归一化（小写、去空格、去正式版后缀与 @max 档位）再前缀匹配。
+ * 取用顺序（peekCalibration）：标定系数 → catalog.consumption_rate → tier 倍率（rates.js）。
  *
- * == 标定原理（对齐 DSH token-meter 的分层口径） ==
- *
- * DSH @deepseek-ai/dsh-token-meter 把一次调用拆成四个互斥的 token 桶：
- *   uncachedInputTokens / outputTokens / cacheReadTokens / cacheWriteTokens，
- * 提供方 usage 只在「能被四桶精确加和校验」时才被采纳（normalizeUsage 会
- * 拒绝总量对不上的样本）。本项目照搬该分层，把积分建模为四桶的线性函数：
- *
- *   credits ≈ a·uncachedInput + b·output + c·cacheRead   (每千 token 系数)
- *
- * == 标定数据源（两路，均为官方口径，自动合并） ==
- *
- * 1) Trae 逐会话账单（upstream/trae-usage.js 缓存，output/.trae-api/trae-usage-cache/）
- *    行含 extra_info 四桶 + credits_float；粒度=会话，行内 usage_group_details
- *    单模型时可直接配对。
- * 2) WorkBuddy 逐请求账单（workbuddy/billing-usage.js 缓存，official-usage-cache/）
- *    行只含 credit+model+requestId，token 需与客户端日志（log/client-logs.js
- *    解析出的 usage+rawUsage.credit）按模型+时间窗配对后才能用。
- *    —— 当前实现先落地 1)；2) 的配对逻辑见 calibrateFromClientLogs（预留）。
- *
- * == 已验证的标定质量（2026-10 实测，最小二乘，credits = a·unc + b·out + c·cacheRead）==
- *
- *   GLM-5.3-Flash   n=780   R²=1.000000  maxAbsErr=0.0048 credit
- *   Qwen3.8-Flash   n=582   R²=1.000000  maxAbsErr=0.0002
- *   GLM-5.3-FlashX  n=78    R²=1.000000  maxAbsErr=0.0002
- *   DeepSeek-V4-Flash n=4730 R²=0.897（上游对会话级聚合行有抹零/阶梯定价噪声，
+ * 已验证标定质量（2026-10 实测，最小二乘，credits = a·unc + b·out + c·cacheRead）：
+ *   GLM-5.3-Flash     n=780   R²=1.000000  maxAbsErr=0.0048 credit
+ *   Qwen3.8-Flash     n=582   R²=1.000000  maxAbsErr=0.0002
+ *   GLM-5.3-FlashX    n=78    R²=1.000000  maxAbsErr=0.0002
+ *   DeepSeek-V4-Flash n=4730  R²=0.897（上游会话级聚合行有抹零与阶梯定价噪声，
  *                            逐请求账单平台（WB）同模型 R² 可到 0.94+）
- *
- * == 数据模型名 → 路由模型名的映射 ==
- *
- * 账单里的模型名是展示名（"DeepSeek-V4-Flash 正式版"/"GLM-5.3-Flash"），
- * 费率查找时先归一化（小写、去空格/正式版后缀/@max 档位），再前缀匹配。
- * 标定系数按「归一化后的名字」存取，避免同一模型出现两行。
- *
- * 兜底顺序（peekCalibrated）：
- *   标定系数 → catalog.consumption_rate → tier 倍率（rates.js 原逻辑）
  */
 const fs = require('fs');
 const path = require('path');
@@ -47,7 +26,7 @@ const { stateDir, legacyStateDir } = require('../lib/paths');
 const { round4, round6, round8 } = require('../lib/round');
 
 const CALIB_VERSION = 1;
-const CALIB_TTL_MS = 6 * 60 * 60 * 1000; // 标定结果 6h 复算一次（账单是日级滞后数据）
+const CALIB_TTL_MS = 6 * 60 * 60 * 1000; // 标定结果每 6 小时复算一次（账单是日级滞后数据）
 
 let cache = null; // { at, map: { [normModel]: {uncached, output, cacheRead, n, r2} } }
 let inflight = null;
@@ -55,10 +34,10 @@ let inflight = null;
 /**
  * 模型名归一化：展示名 → 匹配键。
  *
- * 必须剥掉平台前缀：`wb/` 是 WorkBuddy 客户端约定的模型别名（请求里带、
- * 响应里也保留），而账单侧的模型名没有这个前缀（"glm-5.3-flash"）。
- * 不剥则归一化键成 "wb/glm5.3flash"，与标定表的 "wb:glm5.3flash" 前缀匹配失败，
- * 该模型的估算成本恒为 null —— 实测这让 WorkBuddy 全部请求的成本显示为 0。
+ * 必须剥掉平台前缀：`wb/` 是 WorkBuddy 客户端约定的模型别名（请求里带、响应里也保留），
+ * 而账单侧的模型名没有这个前缀（"glm-5.3-flash"）。不剥则归一化键成 "wb/glm5.3flash"，
+ * 与标定表的 "wb:glm5.3flash" 前缀匹配失败，该模型的估算成本恒为 null——
+ * 实测这让 WorkBuddy 全部请求的成本显示为 0。
  */
 function normModel(name) {
   return String(name || '')
@@ -73,17 +52,24 @@ function normModel(name) {
 /**
  * 标定键 = 平台 + 模型名。
  *
- * 必须带平台：实测同名模型的费率跨平台并不相同（2026-10 账单标定，
- * 「glm-5.3-flash」在 Trae 未缓存输入 0.016/1k、在 WorkBuddy 0.0114/1k，
- * 相差约 30%）。只按模型名归一会把两个平台的样本混进同一次回归，
- * 产出谁都偏 15% 的系数。平台未知（'all'）时才退化为跨平台合并键。
+ * 必须带平台：实测同名模型的费率跨平台不同（2026-10 账单标定，「glm-5.3-flash」
+ * 在 Trae 未缓存输入 0.016/1k、在 WorkBuddy 0.0114/1k，相差约 30%）。
+ * 只按模型名归一会把两个平台的样本混进同一次回归，产出谁都偏 15% 的系数。
+ * 平台未知（'all'）时才退化为跨平台合并键。
+ *
+ * Qoder 也独立成键：它的模型名与 Trae/WorkBuddy 不重叠（qfmodel / qmodel_38max /
+ * ultimate / smodel …），混键不会误命中，但归一化会把 "qmodel_38max" 与
+ * "qmodel38max" 之类都压成同一串，独立前缀让日志与回归样本的可读性保持。
  */
 function calibKey(model, platform) {
   const p = String(platform || 'all').toLowerCase();
-  return `${p === 'workbuddy' || p === 'wb' ? 'wb' : 'trae'}:${normModel(model)}`;
+  const scope = p === 'workbuddy' || p === 'wb'
+    ? 'wb'
+    : (p === 'qoder' ? 'qoder' : 'trae');
+  return `${scope}:${normModel(model)}`;
 }
 
-/** 由归一化名找标定行：先全等，再前缀（账单名常比路由名长/短）。 */
+/** 由归一化名找标定行：先全等，再前缀（账单名常比路由名长或短）。 */
 function lookupIn(map, model, platform) {
   const key = normModel(model);
   if (!key) return null;
@@ -95,7 +81,7 @@ function lookupIn(map, model, platform) {
     const rest = k.split(':').slice(1).join(':');
     if (rest.startsWith(key) || key.startsWith(rest)) return v;
   }
-  // 平台未知/未命中：跨平台合并键
+  // 平台未知或未命中：跨平台合并键
   const any = Object.entries(map)
     .map(([k, v]) => [k.split(':').slice(1).join(':'), v])
     .sort((a, b) => b[0].length - a[0].length);
@@ -105,7 +91,7 @@ function lookupIn(map, model, platform) {
   return null;
 }
 
-// ---- 数据源 1：Trae 会话账单缓存 ----
+// 数据源 1：Trae 会话账单缓存
 
 function traeCacheDir() {
   const fresh = path.join(stateDir(), 'trae-usage-cache');
@@ -141,9 +127,9 @@ function readTraeRows() {
   return rows;
 }
 
-// ---- 最小二乘（无截距；3 变量出现共线时自动降维） ----
+// 最小二乘（无截距；3 变量共线时自动降维）
 
-/** 正规方程高斯消元；返回 null 表示奇异（样本不足/共线）。 */
+/** 正规方程高斯消元；返回 null 表示奇异（样本不足或共线）。 */
 function lstsq(A, b) {
   const n = A[0].length;
   if (A.length < n * 3) return null; // 样本量下限：每变量至少 3 行
@@ -195,9 +181,9 @@ function calibrateOne(samples) {
   });
   const r2 = sst > 0 ? 1 - ssr / sst : 0;
   const out = { n: samples.length, r2: Math.round(r2 * 1e6) / 1e6 };
-  // 系数单位是「积分/token」（解出的 x 直接乘 token 数），量级 1e-5，round6 保有效位
+  // 系数单位是「积分/token」（解出的 x 直接乘 token 数），量级 1e-5，round6 保留有效位
   used.forEach((k, j) => { out[k] = round6(x[j]); });
-  // 未使用的桶补 0，保证调用方按键读取不炸
+  // 未使用的桶补 0，保证调用方按键读取不出错
   for (const k of ['uncached', 'output', 'cacheRead']) if (!(k in out)) out[k] = 0;
   return out;
 }
@@ -207,7 +193,7 @@ function calibrateAll() {
   const map = {};
   // 低优先级：Trae 会话账单（会话级聚合行有抹零噪声，先占位）
   Object.assign(map, calibrateFromRows(readTraeRows()));
-  // 高优先级：WorkBuddy 逐请求账单（粒度与单次调用对齐，R² 更高）
+  // 高优先级：WorkBuddy 逐请求账单（粒度与单次调用一致，R² 更高）
   Object.assign(map, calibrateFromRows(readWorkbuddyRows()));
   return map;
 }
@@ -217,7 +203,7 @@ function calibrateFromRows(rows) {
   const groups = new Map();
   for (const r of rows) {
     const k = calibKey(r.model, r.platform);
-    if (!normModel(r.model)) continue; // 空模型名（key 形如 'trae:'）不可标定
+    if (!normModel(r.model)) continue; // 空模型名（key 形如 'trae:'）无法标定
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(r);
   }
@@ -234,7 +220,7 @@ function calibrateFromTrae() {
   return calibrateFromRows(readTraeRows());
 }
 
-// ---- 数据源 2：WorkBuddy 逐请求账单 × 客户端日志 usage ----
+// 数据源 2：WorkBuddy 逐请求账单 × 客户端日志 usage
 
 function wbCacheDir() {
   const fresh = path.join(stateDir(), 'official-usage-cache');
@@ -244,13 +230,13 @@ function wbCacheDir() {
 }
 
 /**
- * WorkBuddy 侧标定样本：来自客户端会话日志的逐请求 usage + rawUsage.credit。
+ * WorkBuddy 侧标定样本：来自客户端会话日志的逐请求 usage 与 rawUsage.credit。
  *
  * 官方账单接口（get-user-request-usage）只回 credit 不回 token，
  * 而客户端日志的 providerData 同时带 usage 与 rawUsage.credit——
- * 二者在同一行天然配对，无需按时间戳猜，因此这里直接取客户端日志口径。
+ * 二者在同一行天然配对，无需按时间戳猜测，因此直接取客户端日志口径。
  *
- * 数据不可用（无日志目录/解析失败）时返回空集，标定自动只剩 Trae 一路。
+ * 数据不可用（无日志目录或解析失败）时返回空集，标定自动只剩 Trae 一路。
  */
 function readWorkbuddyRows() {
   try {
@@ -295,7 +281,7 @@ function peekCalibration(model, platform) {
 
 /**
  * 按标定系数估算积分（优先精度最高的口径）。
- * @param {string} model 路由模型名（展示名/ID 均可，内部归一化）
+ * @param {string} model 路由模型名（展示名与 ID 均可，内部归一化）
  * @param {{uncached?:number, promptTokens?:number, completionTokens?:number, cacheRead?:number}} buckets
  * @param {string} [platform] 'trae'|'workbuddy'；跨平台费率不同，传了更准
  * @returns {number|null} 估算积分（4 位小数）；无标定时 null（调用方回退 tier 费率）
@@ -311,7 +297,7 @@ function estimateCalibratedCost(model, buckets = {}, platform) {
   return credits > 0 ? round4(credits) : null;
 }
 
-/** 标定快照（管理端展示/调试）。 */
+/** 标定快照（管理端展示与调试）。 */
 function snapshot() {
   peekCalibration('');
   return {
@@ -324,10 +310,9 @@ function snapshot() {
 /**
  * 汇总换算比：token ↔ 积分。
  *
- * 精确的换算比按模型逐个算（三系数线性），不存在单一全局比值；
- * 但面板需要一个「今天大约 X token ≈ Y 积分」的概览读数。这里用
- * 各标定模型的回归样本**最近一天的账单总量**加权，产出当日实测
- * tokens-per-credit 与 credits-per-1k-token，标注样本覆盖的模型数。
+ * 精确换算比须按模型逐个算（三系数线性），不存在单一全局比值；面板需要一个
+ * 「今天约 X token ≈ Y 积分」的概览读数，故用各标定模型回归样本中最近一天的账单总量加权，
+ * 产出当日实测 tokens-per-credit 与 credits-per-1k-token，并标注样本覆盖的模型数。
  * 无任何标定（两路账单都空）时返回 null，前端显示「暂无标定」。
  */
 function summarizeRatio() {
@@ -337,7 +322,7 @@ function summarizeRatio() {
   let asOf = null;
   const dir = traeCacheDir();
   if (fs.existsSync(dir)) {
-    // 最近一个账单日（上游按会话落库滞后，最近一天常常还没入账）
+    // 最近一个账单日（上游按会话写入文件有滞后，最近一天常常还没入账）
     const days = new Set();
     for (const f of fs.readdirSync(dir)) {
       const m = f.match(/(\d{4}-\d{2}-\d{2})\.json$/);
@@ -380,6 +365,9 @@ function clearCache() {
 
 module.exports = {
   normModel,
+  // 标定键的构造规则（平台前缀 + 归一化模型名）单独导出：
+  // 「平台必须进键」这条约束靠单测锁定（实测跨平台同模型费率差约 30%）。
+  calibKey,
   peekCalibration,
   estimateCalibratedCost,
   calibrateFromTrae,

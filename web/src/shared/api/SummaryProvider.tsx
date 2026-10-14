@@ -1,9 +1,8 @@
 /**
  * SummaryProvider：凭据池汇总的单一数据源。
  *
- * 原实现里 `/summary` 被多个组件各自 useSummary() 拉取，
- * 同一页面可能触发多次重复请求。这里改为 Context 单例：
- * 整棵树只发起一次请求，页面按需订阅。
+ * `/summary` 原先由多个组件各自 useSummary() 拉取，同一页面可能触发多次重复请求。
+ * 这里改为 Context 单例：整棵树只发起一次请求，页面按需订阅。
  */
 import {
   createContext,

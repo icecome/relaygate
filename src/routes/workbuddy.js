@@ -1,15 +1,15 @@
 'use strict';
 /**
- * routes/workbuddy.js — WorkBuddy 账号接入端点（抓取/导入/登录验证）。
+ * routes/workbuddy.js —— WorkBuddy 账号接入端点（抓取 / 导入 / 登录验证）。
  * 挂载前缀：/v1/workbuddy（见 index.js），管理鉴权按路由注入。
  *
- * 说明：导入的账号默认 enabled=false —— WorkBuddy 上游为 OpenAI 兼容
- * passthrough（copilot.tencent.com/v2/chat/completions），与 Trae 转换层不同，
- * 待上游对接（里程碑 2）后再启用，避免污染 Trae 账号池调度。
+ * 导入的账号默认 enabled=false：上游为 OpenAI 兼容原样转发通道
+ * （copilot.tencent.com/v2/chat/completions），与 Trae 转换层不同；待上游对接
+ * （里程碑 2）后再启用，避免污染 Trae 账号池调度。
  *
- * 安全：凭据只来自「本机桌面客户端 auth 文件」与「账号库」，不接受
- * 请求体传入的 token（消除用户输入到上游请求的数据流）；
- * 上游 URL 由 workbuddy/auth.js 的常量映射按区域枚举生成。
+ * 安全：凭据只来自本机桌面客户端 auth 文件与账号库，不接受请求体传入的
+ * token（切断用户输入进入上游请求的路径）；上游 URL 由 workbuddy/auth.js
+ * 的常量映射按区域枚举生成。
  */
 const { Router } = require('express');
 const store = require('../credentials/store');

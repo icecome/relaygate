@@ -5,8 +5,8 @@
  * 对每个启用的 WorkBuddy 账号按顺序执行（各段独立 try，一段失败不影响其余）：
  *   1. 旅行：state 权威三态 → arrived 领奖 / traveling 等待 / idle 派出发 / 已达次数收工
  *   2. 任务：available 接单 → completed 领奖
- *   3. 补登：有卡且有可补日期时用卡（每轮最多 1 张；候选日若上游判定未断登则跳过不算失败）
- *   4. 连登兑换：非 claimed/locked 的档位尝试兑换（403 未解锁/409 已兑换均为业务常态）
+ *   3. 补登：有卡且有可补日期时用卡（每轮最多 1 张；候选日若上游判定未断登则跳过，不算失败）
+ *   4. 连登兑换：非 claimed/locked 的档位尝试兑换（403 未解锁、409 已兑换均为业务常态）
  *   5. 抽奖：有次数才抽（每轮最多 1 次，写路径不可逆）
  *   6. Buddy 盲盒：能量够 cost_per_open 才开
  * 所有写接口带 client_token 幂等键；结果汇总返回，供路由与通知使用。
@@ -107,7 +107,7 @@ async function runAccount(a, opts = {}) {
           actions.push({ seg: 'tasks', ok: false, msg: `接单失败：${ar.reason}` });
         }
       }
-      // 领奖只对 completed 且「确实已完成」的真实任务；绝不对未完成任务上报伪造事件
+      // 领奖只针对 status=completed 且 code 存在的真实任务；不对未完成任务上报伪造事件
       let claimed = 0;
       let skippedPending = 0;
       for (const task of t.tasks) {
@@ -116,7 +116,7 @@ async function runAccount(a, opts = {}) {
         if (cr.ok && !cr.alreadyClaimed) claimed += 1;
         await sleep(200);
       }
-      // 未完成任务（available/processing 等）诚实标注「需真实操作」，不做 best-effort 上报
+      // 未完成任务（available、processing 等）如实标注「需真实操作」，不做 best-effort 上报
       for (const task of t.tasks) {
         if (task.status === 'completed' || task.status === 'available') continue;
         skippedPending += 1;

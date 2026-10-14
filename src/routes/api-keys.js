@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/api-keys.js — 密钥管理（登录密钥 setup + 访问密钥 CRUD）。
+ * routes/api-keys.js —— 密钥管理（登录密钥 setup + 访问密钥 CRUD）。
  * 挂载前缀：/v1/api-keys（见 index.js）。
  *
  * 免鉴权（仅当库内尚无 login key）：
@@ -16,14 +16,14 @@ const { authenticateAdmin } = require('../middleware/auth');
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
-// ===== 首登 setup（库内无 login key 时开放）=====
+// 首登 setup（库内无 login key 时开放）
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
 /**
  * 首登端点的准入判定。
  *
- * 该端点无鉴权（库内尚无 login key），若不设闸门，外部页面可用跨源简单请求
+ * 该端点无鉴权（库内尚无 login key）。若不设闸门，外部页面可用跨源简单请求
  * （text/plain，不触发预检）抢占首登并把合法用户锁在门外。
  * 判定为「浏览器发起的跨站请求」时拒绝；无 Origin 的非浏览器调用（CLI/curl）
  * 与同源请求（含经 LAN IP 访问面板）放行。
@@ -81,7 +81,7 @@ router.post('/setup/login-key', (req, res) => {
   res.status(201).json({ object: 'login_key', ...created });
 });
 
-// ===== 登录密钥管理（需现有 login）=====
+// 登录密钥管理（需现有 login）
 
 router.get('/login-key', admin, (req, res) => {
   const list = apiKeys.listKeys({ kind: 'login' });
@@ -101,7 +101,7 @@ router.post('/login-key/reset', admin, (req, res) => {
   res.status(201).json({ object: 'login_key', ...created });
 });
 
-// ===== 访问密钥 CRUD（需 login）=====
+// 访问密钥 CRUD（需 login）
 
 router.get('/', admin, (req, res) => {
   const kind = req.query.kind === 'login' || req.query.kind === 'access' ? req.query.kind : 'access';
@@ -112,7 +112,7 @@ router.post('/', admin, (req, res) => {
   const { label, platform, kind } = req.body || {};
   const useKind = kind === 'login' ? 'login' : 'access';
   if (useKind === 'login') {
-    // 通过此端点建 login 需显式；常规走 /login-key/reset
+    // 通过此端点建 login 需显式声明；常规路径走 /login-key/reset
     const created = apiKeys.createKey({ label: label || 'login', kind: 'login' });
     return res.status(201).json({ object: 'login_key', ...created });
   }
@@ -207,7 +207,7 @@ router.post('/:id/revoke', admin, (req, res) => {
 router.delete('/:id', admin, (req, res) => {
   const key = apiKeys.getKey(req.params.id);
   if (key && key.kind === 'login') {
-    // 不允许通过 REST 删光登录密钥（必须走 CLI reset，避免锁死）
+    // 不允许通过 REST 删光登录密钥（必须走 CLI reset，避免锁死管理面板）
     return res.status(400).json({
       error: {
         message: '登录密钥请使用 CLI 重置：node scripts/login-key.js reset',
@@ -265,7 +265,7 @@ router.get('/:id/reveal', admin, (req, res) => {
       },
     });
   }
-  // K-4：明文回显属高危读操作，落审计（谁在何时复制了哪把密钥）
+  // K-4：明文回显属高危读操作，写审计日志（谁在何时复制了哪把密钥）
   require('../log/audit').audit({
     action: 'key.reveal',
     actorKeyId: req.apiKeyId || null,

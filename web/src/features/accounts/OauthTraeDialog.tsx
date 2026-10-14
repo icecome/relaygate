@@ -1,14 +1,12 @@
 /**
  * Trae OAuth 登录弹窗。
- *
- * 真实流程（对照 src/routes/credentials.js）：
+ * 流程（对照 src/routes/credentials.js）：
  *   1. GET /oauth/url 取得授权地址与一次性 state；
  *   2. 打开授权页，用户在上游完成登录；
  *   3. 轮询 /oauth/status 判断结果；
- *   4. 若浏览器未自动回调，可粘贴回调 URL 走 /oauth/callback 兜底解析。
- *
- * 注意：state 一次性有效且与本次登录绑定，
- * 未先发起流程直接提交回调会被后端以 OAUTH_STATE_INVALID 拒绝。
+ *   4. 若浏览器未自动回调，可粘贴回调 URL 走 /oauth/callback 解析。
+ * state 一次性有效且与本次登录绑定，未先发起流程直接提交回调会被后端以
+ * OAUTH_STATE_INVALID 拒绝。
  */
 import { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
@@ -34,7 +32,7 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
   const [group, setGroup] = useState<'default' | 'workbuddy'>('default');
   const [callbackUrl, setCallbackUrl] = useState('');
   const [busy, setBusy] = useState(false);
-  /** 连续轮询失败计数：超过阈值提示用户改用回调 URL 兜底，而不是永远转圈 */
+  /** 连续轮询失败计数：超过阈值时提示改用回调 URL，避免面板一直转圈 */
   const [pollFails, setPollFails] = useState(0);
 
   // 轮询句柄需在关闭时清理，避免后台持续请求
@@ -80,7 +78,7 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
             }
           } catch {
             // 轮询失败不中断流程，但要计数：连续失败时明确提示改用回调 URL，
-            // 否则面板会永远停在「等待授权结果」而用户以为还在正常等待
+            // 否则面板会停在「等待授权结果」而用户以为仍在正常等待
             setPollFails((n) => n + 1);
           }
         })();
@@ -186,12 +184,12 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
           </Note>
           {pollFails >= 5 && (
             <Note tone="warn">
-              已连续 {pollFails} 次无法查询授权状态（网络或网关无响应）。
-              如果你已经在授权页点了确认，请直接用下方的回调 URL 手动完成。
+              已连续 {pollFails} 次无法查询授权状态（网络或网关无响应）。若已在授权页确认，
+              请直接用下方的回调 URL 手动完成。
             </Note>
           )}
           <div>
-            <div className="text-aux mb-1.5">回调 URL 兜底</div>
+            <div className="text-aux mb-1.5">回调 URL 手动导入</div>
             <textarea
               className="w-full h-24 p-2.5 rounded-md border font-mono text-[12px]"
               style={{ borderColor: 'var(--rg-border-stronger)' }}
@@ -214,7 +212,7 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
       )}
 
       {phase === 'error' && (
-        <Note tone="danger">{status?.message ?? '授权未完成，请重试或使用回调 URL 兜底。'}</Note>
+        <Note tone="danger">{status?.message ?? '授权未完成，可重试，或粘贴回调 URL 手动导入。'}</Note>
       )}
     </Modal>
   );

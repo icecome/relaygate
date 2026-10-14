@@ -1,5 +1,5 @@
 'use strict';
-/* 导入本机 ZCode 凭据到 RelayGate store（等价于 POST /v1/zcode/local/import）。
+/* 导入本机 ZCode 凭据到 RelayGate store，等价于 POST /v1/zcode/local/import。
  * 使用项目正常配置解析（.env 的 WORKSPACE_DIR），写入真实账号库。 */
 const store = require('../src/credentials/store');
 const local = require('../src/zcode/local');
@@ -11,7 +11,7 @@ const variant = require('../src/platform/variant');
   const existing = store.list().find((a) => variant.isEdition(a.edition, 'zcode') && a.userId === acct.userId);
   if (existing) {
     const prev = store.get(existing.id);
-    // 同设备沿用原档案（一经分配即稳定，避免每次导入换设备身份）
+    // 同设备沿用原档案：一经分配即保持稳定，避免每次导入更换设备身份
     const fp = fingerprint.validate(prev.fingerprint) ? prev.fingerprint : acct.fingerprint;
     store.update(existing.id, { ...acct, fingerprint: fp });
     console.log('updated account', existing.id);

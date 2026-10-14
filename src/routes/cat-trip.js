@@ -1,12 +1,12 @@
 'use strict';
 /**
- * routes/cat-trip.js — WorkBuddy 成长中心端点。
+ * routes/cat-trip.js —— WorkBuddy 成长中心端点。
  * 挂载前缀：/v1/workbuddy/growth（见 index.js），管理鉴权。
  *
  * 全部直连上游真实接口（见 src/workbuddy/cat-trip.js）：
  *   只读：status / status-all / config / buddy / streak / redeem / chances / tasks
  *   写  ：depart / claim / accept / task-claim / makeup / redeem / draw / buddy-open
- *   编排：auto（旅行+任务+补登+兑换+抽奖+盲盒 一条龙）
+ *   编排：auto（旅行 + 任务 + 补登 + 兑换 + 抽奖 + 盲盒一次完成）
  */
 const { Router } = require('express');
 const g = require('../workbuddy/cat-trip');
@@ -139,8 +139,8 @@ router.post('/last-run', admin, (req, res) => {
   res.json({ object: 'growth_last_run', ...(readLastRun() || { ranAt: null }) });
 });
 
-/** 一条龙自动化（旅行+任务+补登+兑换+抽奖+盲盒）。body {accountId?} 缺省全部启用账号。
- *  改用后台任务：立即返回 taskId，前端轮询 /progress 拿进度。 */
+/** 自动化流程（旅行 + 任务 + 补登 + 兑换 + 抽奖 + 盲盒）。body {accountId?} 缺省处理全部启用账号。
+ *  改为后台任务：立即返回 taskId，前端轮询 /progress 获取进度。 */
 router.post('/auto', admin, async (req, res) => {
   try {
     const gp = require('../jobs/growth-progress');
@@ -168,7 +168,7 @@ router.post('/progress-list', admin, (req, res) => {
   res.json({ object: 'list', data: require('../jobs/growth-progress').listTasks() });
 });
 
-// ---- 只读端点 ----
+// 只读端点
 handle('status', (info) => g.fetchStatus(info));
 handle('config', (info) => g.fetchConfig(info));
 handle('buddy', (info) => g.fetchBuddyInfo(info));
@@ -177,7 +177,7 @@ handle('redeem', (info) => g.fetchRedeemSummary(info));
 handle('chances', (info) => g.fetchLotteryChances(info));
 handle('tasks', (info) => g.fetchTasks(info));
 
-// ---- 写端点 ----
+// 写端点
 handle('depart', (info, body) => g.depart(info, body));
 handle('claim', (info) => g.claimTravelReward(info));
 handle('buddy-open', (info, body) => g.openBuddyBox(info, body.count || 1));

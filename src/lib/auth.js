@@ -258,16 +258,15 @@ const DEFAULT_HOST_US = process.env.TRAE_HOST_US || TRAE_HOSTS.agentUs;
 
 // Default IDE version/device info (overridable via env). Used as fallback when
 // Trae's manifest.json cannot be read. Update when Trae CN/SG releases new builds.
-// 2026-09-12: 对齐 TraeWorkAssistant 实测可用的 SOLO 线指纹（0.1.50 / 20260811），
+// 2026-09-12: 统一为 TraeWorkAssistant 实测可用的 SOLO 线指纹（0.1.50 / 20260811），
 // 旧值 3.3.67 / 20260401 与当前在售客户端脱节，易被上游风控识别。
-// m-35：默认值声明下沉 lib/version-defaults.js（headers.js 共用同一份）。
-// m-35 拆分回归修复：exchangeToken 的版本指纹头原先调用的是本模块已不存在的
-// getAppVersion/getIdeVersion/getIdeVersionCode（实现随 m-35 搬去了 headers.js），
-// 运行即抛 ReferenceError → Trae 账号 token 自 10-06 起全部无法自动续期。
-// version-defaults.js 是叶子模块，从它取实现既修复悬空调用又不形成 auth⇄headers 环。
+// m-35：默认值声明移入 lib/version-defaults.js（headers.js 共用同一份）。
+// m-35 拆分回归修复：exchangeToken 调用的 getAppVersion/getIdeVersion/getIdeVersionCode
+// 实现已移至 version-defaults.js，本模块悬空调用曾导致 Trae 账号 token 自 10-06 起
+// 全部无法自动续期；从叶子模块取实现同时避免 auth⇄headers 加载环。
 const { getAppVersion, getIdeVersion, getIdeVersionCode } = require('./version-defaults');
 
-// 上游聊天端点路径（构造 referer 用；默认值与 src/config.js 保持一致）
+// 上游聊天端点路径（用于构造 referer；默认值与 src/config.js 保持一致）
 const TRAE_CHAT_PATH = process.env.TRAE_UPSTREAM_CHAT_PATH || '/api/agent/v3/llm_utils_chat';
 
 function getApiHost() {
@@ -304,7 +303,7 @@ function getAuthHost() {
 }
 
 async function exchangeToken(refreshToken, opts = {}) {
-  // OAuth（SOLO 线）账号需用自己的 ClientID/authHost 换新——refreshToken 与 ClientID 绑定
+  // OAuth（SOLO 线）账号需用自己的 ClientID/authHost 换新：refreshToken 与 ClientID 绑定
   const authHost = opts.host || getAuthHost();
   const url = `${authHost}/cloudide/api/v3/trae/oauth/ExchangeToken`;
 
@@ -315,9 +314,9 @@ async function exchangeToken(refreshToken, opts = {}) {
     UserID: ''
   };
 
-  // 刷新请求与业务请求保持一致的客户端外观：UA/app_id/版本头由真实客户端元数据
-  // 提供，缺省回落内置默认值。裸 JSON POST（无 UA 无版本头）是登录面易识别特征。
-  // edition 用本机探测值（detectEdition 在本模块内，不引入 auth⇄headers 环）
+  // 刷新请求与业务请求保持一致的客户端外观：UA/app_id/版本头取自真实客户端元数据，
+  // 缺省时用内置默认值；裸 JSON POST（无 UA 无版本头）是登录面易识别特征。
+  // edition 用本机探测值（detectEdition 在本模块内，不引入 auth⇄headers 加载环）
   const ed = detectEdition();
   const headers = {
     'Content-Type': 'application/json',
@@ -367,7 +366,7 @@ async function exchangeToken(refreshToken, opts = {}) {
   return normalizeExchangeResult(await resp.json());
 }
 
-/** 时间字段兼容 ISO / 秒 / 毫秒时间戳；无法解析返回 null。 */
+/** 时间字段兼容 ISO / 秒 / 毫秒时间戳；无法解析时返回 null。 */
 function toIsoTime(v) {
   if (v == null || v === '') return null;
   if (typeof v === 'number') {
@@ -502,13 +501,13 @@ async function refreshTokenIfNeeded() {
   return _refreshPromise;
 }
 
-/** 探测真实 Trae/TraeWork 安装目录（m-35：实现下沉 lib/client-meta.js，此处委托）。 */
+/** 探测真实 Trae/TraeWork 安装目录（m-35：实现移至 lib/client-meta.js，此处委托）。 */
 const clientMeta = require('./client-meta');
 const readRealClientMeta = clientMeta.readRealClientMeta;
 const resetClientMetaCache = clientMeta.resetClientMetaCache;
 
-// m-35：设备指纹/请求头/版本指纹已下沉 lib/headers.js。auth 不再委托导出
-// （守门测试禁止双向依赖：headers 需读本机登录态兜底，若 auth 转手导出即成
+// m-35：设备指纹/请求头/版本指纹已移至 lib/headers.js。auth 不再委托导出
+// （守门测试禁止双向依赖：headers 需读本机登录态作缺省值，若 auth 转手导出即成
 // auth ⇄ headers 双向）。消费方（auth/index.js、upstream/checkin、upstream/balance）
 // 改为直接 require lib/headers。
 

@@ -15,7 +15,7 @@ const { isTruncatedFinish } = require('../transform/finish');
 const fs = require('fs');
 const path = require('path');
 
-// ===== T2 SSE 调试：可选写入原始事件 =====
+// T2 SSE 调试：可选写入原始事件
 const SSE_DEBUG = () => process.env.TRAE_DEBUG_SSE === 'true';
 let sseDebugSeq = 0;
 
@@ -38,7 +38,7 @@ function sseDebugWrite(requestId, accountId, model, event) {
 }
 
 // 模型名 → 上游 model_name（__dev 后缀）映射。
-// 规则对齐 TraeWorkAssistant 对 batch_get_detail_param 的实测表（2026-09）；
+// 规则与 TraeWorkAssistant 对 batch_get_detail_param 的实测表（2026-09）一致；
 // 未命中表项的模型回退 `config_name + '__dev'`。
 const MODEL_DEV_NAME = {
   'doubao-seed-evolving': 'Doubao-Seed-Evolving__dev',
@@ -125,7 +125,7 @@ function buildBody(messages, model, stream, options, authInfo) {
     stream: stream !== false,
   };
 
-  // 原生 tools 透传（native 协议）
+  // 原生 tools 原样传给下游（native 协议）
   if (Array.isArray(options?.tools) && options.tools.length > 0) {
     body.tools = options.tools.map((t) => {
       const fn = (t && (t.function || t)) || {};
@@ -150,7 +150,7 @@ function buildBody(messages, model, stream, options, authInfo) {
     const wantMax = /@max$/i.test(String(cfgName));
     const baseCfgName = wantMax ? cfgName.replace(/@max$/i, '') : cfgName;
     body.model = baseCfgName;
-    // 请求体增强：对齐官方客户端指纹（文档见 docs/TRADEWORK-ASSISTANT-COMPARISON.md §2.2）。
+    // 请求体增强：与官方客户端指纹统一（文档见 docs/TRADEWORK-ASSISTANT-COMPARISON.md §2.2）。
     // 保留 model 字段（chat_v3 通道依赖），额外补充 config_name/model_name 及会话/设备字段。
     if (process.env.TRAE_BODY_ENRICH !== 'off') {
       body.config_name = baseCfgName;
@@ -185,7 +185,7 @@ function buildBody(messages, model, stream, options, authInfo) {
   }
   if (Array.isArray(options?.stop)) body.stop = options.stop;
   if (options?.tool_choice != null) body.tool_choice = options.tool_choice;
-  // TraeWork 身份：common_params 对齐 SOLO 真机（product_name=lite + chat_mode=work）
+  // TraeWork 身份：common_params 与 SOLO 真机统一（product_name=lite + chat_mode=work）
   if (workOn) {
     body.common_params = { product_name: 'lite', chat_mode: 'work' };
   }
@@ -382,7 +382,7 @@ async function aggregateSseToCompletion(rawText, { model, userText } = {}) {
       index: 0,
       message,
       // 截断（length/max_tokens/content_filter）优先于 tool_calls：截断时工具参数可能是
-      // 半截，报 tool_calls 会让客户端执行残缺调用。让客户端走续写/提示超长才安全。
+      // 半截，报 tool_calls 会让客户端执行残缺调用。让客户端走续写或提示超长才安全。
       finish_reason: isTruncatedFinish(finishReason)
         ? finishReason
         : (toolCalls.length ? 'tool_calls' : finishReason),
@@ -416,8 +416,8 @@ async function consumeStream(body, onText, debugCtx) {
         onText(chunk);
       }
     } finally {
-      // 异常退出（含客户端断开、上游中断）必须释放 body，否则连接与
-      // pool 的 inFlight 租约都不归还。cancel 失败不应掩盖原始错误。
+      // 异常退出（含客户端断开、上游中断）必须释放 body，否则连接与 pool 的
+      // inFlight 租约都不归还。cancel 失败不应掩盖原始错误。
       try {
         await reader.cancel();
       } catch {

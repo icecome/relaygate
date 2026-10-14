@@ -1,6 +1,6 @@
 'use strict';
 /**
- * models/catalog-meta.js — 目录元数据、指纹、增量 diff、同步检查点（P0）。
+ * models/catalog-meta.js — 目录元数据、指纹、增量 diff 与同步检查点（P0）。
  */
 const nodeCrypto = require('crypto');
 const { db } = require('../credentials/db');
@@ -124,7 +124,7 @@ function diffAgainst(providerId, incomingMetas) {
   return { added, changed, removed };
 }
 
-/** 应用 diff：upsert 新增/变更；删除标记 deprecated（延迟硬删） */
+/** 应用 diff：upsert 新增与变更项；删除项标记为 deprecated（延迟硬删） */
 function applyDiff(providerId, diff) {
   for (const m of diff.added) upsertMeta(m);
   for (const c of diff.changed) upsertMeta(c.to);

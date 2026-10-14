@@ -3,27 +3,27 @@
  * upstream/trae-usage.js — Trae 会话级用量明细（精确积分来源，Trae 侧）。
  *
  * 端点：POST {ug}/trae/api/v1/pay/query_user_usage_group_by_session
- * （v1，非 v2 —— v2 实测 404；与 WorkBuddy 的逐请求账单对位，
- *  但 Trae 粒度是「逐会话聚合」：一行 = 一次完整会话的积分与 token 汇总。）
+ * （v1，非 v2——v2 实测 404；与 WorkBuddy 的逐请求账单对应，
+ *  但 Trae 粒度是逐会话聚合：一行 = 一次完整会话的积分与 token 汇总。）
  *
  * 请求契约（2026-10 池内 8 个账号实测，与多个开源实现交叉印证）：
  *   body: { start_time, end_time, page_size, page_num, usage_type: [7] }
- *   - usage_type [7] = Cloud-IDE 会话积分口径（对齐官网控制台）
+ *   - usage_type [7] = Cloud-IDE 会话积分口径（与官网控制台一致）
  *   - page_size 上限 50（实测 50 返 200；100/200/500 均 400 code=9004）
  *   - 时间区间可超过 30 天（60 天实测 200），故按日分块仅为归集与缓存，
  *     不受上游区间上限约束
  *   - 响应根直接是 { total, user_usage_group_by_sessions: [...] }（无 data 包裹）
  *
  * 数据滞后（实测）：部分账号的最新记录停在 10-04，另一些到 10-06。
- * 上游按会话聚合落库，非实时；单日返回 0 可能是「当天确实无会话」，
- * 也可能是「尚未入账」，本模块不做补期推断，只如实呈现。
+ * 上游按会话聚合写入数据库，非实时；单日返回 0 可能是当天确实无会话，
+ * 也可能是尚未入账，本模块不做补期推断，只如实呈现。
  *
- * 行字段：session_id / usage_time(unix秒,北京时间语义) / model_name(展示名) /
+ * 行字段：session_id / usage_time(unix 秒,北京时间语义) / model_name(展示名) /
  *   credits_float(积分) / amount_float(同 credits) / cost_money_float(金额) /
  *   extra_info{input_token,output_token,cache_read_token,cache_write_token} /
  *   usage_group_details[](按模型拆分)
  *
- * 鉴权头要求（关键坑）：Web 控制台形态 —— 浏览器 UA + Origin/Referer: www.trae.cn，
+ * 鉴权头要求（关键坑）：Web 控制台形态——浏览器 UA + Origin/Referer: www.trae.cn，
  * 不带 IDE 客户端指纹头（x-device-id 等）。与 lib/headers.js 的 buildCommonHeaders
  * 不同，这里单独组装。
  */
@@ -77,7 +77,7 @@ async function postUsage(acct, body) {
 }
 
 /**
- * 归一化一行会话用量。只保留计费相关字段；input_preview 不落盘（隐私）。
+ * 归一化一行会话用量。只保留计费相关字段；input_preview 不写入文件（隐私）。
  * token 缺失时置 0，不虚报。
  */
 function normalizeRow(x) {
@@ -86,9 +86,9 @@ function normalizeRow(x) {
   if (!sid) return null;
   const ex = x.extra_info && typeof x.extra_info === 'object' ? x.extra_info : {};
   const detailRows = Array.isArray(x.usage_group_details) ? x.usage_group_details : [];
-  // usage_group_details 按模型拆分（一行会话可能含多模型调用）；无拆分时回退行级
+  // usage_group_details 按模型拆分（一行会话可能含多模型调用）；无拆分时回退行级。
   // credits 精度为 4 位（实测 1.5324）；cost_money 为 5 位（0.03831）。
-  // 用 round2 会把单会话金额抹掉近 3 个数量级的尾数，故统一 round4。
+  // 用 round2 会把单会话金额抹掉近 3 个数量级的尾数，故统一用 round4。
   const byModel = detailRows.length
     ? detailRows.map((d) => ({
       model: String((d && (d.model_display_name || d.model_name)) || x.model_name || 'unknown'),
@@ -143,7 +143,7 @@ async function fetchRange(acct, startTime, endTime, { onPage } = {}) {
   return rows;
 }
 
-// ---- 日缓存（与 WorkBuddy billing-usage 同构；今天不缓存，历史日落盘） ----
+// 日缓存（与 WorkBuddy billing-usage 同构；今天不缓存，历史日写入文件）
 
 function cacheDir() {
   const fresh = path.join(stateDir(), 'trae-usage-cache');
@@ -222,7 +222,7 @@ async function scanAccount(acctId, days = 30) {
       const { start, end } = dayBounds(dayKey);
       try {
         rows = await fetchRange(acct, start, end);
-        // 空日不落盘：上游按会话聚合入账存在滞后（实测部分账号最新记录停在
+        // 空日不写入文件：上游按会话聚合入账存在滞后（实测部分账号最新记录停在
         // 数天前），把「暂时没入账」缓存成 0 会让该日永久失真。
         // 代价是真正无消耗的日会被重复查询（每日一次请求，可接受）。
         if (!isToday && rows.length) writeCache(acctId, dayKey, rows);

@@ -1,13 +1,13 @@
 'use strict';
 /**
- * scripts/login-key.js — 登录密钥 CLI（创建 / 重置 / 列表）。
+ * 登录密钥 CLI：创建 / 重置 / 列表。
  *
  * 用法：
  *   node scripts/login-key.js create [label]
  *   node scripts/login-key.js reset  [label]
  *   node scripts/login-key.js list
  *
- * 明文仅打印一次；丢失请 reset。
+ * 明文仅打印一次，丢失后需 reset 重新生成。
  */
 require('dotenv').config();
 const apiKeys = require('../src/credentials/api-keys');
@@ -16,8 +16,8 @@ const cmd = String(process.argv[2] || '').toLowerCase();
 const labelArg = process.argv[3] || 'login';
 
 function printKey(k) {
-  // 明文走 stderr（m-28）：stdout 常被运维重定向进日志文件，密钥经 stderr
-  // 输出可避免误重定向泄密。其余指引文案仍走 stdout。
+  // 明文走 stderr（m-28）：stdout 常被运维重定向进日志文件，经 stderr 输出可避免误重定向泄密。
+  // 其余指引文案仍走 stdout。
   console.error('');
   console.error('  id:       ', k.id);
   console.error('  label:    ', k.label);

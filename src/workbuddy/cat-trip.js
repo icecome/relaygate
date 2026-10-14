@@ -211,7 +211,7 @@ async function claimTravelReward(info) {
   return { ok: false, code, result: 'error', reason: msg || ('上游返回 code ' + code + ' / HTTP ' + status), raw: json };
 }
 
-// ---------- Buddy 卡 / 能量盲盒 ----------
+// Buddy 卡 / 能量盲盒
 
 /** 当前 Buddy 卡（只读）。 */
 async function fetchBuddyInfo(info) {
@@ -256,7 +256,7 @@ async function openBuddyBox(info, count = 1) {
   return { ok: true, count: r.data.count ?? n, results, names };
 }
 
-// ---------- 任务 ----------
+// 任务
 
 /** 任务列表（只读）。status: available|accepted|completed|claimed… */
 async function fetchTasks(info) {
@@ -298,7 +298,7 @@ async function claimTask(info, code) {
   };
 }
 
-// ---------- 连登 / 补登 / 兑换 ----------
+// 连登 / 补登 / 兑换
 
 /** 连登状态 + 补登卡 + 兑换档位（只读）。 */
 async function fetchStreak(info) {
@@ -379,7 +379,7 @@ async function redeemTier(info, tier) {
   };
 }
 
-// ---------- 抽奖 ----------
+// 抽奖
 
 /** 抽奖次数（只读）。 */
 async function fetchLotteryChances(info) {

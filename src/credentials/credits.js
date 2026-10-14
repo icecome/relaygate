@@ -6,7 +6,7 @@
  * 用于调度排序（FEFO 临期优先）。留在 upstream 里会让 credentials 反向依赖
  * upstream——底层模块依赖上层模块，方向倒置。
  *
- * 放在 credentials 下是因为它描述的是「账号权益包」这一领域概念，
+ * 放在 credentials 下是因为它描述账号权益包这一领域概念，
  * 与 credit-history.js 同域；upstream/balance.js 作为使用方从这里取。
  */
 
@@ -54,17 +54,17 @@ function summarizeExpiry(packs, nowMs) {
 }
 
 /**
- * 汇总「最早到期」信息，供账号池 FEFO（先到期先用）排序。
+ * 汇总最早到期信息，供账号池 FEFO（先到期先用）排序。
  *
  * 背景：此前 least_balance 只按 d3/d7 金额分档排序，无法区分
- * 「3 天后到期的 68 分」与「7 天后到期的 68 分」，也分不出
+ * 3 天后到期的 68 分与 7 天后到期的 68 分，也分不出
  * 同档内到期时间更早的账号，临期积分会因余额策略被白白浪费。
  * FEFO 直接以最近一个未用尽权益包的到期时刻为准，先到期先消耗。
  *
  * 判定口径：
- * - 只统计 remaining > 0 且未过期的包（已用尽 / unlimited / 无到期时间的都跳过）。
+ * - 只统计 remaining > 0 且未过期的包（已用尽、unlimited、无到期时间的都跳过）。
  * - 多个包取 expireTime 最小者作为 soonest。
- * - 仅有 unlimited 包时视为「不会过期」，返回 never=true。
+ * - 仅有 unlimited 包时视为不会过期，返回 never=true。
  *
  * @param {Array<{expireTime?:number, remaining?:number|null, unlimited?:boolean}>} packs
  * @param {number} [nowMs]
@@ -83,7 +83,7 @@ function summarizeFefo(packs, nowMs) {
   let sawUnlimited = false;
   for (const p of packs) {
     if (!p || typeof p !== 'object') continue;
-    // unlimited 包永不过期：只在没有任何可计量包时作为兜底标记
+    // unlimited 包永不过期：仅在没有任何可计量包时作为标记
     if (p.remaining == null || p.unlimited === true) { sawUnlimited = true; continue; }
     const rem = roundCredits(p.remaining);
     if (!(rem > 0)) continue; // 已用尽

@@ -1,9 +1,8 @@
 'use strict';
 /**
  * log/retention.js — logs/ 日期目录保留策略（m-29）。
- *
- * traffic.jsonl / audit.jsonl 按日落在 logs/YYYY-MM-DD/ 下，此前无清理策略，
- * 长期运行目录数无限增长。本模块在服务启动时按保留天数清理过期日期目录。
+ * traffic.jsonl / audit.jsonl 按日写入 logs/YYYY-MM-DD/ 下，此前无清理策略，
+ * 长期运行会使目录数无限增长；本模块在服务启动时按保留天数清理过期日期目录。
  * 与 backup.js 的 pruneBackups 同口径：清理失败只告警，不阻断启动。
  */
 const fs = require('fs');
@@ -39,7 +38,7 @@ function pruneLogDirs(logsDir, now = new Date()) {
   try {
     entries = fs.readdirSync(logsDir, { withFileTypes: true });
   } catch {
-    return { removed, errors }; // logs 目录不存在等，视为无可清理
+    return { removed, errors }; // logs 目录不存在等，视为无可清理项
   }
   for (const ent of entries) {
     if (!ent.isDirectory()) continue;

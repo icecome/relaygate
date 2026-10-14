@@ -10,7 +10,7 @@ function sse(obj) {
   return `data: ${JSON.stringify(obj)}\n\n`;
 }
 
-// ---------- OpenAI ----------
+// OpenAI
 function openaiChunk(id, model, delta, finishReason) {
   return {
     id,
@@ -48,14 +48,14 @@ function exportOpenAI() {
     /**
      * 流内错误帧。
      *
-     * 历史实现把错误文本塞进 delta.content（`[Error 3004: …]`），HTTP 仍是 200，
-     * 且没有 finish_reason、没有 [DONE] —— agent 客户端会把这段错误当成模型
+     * 早期实现把错误文本塞进 delta.content（`[Error 3004: …]`），HTTP 仍是 200，
+     * 且没有 finish_reason、没有 [DONE]——agent 客户端会把这段错误当成模型
      * 输出并入对话上下文，污染后续所有轮次。
      *
-     * 现在按 OpenAI 生态通行做法发三帧：
-     *   1) finish_reason:'stop' 的空 delta —— 不检查错误的客户端能正常收尾；
-     *   2) 顶层 error 对象 —— 官方 SDK 遇到 chunk 内 error 会抛 APIError；
-     *   3) [DONE] —— 明确结束，客户端不会永远等下去。
+     * 现按 OpenAI 生态通行做法发三帧：
+     *   1) finish_reason:'stop' 的空 delta——不检查错误的客户端能正常收尾；
+     *   2) 顶层 error 对象——官方 SDK 遇到 chunk 内 error 会抛 APIError；
+     *   3) [DONE]——明确结束，客户端不会永远等下去。
      * 错误文本一律不进 content。
      */
     error(id, model, code, message) {
@@ -76,7 +76,7 @@ function exportOpenAI() {
   };
 }
 
-// ---------- Anthropic ----------
+// Anthropic
 function anthropicContentBlock(text) {
   return { type: 'text', text };
 }

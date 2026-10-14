@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/admin-overview.js — 面板概览与运行时诊断端点。
+ * routes/admin-overview.js —— 面板概览与运行时诊断端点。
  * 挂载前缀：/v1/admin（见 index.js）。
  */
 const { Router } = require('express');
@@ -37,7 +37,7 @@ router.get('/sticky', admin, (req, res) => {
   res.json({ object: 'list', data: sticky.listSafe(), ttlMs: sticky.TTL_MS });
 });
 
-/** 导出账号备份（含密文 token，仅 Admin）。密文+全量元数据集中导出属敏感操作，落审计（Q-09）。 */
+/** 导出账号备份（含密文 token，仅 Admin）。密文与全量元数据集中导出属敏感操作，写入审计日志（Q-09）。 */
 router.get('/credentials/export', admin, (req, res) => {
   try {
     const rows = require('../credentials/db').db()
@@ -131,8 +131,8 @@ router.get('/runtime', admin, (req, res) => {
     scheduler: scheduler.snapshot(),
     notify: { enabled: notifyEnabled() },
     keys: {
-      // K-1 后管理/转发两域由 DB 密钥体系强制分离;此字段语义改为「管理域已配置」
-      // (DB 登录密钥或 env ADMIN_KEY 任一存在),前端仅作提示展示。
+      // K-1 后管理域与转发域由 DB 密钥体系强制分离；此字段语义改为「管理域已配置」
+      // （DB 登录密钥或 env ADMIN_KEY 任一存在），前端仅作提示展示。
       adminSeparated: require('../credentials/api-keys').hasLoginKey() || !!config.adminKey,
     },
   });

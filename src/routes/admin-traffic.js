@@ -1,12 +1,12 @@
 'use strict';
 /**
- * routes/admin-traffic.js — 流量日志与用量统计端点。
+ * routes/admin-traffic.js —— 流量日志与用量统计端点。
  * 挂载前缀：/v1/admin（见 index.js）。
  *
  * 数据源口径（界面上并列展示、不混算）：
  *   /traffic、/stats/daily|models|accounts —— 网关转发侧，读 logs/<date>/traffic.jsonl
- *   /stats/client                        —— 客户端侧，读 %USERPROFILE%\.workbuddy\projects\**\*.jsonl
- *   /stats/official-usage                —— 官方账单接口，精确积分（仅 WorkBuddy 账号）
+ *   /stats/client —— 客户端侧，读 %USERPROFILE%\.workbuddy\projects 下的 jsonl
+ *   /stats/official-usage —— 官方账单接口，精确积分（仅 WorkBuddy 账号）
  */
 const { Router } = require('express');
 const { authenticateAdmin } = require('../middleware/auth');
@@ -29,7 +29,7 @@ router.get('/traffic', admin, (req, res) => {
   const status = req.query.status ? String(req.query.status) : null;
   const model = req.query.model ? String(req.query.model) : null;
 
-  // 复用 stats.readTrafficLines（已按新→旧合并），避免内联重复读文件逻辑
+  // 复用 stats.readTrafficLines（已按新到旧合并），避免内联重复读文件逻辑
   const lines = readTrafficLines(days);
 
   let rows = lines;
@@ -71,7 +71,7 @@ router.get('/traffic', admin, (req, res) => {
     byAccount[a] = (byAccount[a] || 0) + 1;
     const s = r.error ? 'error' : String(r.status || 'ok');
     byStatus[s] = (byStatus[s] || 0) + 1;
-    // 只累加可还原的数值（含数字字符串）：被脱敏成 "***" 的行无法还原，
+    // 只累加可还原的数值（含数字字符串）：被脱敏成星号掩码的行无法还原，
     // 单列 tokensMasked 计数，界面据此提示「总量是下界」
     const t = numTok(r.totalTokens);
     if (t != null) tokensTotal += t;
@@ -111,7 +111,6 @@ router.get('/credit-history', admin, (req, res) => {
   });
 });
 
-/** 按日聚合：requests / tokens / estimatedCost（含 per-model 拆分）。 */
 /**
  * 按日聚合：requests / tokens / estimatedCost（含 per-model 拆分）。
  *
@@ -203,8 +202,8 @@ router.get('/stats/cache', admin, (req, res) => {
 /**
  * 积分/token 标定系数（官方账单回归结果）。
  * 每模型给出 uncached/output/cacheRead 三个「积分/token」系数与拟合质量
- * （n=样本数，R²=1 表示逐会话账单可被三系数精确还原）。面板据此展示
- * 「估算积分」的可信度；系数为 null 的模型回退 tier 倍率口径。
+ * （n 为样本数，R²=1 表示逐会话账单可被三系数精确还原），面板据此展示
+ * 「估算积分」的可信度；系数为 null 的模型按 tier 倍率口径计算。
  */
 router.get('/stats/pricing-calibration', admin, (req, res) => {
   const pc = require('../models/pricing-calib');
@@ -309,7 +308,7 @@ router.get('/stats/official-usage', admin, async (req, res) => {
     if (accountId) {
       const acct = credStore.get(accountId);
       if (!acct) return res.status(404).json({ error: { message: `account not found: ${accountId}`, type: 'invalid_request_error' } });
-      // 显式平台分流（isEdition 不兜底）：ZCode 等新平台两侧账单都不适用，
+      // 显式平台分流（isEdition 不做回退匹配）：ZCode 等新平台两侧账单都不适用，
       // 返回空集合而不是误投给 Trae/WB 的账单端点
       const variant = require('../platform/variant');
       const isWb = variant.isEdition(acct.edition, variant.WORKBUDDY);

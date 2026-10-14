@@ -1,11 +1,11 @@
 'use strict';
 /**
  * models/availability.js — 模型可用性学习与持久化。
- * 状态：unknown | usable | unavailable
- * 规则（对齐 muskke/trae-api-proxy 思路）：
+ * 状态：unknown | usable | unavailable。
+ * 规则（与 muskke/trae-api-proxy 的思路一致）：
  * - 真实成功调用 → usable
- * - 最小标准请求明确 4001 / 不可用 → unavailable（带 TTL）
- * - 复杂请求（带 tools）收到 4001 不拉黑模型
+ * - 最小标准请求明确 4001 或不可用 → unavailable（带 TTL）
+ * - 复杂请求（带 tools）收到 4001 时不拉黑模型
  */
 const fs = require('fs');
 const { writeJsonAtomic } = require('../lib/atomic-write');
@@ -17,16 +17,13 @@ const FILE = () => stateFile('model-status.json');
 /**
  * 一次性数据修复：清除被误判的可用性记录。
  *
- * 背景（2026-10-06 19:24 事故）：admin-debug 的 wb/ 探测分支漏传
- * pool.run 的 edition，wb 模型被发给 Trae 上游，上游回
- * "the param is invalid"（即 4001 模型配置错），被写成本地不可用。
- * 实际转发链路正常，属纯粹的错误结论。受影响记录的共同特征：
- *   wb/ 前缀 + 该上游文案 —— 两条件同时成立才删，避免误伤真实的模型下线记录。
+ * 2026-10-06 19:24 事故：admin-debug 的 wb/ 探测分支漏传 pool.run 的 edition，
+ * wb 模型被发给 Trae 上游，上游回 "the param is invalid"（即 4001 模型配置错），
+ * 被写成本地不可用；实际转发链路正常，属错误结论。
+ * 受影响记录的共同特征是 wb/ 前缀与该上游文案，二者同时成立才删，避免误伤真实的模型下线记录。
  *
- * 修复后正常探测即可让 wb/* 自行回到 usable，无需人工干预；
- * 此处只做一次性清污，不改判任何模型的可用性语义。
- * 直接删除条目而非置 unknown：条目消失即回到「未探测」，与从未探测过等价，
- * 且 reason 里的错误文案一并清除，避免面板继续显示误导性原因。
+ * 修复后正常探测即可让 wb/* 回到 usable，无需人工干预。直接删除条目而非置 unknown：
+ * 条目消失即回到「未探测」，与从未探测过等价，并一并清除 reason 里的误导性文案。
  * 用标记文件保证跨进程只执行一次。
  */
 const BOGUS_UNAVAILABLE = /the param is invalid/i;
@@ -53,7 +50,7 @@ function repairBogusUnavailable(c) {
   return cleared;
 }
 
-/** 一次性清污入口（幂等：标记文件存在即跳过）。 */
+/** 一次性清理入口（幂等：标记文件存在即跳过）。 */
 function repairOnce() {
   if (fs.existsSync(REPAIR_FLAG())) return [];
   const cleared = repairBogusUnavailable(cache);
@@ -71,7 +68,7 @@ function load() {
     }
   } catch { /* ignore */ }
   if (!cache || typeof cache !== 'object') cache = {};
-  // 首次载入后执行一次性清污；失败不阻断可用性读取
+  // 首次载入后执行一次性清理；失败不阻断可用性读取
   try { repairOnce(); } catch { /* ignore */ }
   return cache;
 }

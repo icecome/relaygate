@@ -3,11 +3,9 @@
  * transform/sse.js — 上游 SSE 流解析 + tool_use 文本块转 tool_calls（核心资产）。
  *
  * 参考 server.js handleLlmUtilsStream 的行为，抽成有状态处理器，便于路由层复用。
- * 需要处理的三种上游工具形态：
- *   1. 原生结构化 tool_calls (function_call:{name,arguments})
- *   2. <tool_use>{json}</tool_use> 文本块（可能跨 chunk 拆分）
- *   3. 裸 {name, arguments} JSON 对象
- * 全部归一化为标准 OpenAI tool_calls delta。
+ * 需处理的三种上游工具形态：原生结构化 tool_calls (function_call:{name,arguments})、
+ * 可能跨 chunk 拆分的 <tool_use>{json}</tool_use> 文本块、裸 {name, arguments}
+ * JSON 对象。全部归一化为标准 OpenAI tool_calls delta。
  */
 /**
  * 创建一个有状态 SSE 处理器。
@@ -56,8 +54,8 @@ function createStreamHandler(emit, opts = {}) {
   }
 
   /**
-   * 判断 JSON 字符串是否为「被截断的半截对象」：有内容但解析不出合法对象，
-   * 且已出现键值骨架（含冒号）。区别于「上游本就发了空对象 `{}`」。
+   * 判断 JSON 字符串是否为被截断的半截对象：有内容但解析不出合法对象，
+   * 且已出现键值骨架（含冒号）。区别于上游本就发了空对象 `{}`。
    */
   function looksIncomplete(raw) {
     const s = String(raw || '').trim();
@@ -69,7 +67,7 @@ function createStreamHandler(emit, opts = {}) {
 
   /**
    * 规范化工具参数。返回 { args, incomplete }：
-   * - args 为交给客户端的参数对象；incomplete 标记原始参数是否为「半截 JSON」。
+   * - args 为交给客户端的参数对象；incomplete 标记原始参数是否为半截 JSON。
    * - 判定与服务解耦：无论是否注入 __incomplete 标记，incomplete 都会如实返回，
    *   供聚合层把末帧定为 length（B2）。
    * - markIncomplete 为 true 时才在 args 里注入 __incomplete/__raw，便于排查；
@@ -121,7 +119,7 @@ function createStreamHandler(emit, opts = {}) {
     const { args, incomplete } = finalizeArgs(item.name, item.raw);
     item.emitted = true;
     // 参数残缺时置位，供聚合层把末帧 finish_reason 定为 length（B2）：
-    // 让客户端走「续写」而非执行一个参数不完整的工具。
+    // 让客户端走续写而非执行一个参数不完整的工具。
     if (incomplete) sawIncompleteToolArgs = true;
     emit({
       type: 'tool_call',

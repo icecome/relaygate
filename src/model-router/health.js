@@ -49,7 +49,7 @@ function markFail(virtualId, candidateId, kind, err, cooldownMs) {
   e.fail += 1;
   e.lastError = (err && err.message) ? String(err.message).slice(0, 200) : String(kind || 'error');
   e.lastStatus = err && err.status != null ? err.status : null;
-  // rate_limit / model(6004 模型频控)：冷却该候选并允许 failover
+  // rate_limit 与 model（6004 模型频控）：冷却该候选并允许 failover
   if (kind === 'rate_limit' || kind === 'model') {
     e.lastRateLimitAt = Date.now();
     const ms = resolveCooldownMs(err, cooldownMs);
@@ -78,7 +78,7 @@ function resolveCooldownMs(err, fallbackMs) {
       const local = new Date(`${m[1]}T${m[2]}${offset >= 0 ? '+' : ''}${String(offset).padStart(2, '0')}:00`);
       const delta = local.getTime() - Date.now();
       if (Number.isFinite(delta) && delta > 0) return Math.min(delta + 5000, 6 * 3600_000);
-    } catch { /* 解析失败则用兜底 */ }
+    } catch { /* 解析失败则用最后手段 */ }
   }
   return fb;
 }
@@ -106,7 +106,7 @@ function clearAllCooldowns(virtualId) {
   }
 }
 
-/** maxRpm：返回 true 表示可发。 */
+/** maxRpm：返回 true 表示允许发送。 */
 function allowRpm(virtualId, candidateId, maxRpm) {
   if (!maxRpm || maxRpm <= 0) return true;
   const k = keyOf(virtualId, candidateId);

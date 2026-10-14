@@ -1,27 +1,17 @@
 'use strict';
 /**
- * credentials/pool.js — 账号池：积分优先调度 + 分级冷却 + 在途租约 + 签到解冻。
- *
- * pick()
- *   - 过滤 enabled / coolUntil / 模型级冷却 / 余额低于阈值
- *   - least_balance：余额高优先（对照 trae2api-web / Sliverkiss）
- *   - round_robin：errorCount → lastPickedAt
- *   - 排除 maxInFlight 满员账号与 100ms 防撞
- *
- * record()
- *   - ok：清 errorCount；若余额>阈值可解冻
- *   - auth：短冷却
- *   - quota(402)：硬冷却到次日 04:00
- *   - rate_limit：优先用上游恢复时刻，否则指数退避；带 model 时只冷 (账号,模型)
- *   - model：模型级冷却（6004 类），不冷却整号
- *   - 5xx：计数熔断
- *
- * run()
- *   - 租约 acquire/release；auth/quota 换号
+ * credentials/pool.js — 账号池：积分优先调度、分级冷却、在途租约、签到解冻。
+ * pick()：过滤 enabled / coolUntil / 模型级冷却 / 余额低于阈值；least_balance 余额高优先
+ * （对照 trae2api-web / Sliverkiss）；round_robin 按 errorCount → lastPickedAt；
+ * 排除 maxInFlight 满员账号与 100ms 防撞间隔。
+ * record()：ok 清 errorCount、余额高于阈值可解冻；auth 短冷却；quota(402) 硬冷却到次日 04:00；
+ * rate_limit 优先用上游恢复时刻否则指数退避、带 model 时只冷 (账号, 模型)；
+ * model 为 6004 类模型级冷却、不冷却整号；5xx 计数熔断。
+ * run()：租约 acquire/release；auth/quota 换号。
  */
 const store = require('./store');
 const { classifyError, parseRateLimitReset } = require('../upstream/errors');
-const { summarizeExpiry, summarizeFefo } = require('./credits');
+const { summarizeExpiry, summarizeFefo, roundCredits } = require('./credits');
 const config = require('../config');
 const { notify } = require('../notify');
 const variant = require('../platform/variant');
@@ -44,9 +34,9 @@ const inFlight = new Map();
 const recentStart = new Map();
 
 /**
- * FIFO 等待队列：账号满载/节流时请求在此排队，由 release() 事件驱动唤醒。
+ * FIFO 等待队列：账号满载或节流时请求在此排队，由 release() 驱动唤醒。
  * 队列长度即并发连接堆积量，受 maxWaiters() 限制，超出直接拒绝（429），
- * 避免子代理高并发下连接无限堆积压垮进程。
+ * 避免高并发下连接无限堆积压垮进程。
  */
 const waiters = [];
 let waitSeq = 0;
@@ -58,7 +48,7 @@ let _enabledCountAt = 0;
 function maxWaiters() {
   const n = Number(process.env.POOL_MAX_WAITERS);
   if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
-  // 缓存账号数：避免每次入队都触发全表扫描（list() 含逐行解密）
+  // 缓存账号数：避免每次入队都全表扫描（list() 含逐行解密）
   const now = Date.now();
   if (now - _enabledCountAt > 5000) {
     _enabledCount = store.list().filter((a) => a.enabled).length || 1;
@@ -87,7 +77,7 @@ function enqueueWaiter(opts) {
   }
   return new Promise((resolve) => {
     const id = ++waitSeq;
-    // 不 unref：超时是排队者的兜底放行路径，被 unref 会在进程空闲时永久悬挂
+    // 不 unref：超时是排队者的最后放行路径，被 unref 会在进程空闲时永久悬挂
     const timer = setTimeout(() => {
       removeWaiter(id);
       resolve({ reason: 'timeout' });
@@ -106,9 +96,9 @@ function removeWaiter(id) {
 
 /**
  * 唤醒队首等待者（FIFO，避免饥饿）。
- * 只唤醒「当前确实可能拿到号」的请求；若队首条件不满足则停止，
- * 保持顺序语义，防止后到者插队。
- * 取不到号时按「下一个最早可用时刻」安排精确定时唤醒，避免空转。
+ * 只唤醒当前确实可能拿到号的请求；队首条件不满足则停止，
+ * 保持顺序语义，防止后到者插队。取不到号时按下一个最早可用时刻
+ * 安排精确定时唤醒，避免空转。
  */
 function wakeWaiters() {
   let woken = 0;
@@ -124,15 +114,15 @@ function wakeWaiters() {
 }
 
 /**
- * 判断该请求此刻是否可能取到号（pick 的完整过滤条件）。
- * 与 pick() 保持一致，避免「唤醒了却拿不到号」的空转。
+ * 判断该请求此刻是否可能取到号（与 pick() 相同的完整过滤条件）。
+ * 口径必须与 pick() 一致，避免唤醒后却拿不到号的空转。
  */
 function couldPick(opts = {}) {
   return pickCandidate(opts) !== null;
 }
 
 /**
- * 返回最早可能取到号的账号（不产生副作用），语义对齐 pick() 的过滤条件。
+ * 返回最早可能取到号的账号（无副作用），过滤条件与 pick() 一致。
  */
 function pickCandidate(opts = {}) {
   const now = Date.now();
@@ -151,8 +141,8 @@ function pickCandidate(opts = {}) {
 }
 
 /**
- * 计算「距离最早可能有号还有多少毫秒」。
- * 遍历所有账号，对容量/节流/窗口/冷却约束取各自解除时刻的最小值。
+ * 计算距离最早可能有号还有多少毫秒。
+ * 遍历所有账号，对容量、节流、窗口、冷却约束取各自解除时刻的最小值。
  */
 function nextAvailableIn(opts = {}) {
   const now = Date.now();
@@ -170,7 +160,7 @@ function nextAvailableIn(opts = {}) {
     let wait = 0;
     // 冷却
     if (a.coolUntil) wait = Math.max(wait, new Date(a.coolUntil).getTime() - now);
-    // 容量：在途满则需等待任一请求完成，无法精确预测，用一个探测步长
+    // 容量：在途满则需等待任一请求完成，完成时刻无法精确预测，用一个探测步长
     if (!hasCapacity(a)) wait = Math.max(wait, WAIT_CAPACITY_PROBE_MS);
     // 出站节流
     wait = Math.max(wait, minPickGapMs() - (now - (a.lastPickedAt || 0)));
@@ -325,15 +315,14 @@ function pruneModelCooldowns(a) {
 }
 
 /**
- * 把过期冷却条目落库 —— 这是一个**写操作**，必须由定时任务显式调用。
+ * 把过期冷却条目写入数据库 —— 这是写操作，必须由定时任务显式调用。
  *
- * 为什么不让 explainCandidates / snapshot 顺手写：
- * `/v1/admin/runtime` 与 `/status` 都会调这两个（snapshot / explain），
- * 而 `/status` 在 STATUS_PUBLIC=true 时是**免鉴权**的 —— 一个 GET 请求
- * 不应该产生 N 次数据库写（既是正确性问题，也是可被外部触发的写放大）。
+ * 不让 explainCandidates / snapshot 顺手写：/v1/admin/runtime 与 /status 都会
+ * 调这两个（snapshot / explain），而 /status 在 STATUS_PUBLIC=true 时免鉴权 ——
+ * 一个 GET 请求不应产生 N 次数据库写（既是正确性问题，也是可被外部触发的写放大）。
  * 改由 jobs/balance-refresh 定期调用本函数。
  *
- * @returns {number} 实际清理并落库的账号数
+ * @returns {number} 实际清理并写入数据库的账号数
  */
 function sweepModelCooldowns() {
   let swept = 0;
@@ -388,6 +377,66 @@ function balanceOf(a) {
   return typeof a.balance === 'number' && Number.isFinite(a.balance) ? a.balance : null;
 }
 
+/**
+ * 跨平台账号级调度信号（poolAccountPriority）。
+ *
+ * 返回值语义：
+ * - tier=1：池内存在 priorityWindowDays 内到期的未用尽权益包（含已过期未清理的，
+ *   即「临期/到期」——作废是硬损失，必须抢占）。soonestMs = 最早到期毫秒。
+ * - tier=2：无临期包。balance = 池内可用账号的余额合计（跨池比较用「总量」而非
+ *   单账号最大值：池是资源池，一个富裕账号配七个穷账号不代表这个池更有余量）。
+ * - 池内无任何启用账号时返回 null（该池不参与跨池排序）。
+ *
+ * 该信号供 model-router 在「跨池选候选」时比较 trae 池与 workbuddy 池的账号权益；
+ * 池内账号排序（pick）仍走各自的 FEFO 完整键，两处口径不重叠。
+ *
+ * 结果按 edition 缓存 5 秒：路由是每请求热路径，信号只依赖快照（分钟级刷新），
+ * 5s 缓存对新鲜度无感，却把每请求的重复全表扫描降为每 5s 一次。
+ */
+const _signalCache = new Map(); // edition -> { at, value }
+const SIGNAL_TTL_MS = 5000;
+
+function poolSignals(edition) {
+  const now = Date.now();
+  const cached = _signalCache.get(edition);
+  if (cached && now - cached.at < SIGNAL_TTL_MS) return cached.value;
+  const windowDays = config.poolAccountPriorityWindowDays || 7;
+  const horizonMs = now + windowDays * 86400000;
+  let soonestMs = null; // 窗口内最早到期（含已过期但尚未被上游清理的包）
+  let balanceSum = 0;   // 可用账号余额合计
+  let hasAccount = false;
+  for (const a of store.list()) {
+    if (!a.enabled || !variant.isEdition(a.edition, edition)) continue;
+    hasAccount = true;
+    // 与 pick 同口径：低于 minBalanceToUse 的账号不参与调度，
+    // 其余额也不应计入池的「可用余额合计」，否则跨池比较会把用不上的额度算进来。
+    const b = balanceOk(a) ? balanceOf(a) : null;
+    if (b != null && b > 0) balanceSum += b;
+    for (const p of packsOf(a)) {
+      if (!p || p.remaining == null || p.unlimited === true) continue;
+      if (!(p.remaining > 0)) continue; // 已用尽
+      if (typeof p.expireTime !== 'number' || p.expireTime <= 0) continue; // 无到期
+      const ms = p.expireTime * 1000;
+      if (ms > horizonMs) continue; // 窗口外不算临期
+      if (soonestMs === null || ms < soonestMs) soonestMs = ms;
+    }
+  }
+  const value = hasAccount
+    ? {
+      tier: soonestMs !== null ? 1 : 2,
+      soonestMs,
+      balance: roundCredits(balanceSum),
+    }
+    : null;
+  _signalCache.set(edition, { at: now, value });
+  return value;
+}
+
+/** 供测试与余额刷新后失效缓存（快照刚变时不必等 5s）。 */
+function invalidateSignalCache() {
+  _signalCache.clear();
+}
+
 /** 账号快照里的权益包列表（两平台结构一致：{ packs: [...] }）。 */
 function packsOf(a) {
   return a && a.entitlementSnapshot && Array.isArray(a.entitlementSnapshot.packs)
@@ -422,7 +471,17 @@ function groupOk(a) {
  *
  * 平台判定走 variant.canChat（单一事实源）：新增平台（如 zcode）的
  * capability.chat=false，未声明 chat 能力前不可能被误选进转发池。
- * 未知 edition 显式排除——绝不能兜底进任何池。
+ * 未知 edition 显式排除，不放进任何池。
+ *
+ * Qoder 的特殊性：它的 capability.chat 为 true，但**只对国际版成立**
+ * （variant.qoderChatRealms 白名单，国内版 /model/v1/* 实测 503）。
+ * 因此 qoder 账号进池必须同时满足：
+ *   - opts.edition === 'qoder'（显式指定，绝不落入「未指定」的 Trae 默认池），
+ *   - 账号 realm 在白名单内。
+ * 未指定目标平台时显式排除 qoder：routes/openai 的 Trae 直连分支、
+ * routes/anthropic 与 routes/responses 都有不传 edition 的 pool.run 调用
+ * （fallback 到 Trae 池），若不排除，国内版 qoder 账号会被静默选进这些链路，
+ * 而上游对它必然 503 —— 表现为「Trae 请求随机失败」。
  *
  * 平台归属一律走 variant.isEdition —— 它内部用 isTrae（白名单 cn/sg/us/manual）
  * 归一化 Trae 系历史值。此前这里用 editionOf(a.edition) === editionOf(wanted)
@@ -432,9 +491,16 @@ function groupOk(a) {
  */
 function editionOk(a, wanted) {
   const edition = variant.editionOf(a.edition);
-  if (wanted) return variant.isEdition(edition, wanted) && variant.canChat(edition);
+  if (wanted) {
+    if (!variant.isEdition(edition, wanted) || !variant.canChat(edition)) return false;
+    // Qoder 只在显式指定 edition='qoder' 且 realm 受支持时进池
+    if (variant.isEdition(edition, variant.QODER)) return variant.qoderChatOk(a);
+    return true;
+  }
   // 未指定目标平台时：保持既有行为——canChat 为真且非 workbuddy
   // （空 edition 的历史账号视为 Trae 系；显式平台过滤由上面的 wanted 分支负责）
+  // Qoder 显式排除：它只走 edition='qoder' 的专属池，不进 Trae 默认池。
+  if (variant.isEdition(edition, variant.QODER)) return false;
   return variant.canChat(edition) && edition !== variant.WORKBUDDY;
 }
 
@@ -464,55 +530,63 @@ function pick(excludeId, opts = {}) {
   if (!all.length) return null;
 
   const prioOf = (a) => Number(a.priority) || 0;
-  // 成本分层：costTier 越小越优先（0=免费额度包，1=未知/默认，2=收费）；对齐 Sliverkiss 成本优先选号
-  const costTierOf = (a) => (Number.isFinite(a.costTier) ? Number(a.costTier) : 1);
-  // FEFO（先到期先用）：临期积分作废是硬损失，优先于余额。
-  // 账号携带的权益包（entitlementSnapshot.packs）里取「最近一个未用尽包的到期时刻」，
-  // 到期越近的账号越先被调度，从根上避免按余额排序把临期积分拖过期。
-  // packsOf 见模块级定义（snapshot / explain 亦需复用）
-  // 兜底排序信号：d3/d7 金额分档（仅在到期时刻相同时用于打破平局）
-  const expiringOf = (a) => summarizeExpiry(packsOf(a)) || { d3: 0, d7: 0 };
-  // 主排序信号：最近到期时刻；无任何可计量到期包的账号排最后（不抢占临期额度）
-  const fefoOf = (a) => summarizeFefo(packsOf(a)) || { soonestMs: null, soonestDays: null, soonestAmount: 0 };
+  // 成本分层：costTier 越小越优先（0=免费额度包，1=未知/默认，2=收费）；参照 Sliverkiss 成本优先选号
+  const costTierOf = (a) => (Number.isFinite(Number(a.costTier)) ? Number(a.costTier) : 1);
+  let chosen = null;
   if (strategy() === 'least_balance') {
-    all.sort((x, y) => {
-      const px = prioOf(x);
-      const py = prioOf(y);
-      if (px !== py) return py - px; // 置顶优先级高的先
+    // FEFO（先到期先用）：临期积分作废是硬损失，优先于余额。
+    // 从权益包（entitlementSnapshot.packs）取最近一个未用尽包的到期时刻，
+    // 到期越近的账号越先被调度，避免按余额排序把临期积分拖过期。
+    //
+    // Schwartzian 变换：先给每个账号算一次排序键，再排键。
+    // 原实现在比较器里调 summarizeFefo/summarizeExpiry（每次都遍历 packs），
+    // sort 会重复调用比较器 O(n log n) 次 → 每请求重复解析权益包 O(n·log n·m) 次。
+    // 排序键只依赖快照（分钟级刷新），预计算后每请求只解析一遍。
+    const keyed = all.map((a) => {
+      const packs = packsOf(a);
+      const f = summarizeFefo(packs) || {};
+      const e = summarizeExpiry(packs) || { d3: 0, d7: 0 };
+      const b = balanceOf(a);
+      return {
+        a,
+        prio: prioOf(a),
+        // FEFO 主键：soonestMs（升序，越小越先）；null = 无可计量到期包（沉底）
+        soonestMs: f.soonestMs == null ? null : f.soonestMs,
+        soonestAmount: f.soonestAmount || 0,
+        d3: e.d3,
+        d7: e.d7,
+        costTier: costTierOf(a),
+        // 未知余额按 -1 计（沉底），与原比较器 sx/sy 口径一致
+        balance: b == null ? -1 : b,
+        lastPickedAt: a.lastPickedAt || 0,
+      };
+    });
+    keyed.sort((x, y) => {
+      if (x.prio !== y.prio) return y.prio - x.prio; // 置顶优先级高的先
       // 1) FEFO：到期时刻升序（先到期先用）。无到期包的账号沉底，不与临期账号抢。
-      const fx = fefoOf(x);
-      const fy = fefoOf(y);
-      const hx = fx.soonestMs == null;
-      const hy = fy.soonestMs == null;
+      const hx = x.soonestMs == null;
+      const hy = y.soonestMs == null;
       if (hx !== hy) return hx ? 1 : -1;
       if (!hx && !hy) {
-        if (fx.soonestMs !== fy.soonestMs) return fx.soonestMs - fy.soonestMs;
+        if (x.soonestMs !== y.soonestMs) return x.soonestMs - y.soonestMs;
         // 同一到期时刻：临期金额多的先消耗
-        if (fx.soonestAmount !== fy.soonestAmount) return fy.soonestAmount - fx.soonestAmount;
+        if (x.soonestAmount !== y.soonestAmount) return y.soonestAmount - x.soonestAmount;
       }
       // 2) 同到期档位再按 d3/d7 金额分档
-      const ex = expiringOf(x);
-      const ey = expiringOf(y);
-      if (ex.d3 !== ey.d3) return ey.d3 - ex.d3; // 3 天内到期积分多者优先
-      if (ex.d7 !== ey.d7) return ey.d7 - ex.d7; // 7 天内到期积分多者次之
-      const cx = costTierOf(x);
-      const cy = costTierOf(y);
-      if (cx !== cy) return cx - cy; // 免费层优先
-      const bx = balanceOf(x);
-      const by = balanceOf(y);
-      // 未知余额放后面；余额大优先；再按闲置时间
-      const sx = bx == null ? -1 : bx;
-      const sy = by == null ? -1 : by;
-      if (sx !== sy) return sy - sx;
-      return (x.lastPickedAt || 0) - (y.lastPickedAt || 0);
+      if (x.d3 !== y.d3) return y.d3 - x.d3; // 3 天内到期积分多者优先
+      if (x.d7 !== y.d7) return y.d7 - x.d7; // 7 天内到期积分多者次之
+      if (x.costTier !== y.costTier) return x.costTier - y.costTier; // 免费层优先
+      if (x.balance !== y.balance) return y.balance - x.balance; // 余额大优先
+      return x.lastPickedAt - y.lastPickedAt;
     });
+    chosen = keyed[0].a;
   } else {
     all.sort((x, y) => prioOf(y) - prioOf(x)
       || (x.errorCount || 0) - (y.errorCount || 0)
       || (x.lastPickedAt || 0) - (y.lastPickedAt || 0));
+    chosen = all[0];
   }
 
-  const chosen = all[0];
   store.update(chosen.id, { lastPickedAt: now });
   markStart(chosen.id);
   return chosen;
@@ -593,14 +667,14 @@ function record(id, kind, info = {}) {
 
   if (kind === 'rate_limit') {
     const model = info.model ? String(info.model) : null;
-    // 上游给出精确恢复时刻（"将在 … 重置" / "usage will reset at …"）则直接采用
+    // 上游给出精确恢复时刻（「将在 … 重置」/「usage will reset at …」）则直接采用
     const untilIso = parseRateLimitReset(info.message || '');
     if (model) {
       // 模型维度记录：只冷该模型，账号其余模型继续服务
       coolModel(a, model, untilIso ? { untilIso } : { durationMs: backoffMs((a.rateStreak || 0) + 1) });
     }
     if (!model || !untilIso) {
-      // 账号级兜底：无 model 或无精确时刻时，按连续限流次数指数退避（替代此前固定 20s）
+      // 账号级最后手段：无 model 或无精确时刻时，按连续限流次数指数退避（替代此前固定 20s）
       const streak = Math.min((a.rateStreak || 0) + 1, 16);
       store.update(id, {
         coolUntil: untilIso || new Date(Date.now() + backoffMs(streak)).toISOString(),
@@ -638,6 +712,39 @@ function unfreezeIfHealthy(id) {
 }
 
 /**
+ * 粘性账号的权益守门（creditStealGuard）。
+ *
+ * 问题：sticky 绑定会在 TTL（1h）内无条件复用同一账号，完全绕过 FEFO。
+ * 若绑定账号已无临期权益、而同池其他账号有临期/到期积分，这一小时内的
+ * 请求会把「即将作废」的额度整段拖过期——FEFO 的意图被粘性静默作废。
+ *
+ * 语义（只在「绑定账号无临期 + 同池存在临期账号」这一确定更优的场景让位）：
+ * - 绑定账号自带窗口内临期包 → 继续复用（它本来就是最该用的人）；
+ * - 同池无任何临期账号 → 继续复用（让位没有收益，保持会话缓存命中）；
+ * - 其余情况 → 让位给 pick()，由 FEFO 选临期账号；绑定关系由调用方
+ *   bindIfAbsent 重新落在新选中的账号上。
+ *
+ * @returns {boolean} true=允许复用绑定账号，false=让位给池内 FEFO
+ */
+function stickyAllowed(sticky, edition) {
+  const now = Date.now();
+  if (!sticky) return false;
+  const sig = poolSignals(edition || sticky.edition);
+  // 池级信号不是「临期档」时，谁都没有临期权益，让位无收益
+  if (!sig || sig.tier !== 1) return true;
+  // 池内确有人临期：再看绑定账号自己有没有窗口内未用尽权益包
+  const windowDays = config.poolAccountPriorityWindowDays || 7;
+  const horizonMs = now + windowDays * 86400000;
+  for (const p of packsOf(sticky)) {
+    if (!p || p.remaining == null || p.unlimited === true) continue;
+    if (!(p.remaining > 0)) continue;
+    if (typeof p.expireTime !== 'number' || p.expireTime <= 0) continue;
+    if (p.expireTime * 1000 <= horizonMs) return true; // 绑定账号自己也临期
+  }
+  return false; // 让位
+}
+
+/**
  * 包装一次上游调用：选号 → 租约 → 调用 → 释放。
  * @param {Function} fn async (accountId) => result
  * @param {{maxSwitches?:number, stickyKey?:string, stickyAccountId?:string, edition?:'trae'|'workbuddy'}} opts
@@ -655,7 +762,8 @@ async function run(fn, opts = {}) {
         && balanceOk(sticky) && hasCapacity(sticky)
         && editionOk(sticky, opts.edition)
         && now - (sticky.lastPickedAt || 0) >= minPickGapMs()
-        && recentCount(sticky.id) < rateWindowMax()) {
+        && recentCount(sticky.id) < rateWindowMax()
+        && stickyAllowed(sticky, opts.edition)) {
       attempted.add(sticky.id);
       store.update(sticky.id, { lastPickedAt: Date.now() });
       markStart(sticky.id);
@@ -674,10 +782,15 @@ async function run(fn, opts = {}) {
       } finally {
         release(sticky.id);
       }
+    } else if (sticky && opts.stickyKey) {
+      // 因权益让位/节流未过：解绑本次会话的旧绑定，让下面 pick() 重新选号。
+      // 新账号的绑定由 routes 层的 bindIfAbsent 完成（不会覆盖别处的既有绑定）。
+      const { unbind } = require('../session/sticky');
+      unbind(opts.stickyKey);
     }
   }
 
-  // 池满载/节流时进入 FIFO 等待队列，由 release() 事件或精确定时唤醒；
+  // 池满载或节流时进入 FIFO 等待队列，由 release() 事件或精确定时唤醒；
   // 队列有上限，超出直接 429，避免连接无限堆积。
   let switches = 0;
   const deadline = Date.now() + WAIT_TIMEOUT_MS;
@@ -717,7 +830,7 @@ async function run(fn, opts = {}) {
     }
   }
 
-  // 池耗尽属于「暂时无可用账号」，对客户端是可重试语义（429），
+  // 池耗尽属于暂时无可用账号，对客户端是可重试语义（429），
   // 而非服务内部错误（500）；避免客户端把背压误判为故障。
   if (lastErr) throw lastErr;
   const e = new Error('No account available in pool (all accounts throttled or cooling)');
@@ -727,11 +840,11 @@ async function run(fn, opts = {}) {
 }
 
 /**
- * 逐账号解释「为何能/不能被 pick」，不产生副作用（Route Check 用）。
+ * 逐账号解释为何能或不能被 pick，无副作用（Route Check 用）。
  *
- * 与 pickCandidate 同源：过滤条件在此只写一份，避免解释口径与实际调度
- * 分叉（此前该函数放在 upstream/errors.js，导致 pool ⇄ errors 循环依赖，
- * 且与 pick 的条件各写一遍）。
+ * 过滤条件与 pickCandidate 同源：在此只写一份，避免解释口径与实际调度分叉。
+ * 此前该函数放在 upstream/errors.js，导致 pool ⇄ errors 循环依赖，
+ * 且与 pick 的条件各写一遍。
  *
  * @param {string[]} excludeIds 视为已被本次请求尝试过的账号
  * @returns {{id:string,label:string,balance:number|null,priority:number,errorCount:number,coolUntil:string|null,inFlight:number,usable:boolean,reasons:string[]}[]}
@@ -750,7 +863,7 @@ function explainCandidates(excludeIds = []) {
     if (typeof a.balance === 'number' && a.balance < min) reasons.push('low_balance');
     if (getInFlight(a.id) >= maxIn) reasons.push('full_inflight');
     if (exclude.has(a.id)) reasons.push('excluded');
-    // 只读函数不做落库：过期条目在内存视图里过滤，落库由 sweepModelCooldowns 负责
+    // 只读函数不写数据库：过期条目在内存视图里过滤，写入数据库由 sweepModelCooldowns 负责
     const modelCooldowns = pruneModelCooldowns(a) || modelCooldownMap(a);
     return {
       id: a.id,
@@ -774,13 +887,13 @@ function snapshot() {
     maxInFlight: maxInFlight(),
     waiters: waiterSnapshot(),
     accounts: list.map((a) => {
-      // 只读函数不做落库（同上）：过滤后的视图直接返回，不写库
+      // 只读函数不写数据库（同上）：过滤后的视图直接返回，不写库
       const modelCooldowns = pruneModelCooldowns(a) || modelCooldownMap(a);
       return {
         id: a.id,
         label: a.label,
         balance: a.balance,
-        // FEFO 排序信号：暴露给管理面，便于核对「先到期先用」是否按预期生效
+        // FEFO 排序信号：暴露给管理面，便于核对先到期先用是否按预期生效
         fefo: summarizeFefo(packsOf(a)),
         errorCount: a.errorCount,
         coolUntil: a.coolUntil,
@@ -808,5 +921,11 @@ module.exports = {
   waiterSnapshot,
   explainCandidates,
   sweepModelCooldowns,
+  poolSignals,
+  stickyAllowed,
+  invalidateSignalCache,
   COOL_AUTH_MS,
+  // 仅供测试：editionOk 的平台过滤口径（Qoder 分池红线）。
+  // 不导出内部函数本身——它在模块内有多个调用点，导出真身会让测试能改它。
+  _editionOkForTest: (a, wanted) => editionOk(a, wanted),
 };

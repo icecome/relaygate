@@ -2,7 +2,7 @@
  * 统计接口（/v1/admin/stats/*、/v1/admin/credit-history）。
  *
  * 关键语义：metered / unmetered 是真实字段。
- * 部分上游（如 WorkBuddy）不回传usage，此时 requests 有值而 tokens 恒为 0，
+ * 部分上游（如 WorkBuddy）不回传 usage，此时 requests 有值而 tokens 恒为 0，
  * 不能读作「消耗 0 token」，必须结合 unmetered 判断。
  * estimatedCost 是估算值，不是账单精确值。
  */

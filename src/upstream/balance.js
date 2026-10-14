@@ -3,7 +3,7 @@
  * upstream/balance.js — 查询账号剩余积分（权益包）。
  * POST {ug}/trae/api/v2/pay/ide_user_ent_usage
  * body: { require_usage: true, req_source: 1|2 }
- * 解析规则对齐 SOLO main.js Uje()：汇总 user_entitlement_pack_list 的 remaining。
+ * 解析规则与 SOLO main.js Uje() 一致：汇总 user_entitlement_pack_list 的 remaining。
  */
 const store = require('../credentials/store');
 const auth = require('../auth');
@@ -29,7 +29,7 @@ async function postUg(acct, apiPath, body) {
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,
-    // 版本指纹兜底按登录态选 CN/SG 内置默认值
+    // 版本指纹缺失时按登录态选 CN/SG 内置默认值
     _edition: acct.edition || 'cn',
   });
   const resp = await fetch(url, {
@@ -113,7 +113,7 @@ function parseEntitlementUsage(payload) {
     };
   }
 
-  // 2) pack 汇总（对齐 Uje，并过滤无效/过期包）
+  // 2) pack 汇总（与 Uje 一致，并过滤无效/过期包）
   if (!packs.length) return null;
 
   let limitSum = 0;
@@ -173,10 +173,19 @@ async function refreshWorkbuddyBalance(stored) {
     expiring: summarizeExpiry(packsRes.packs),
   };
   store.update(stored.id, { balance, entitlementSnapshot: snapshot });
+  // 积分快照入历史。used 口径：各资源包已用量求和（limit - remaining）。
+  //
+  // 此前写 null，导致 WorkBuddy 的消耗只能用 remaining 差分推算——而 remaining
+  // 会被「权益包到期作废」污染：包过期时 remaining 直接掉一块，但那不是消耗。
+  // 实测该口径可达官方账单的 80 倍（783 vs 9.10），面板「今日消耗」因此虚高。
+  //
+  // pack.used 单调性更好：包作废/用尽时该值下降，credit-history 只累计正向增量，
+  // 下降被自然忽略，之后从更低基线继续按真实增量计量——不再把作废读成消耗。
   try {
+    const usedSum = packsRes.packs.reduce((s, p) => s + (Number.isFinite(p.used) ? p.used : 0), 0);
     require('../credentials/credit-history').add(stored.id, {
       remaining: balance,
-      used: null,
+      used: packsRes.packs.length ? roundCredits(usedSum) : null,
       source: 'workbuddy_resources',
     });
   } catch (e) { /* 快照失败不影响余额刷新 */ }
@@ -184,7 +193,11 @@ async function refreshWorkbuddyBalance(stored) {
     accountId: stored.id,
     label: stored.label || stored.id,
     balance: roundCredits(balance),
-    used: null,
+    // used：各包已用量求和（下界口径，受包轮转影响但不受作废污染）。
+    // 无包时保持 null（与「无法计量」区分于「0 消耗」）。
+    used: packsRes.packs.length
+      ? roundCredits(packsRes.packs.reduce((s, p) => s + (Number.isFinite(p.used) ? p.used : 0), 0))
+      : null,
     limit: null,
     isCreditsBilling: true,
     source: 'workbuddy_resources',
@@ -194,19 +207,18 @@ async function refreshWorkbuddyBalance(stored) {
 }
 
 /**
- * ZCode 额度刷新：billing/balance（**token 计量口径，不是积分**）。
+ * ZCode 额度刷新：billing/balance（token 计量口径，不是积分）。
  *
- * 口径隔离（重要，勿改回）：
- *   ZCode 的赠送额度单位是 token（单包量级 1e8），而 accounts.balance /
- *   entitlement_snapshot.packs / credit_history 三处都是「积分」口径
- *   （单位 credit，量级 1e3）。此前把 token 数写进这三处，导致：
- *     - /v1/admin/credit-history 的 totalUsed 被单个 ZCode 账号抬高 4 个数量级
- *       （实测 86,560,855 tokens 混进 ~5,400 credits 的今日消耗里）；
- *     - 面板「可用额度 / 今日消耗」与「3日内到期积分」同样被污染；
- *     - pool 的 FEFO 排序与低余额告警读到的是 token 数。
- *   因此本函数**只写 entitlement_snapshot.tokenBuckets**（独立键，所有以
- *   `.packs` 为口径的聚合天然排除），balance 列保持 null，且不写 credit_history。
- *   ZCode 的额度展示走 /v1/zcode 的 rewards 快照。
+ * 口径隔离（重要，勿改回）：ZCode 赠送额度的单位是 token（单包量级 1e8），
+ * 而 accounts.balance / entitlement_snapshot.packs / credit_history 三处都是
+ * 积分口径（单位 credit，量级 1e3）。此前把 token 数写进这三处，导致
+ * /v1/admin/credit-history 的 totalUsed 被单个 ZCode 账号抬高 4 个数量级
+ * （实测 86,560,855 tokens 混进约 5,400 credits 的今日消耗里），面板
+ * 「可用额度 / 今日消耗」「3 日内到期积分」同样被污染，pool 的 FEFO 排序与
+ * 低余额告警读到的也是 token 数。
+ * 因此本函数只写 entitlement_snapshot.tokenBuckets（独立键，所有以 .packs
+ * 为口径的聚合天然排除），balance 列保持 null，且不写 credit_history。
+ * ZCode 的额度展示走 /v1/zcode 的 rewards 快照。
  */
 async function refreshZcodeBalance(stored) {
   const rewards = require('../zcode/rewards');
@@ -257,6 +269,69 @@ async function refreshZcodeBalance(stored) {
 }
 
 /**
+ * Qoder 额度刷新。
+ *
+ * 口径隔离（与 ZCode 同原则，勿改回）：Qoder 的额度是**多维度**的——
+ *   userQuota（基础，300）+ addOnQuota（签到/赠送，100，landing 进本处）
+ * 两段独立、不互相包含，且单位虽都是 credit，但 addOnQuota 由每日活动产生，
+ * 与 userQuota 的「套餐内基础额度」语义不同。把它俩加总后写进
+ * accounts.balance / entitlement_snapshot.packs / credit_history 会污染
+ * 既有积分口径（这正是此前 ZCode 踩过的坑——token 数混进 credits）。
+ *
+ * 因此本函数只把两段额度写进 entitlementSnapshot.quota（独立键，所有以
+ * .packs 为口径的聚合天然排除），balance 列保持 null，且不写 credit_history。
+ * 面板展示「基础额度 / 赠送额度 / 合计」走 /v1/qoder 的快照。
+ */
+async function refreshQoderBalance(stored) {
+  const rewards = require('../qoder/rewards');
+  const q = await rewards.fetchQuota(stored);
+  const num = (o) => (o && Number.isFinite(Number(o.remaining)) ? Number(o.remaining) : 0);
+  const quota = {
+    updatedAt: new Date().toISOString(),
+    userType: q.userType,
+    usageType: q.usageType,
+    // 两段隔离展示，不互相合并
+    base: q.base ? {
+      total: Number(q.base.total) || 0,
+      remaining: Number(q.base.remaining) || 0,
+      used: Number(q.base.used) || 0,
+      expiresAt: q.base.expiresAt || null,
+    } : null,
+    addOn: q.addOn ? {
+      total: Number(q.addOn.total) || 0,
+      remaining: Number(q.addOn.remaining) || 0,
+      used: Number(q.addOn.used) || 0,
+      expiresAt: q.addOn.expiresAt || null,
+    } : null,
+    // 仅供面板展示的合计（**不**写进 accounts.balance / credit_history）
+    totalRemaining: num(q.base) + num(q.addOn),
+    isQuotaExceeded: q.isQuotaExceeded,
+  };
+  const prev = (stored.entitlementSnapshot && typeof stored.entitlementSnapshot === 'object')
+    ? stored.entitlementSnapshot
+    : {};
+  // 合并：保留 rewards 写入的 lastClaim* 领取历史。
+  // 注意 quota 必须作为**嵌套键**写入（而非把 base/addOn 摊平到快照顶层）：
+  // routes/credentials.js 的 withExpiry 按 snap.quota 取，摊平后前端读不到。
+  const snapshot = { ...prev, quota };
+  store.update(stored.id, { balance: null, entitlementSnapshot: snapshot });
+  return {
+    accountId: stored.id,
+    label: stored.label || stored.id,
+    balance: null,
+    used: null,
+    limit: null,
+    isCreditsBilling: false,
+    source: 'qoder_quota',
+    unit: 'credit',
+    realm: variant.qoderRealmOfAccount(stored),
+    quota,
+    expiring: { d3: 0, d7: 0 },
+    packs: [],
+  };
+}
+
+/**
  * 刷新单账号剩余积分并写回 balance（remaining）。
  * 默认 req_source=2（Lite），以包含 Work 专属积分包。
  * 禁用账号也可查询（只读）；批量接口 refreshBalanceAllEnabled 仍只跑 enabled。
@@ -268,6 +343,8 @@ async function refreshBalance(accountId) {
   if (variant.isEdition(stored.edition, variant.WORKBUDDY)) return refreshWorkbuddyBalance(stored);
   // ZCode 账号走自己的 billing/balance（zcode/rewards.js）；这里只做分流
   if (variant.isEdition(stored.edition, variant.ZCODE)) return refreshZcodeBalance(stored);
+  // Qoder 账号走自己的 quota 刷新（多维度额度，独立键隔离）
+  if (variant.isEdition(stored.edition, variant.QODER)) return refreshQoderBalance(stored);
 
   const authInfo = await auth.ensureAuth(accountId);
   const acct = { ...stored, ...authInfo };
@@ -336,10 +413,9 @@ async function refreshBalance(accountId) {
 /**
  * 批量余额刷新的进程级互斥。
  *
- * 背景：批量刷新有两条触发路径——jobs/balance-refresh.js 的定时器，
- * 与 jobs/scheduler.js 签到链后的串行刷新。此前各自维护独立 running 标志，
- * 两者互不知情，签到链与定时器可在同一时刻各跑一轮，造成重复请求上游。
- * 这里把锁提到本模块，所有批量入口共用；单账号 refreshBalance 不受限。
+ * 此前 jobs/balance-refresh.js 的定时器与 jobs/scheduler.js 签到后的串行刷新
+ * 各自维护 running 标志，互不知情，可在同一时刻各跑一轮，造成重复请求上游。
+ * 锁提到本模块，所有批量入口共用；单账号 refreshBalance 不受限。
  */
 let batchRunning = false;
 
@@ -351,7 +427,7 @@ function isBatchRunning() {
 /**
  * 以互斥方式执行一轮批量刷新。
  * @param {(opts: object) => Promise<object>} fn 实际刷新逻辑
- * @param {object} [opts] 透传给 fn，同时可含 skipLock 强制执行（内部复用）
+ * @param {object} [opts] 原样传给 fn，同时可含 skipLock 强制执行（内部复用）
  * @returns {Promise<object>} fn 的结果；若因互斥被跳过则返回 {skipped:true, running:true}
  */
 async function withBatchLock(fn, opts = {}) {
@@ -367,10 +443,10 @@ async function withBatchLock(fn, opts = {}) {
 /**
  * 刷新全部 enabled 账号余额。
  *
- * 默认按(本地日期, 账号id) 确定性错峰分散，避免多账号同时打上游权益接口
+ * 默认按（本地日期, 账号 id）确定性错峰分散，避免多账号同时请求上游权益接口
  * （余额刷新频率高，洪峰更容易触发限流）。spreadMinutes=0 时立即顺序执行。
  *
- * 批量入口受withBatchLock 互斥保护；内部也可传 skipLock 供已持锁的调用方复用。
+ * 批量入口受 withBatchLock 互斥保护；内部也可传 skipLock 供已持锁的调用方复用。
  *
  * @param {{windowStartMs?:number, spreadMinutes?:number, skipLock?:boolean}} [opts]
  */
@@ -409,6 +485,7 @@ async function refreshBatch(opts) {
 module.exports = {
   refreshBalance,
   refreshBalanceAllEnabled,
+  refreshQoderBalance,
   isBatchRunning,
   parseEntitlementUsage,
   DEFAULT_UG_HOST,

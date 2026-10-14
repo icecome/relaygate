@@ -2,14 +2,14 @@
 /**
  * zcode/fingerprint.js — 每账号客户端设备档案（一号一台）。
  *
- * 背景：ZCode 上游按「设备指纹」识别客户端。官方客户端是 Electron 桌面端
+ * 背景：ZCode 上游按设备指纹识别客户端。官方客户端是 Electron 桌面端
  * （darwin-arm64 / win32-x64 为主），若把部署机形态直接发给上游，会聚成
- * 「一台机房机器开了 N 个 ZCode」。本模块为每个账号分配一套**成套**桌面
+ * 「一台机房机器开了 N 个 ZCode」。本模块为每个账号分配一套成套桌面
  * SKU：platform × arch × os_version × screen 必须互相自洽（禁止笛卡尔积，
  * 例如 darwin-arm64 不可能配 1366x768），并配一个独立的 device_mid。
  *
  * 档案一经分配即稳定（存 accounts.fingerprint），除非显式 rotate。
- * 字段集与取值范围对齐 zcode2api/app/fingerprint.py（同一上游契约）。
+ * 字段集与取值范围与 zcode2api/app/fingerprint.py 一致（同一上游契约）。
  */
 const crypto = require('crypto');
 
@@ -128,8 +128,8 @@ function profileFor(acct, persist) {
  * 为本机构造档案（本机客户端凭据导入用）。
  *
  * 与随机 SKU 的区别：本机导入的账号就是这台机器上的真实客户端账号，
- * 沿用它的真实 device_mid 与宿主平台形态，比「假装是伦敦的 Mac」更少
- * 设备维度风控信号（客户端自己上报的日活/激活事件用的就是这个 device_mid）。
+ * 沿用它的真实 device_mid 与宿主平台形态，比随机生成伦敦 Mac 更少
+ * 设备维度的风控信号（客户端自己上报的日活/激活事件用的就是这个 device_mid）。
  *
  * 仍走成套 SKU 约束：平台/架构必须匹配宿主，os_version 与 screen 从对应
  * 平台的合法组合里取，语言-时区按宿主 locale 就近选真实地区对。
@@ -163,7 +163,7 @@ function forHost(deviceMid) {
   };
   const err = validate(fp);
   if (err) {
-    // 宿主形态与 SKU 表冲突（如 linux）时兜底随机档案，保证可用性
+    // 宿主形态与 SKU 表冲突（如 linux）时退回随机档案，保证可用性
     const alt = generate();
     if (isValidUuid(deviceMid)) alt.deviceMid = String(deviceMid).toLowerCase();
     return alt;
@@ -181,7 +181,7 @@ function rotate() {
   return generate();
 }
 
-// ── 派生取值（映射到上游头字段） ────────────────────────────────────────────
+// 派生取值（映射到上游头字段）
 
 /** X-Platform 的 messages 形态：<platform>-<arch>（实测 billing 面要求同形态）。 */
 function platformFull(fp) {

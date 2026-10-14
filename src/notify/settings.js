@@ -3,7 +3,6 @@
  * notify/settings.js — 通知渠道配置读写。
  * 存储：.trae-api/notify-settings.json（本机文件，不进代码库）。
  * 优先级：配置文件非空值 > .env 环境变量 > 空（渠道关闭）。
- *
  * 字段读写与 clamp 由 lib/settings-store 承担；事件开关与自定义事件名
  * （正则白名单）属通知领域独有逻辑，仍在本文件维护。
  */
@@ -54,7 +53,7 @@ const EVENTS = [
 ];
 
 /**
- * 渠道字段：env 兜底键取自 ENV_MAP；save 接受空串（空串即关闭该渠道）。
+ * 渠道字段：env 回退键取自 ENV_MAP；save 接受空串（空串即关闭该渠道）。
  * enabled 是总开关：关闭时即使配了渠道也不发送，
  * 避免「配好渠道后无法临时停用」只能靠删配置。
  */
@@ -136,7 +135,7 @@ function save(partial) {
     if (typeof partial[f] === 'string') stored[f] = partial[f].trim();
   }
   // 总开关也是受管字段：手写遍历只覆盖 FIELDS，不加这里 enabled 永远存不进去。
-  // 直接写 stored 而非 store.save()，避免两次落盘时用旧快照覆盖彼此。
+  // 直接写 stored 而非 store.save()，避免两次写入时用旧快照覆盖彼此。
   if (typeof partial.enabled === 'boolean') stored.enabled = partial.enabled;
   if (partial.events && typeof partial.events === 'object') {
     stored.events = { ...(stored.events && typeof stored.events === 'object' ? stored.events : {}) };

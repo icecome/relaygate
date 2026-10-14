@@ -4,16 +4,16 @@
  *
  * 背景：网关侧只能拿到余额快照，积分消耗靠相邻快照差分推算（下界、非精确）。
  * WorkBuddy 官方提供逐请求账单接口 get-user-request-usage，其 credit 字段是精确消耗值。
- * 本模块按单日分块拉取、按 requestId 去重、结果落本地缓存，作为「客户端消耗」之外的
+ * 本模块按单日分块拉取、按 requestId 去重、结果写入本地缓存，作为「客户端消耗」之外的
  * 另一独立对照口径。
  *
  * 关键约束（均经实测确认，非文档声明）：
  *  - 认证头 X-Enterprise-Id 传空字符串即可（实测 HTTP 200 / code 0）。
  *  - 日期跨度：startTime~endTime 超过 32 天会静默返回空（HTTP 200 + code 0 + total 0），
- *    因此必须用「单日滑窗」逐日扫描，绝不可用宽区间。
+ *    因此必须用单日滑窗逐日扫描，绝不可用宽区间。
  *  - total 字段不可信：随区间与 pageSize 变化，不能作为翻页终止条件。
  *  - requestTime 为北京时间（CST），按时间倒序返回。
- *  - 返回体含 input 字段（完整请求正文），绝不落盘。
+ *  - 返回体含 input 字段（完整请求正文），绝不写入文件。
  */
 const https = require('https');
 const fs = require('fs');
@@ -29,7 +29,7 @@ const PAGE_SIZE = 3000;
 const SCAN_DAYS = 30;
 const CACHE_VERSION = 1;
 
-// 读优先新位置，旧位置兜底；写入固定新目录（缓存可重建，不做逐文件迁移）
+// 读优先新位置，旧位置作为最后手段；写入固定新目录（缓存可重建，不做逐文件迁移）
 function cacheDir() {
   const fresh = path.join(stateDir(), 'official-usage-cache');
   if (fs.existsSync(fresh)) return fresh;

@@ -2,13 +2,12 @@
 /**
  * models/official-daily.js — 官方账单的「按日」聚合。
  *
- * 用途：traffic.jsonl 的 token 字段在 2026-10-10 前被误脱敏成 "***"
- * （且 10-04/10-05 无数值行），网关侧计量在那段日期是空的。
- * 官方账单缓存（Trae 会话账单 + WB 逐请求账单）覆盖同样的日期且是
- * 上游权威口径——按日聚合后正好补上这个洞。
+ * 用途：traffic.jsonl 的 token 字段在 2026-10-10 前被误脱敏成 "***"（且 10-04/10-05
+ * 无数值行），网关侧计量在那段日期是空的。官方账单缓存（Trae 会话账单 + WorkBuddy
+ * 逐请求账单）覆盖同样的日期且是上游权威口径，按日聚合后正好补上这个洞。
  *
- * 两个数据源已在各自模块缓存到盘（trae-usage-cache / official-usage-cache），
- * 这里只做读盘聚合，不打上游。
+ * 两个数据源已在各自模块缓存到文件（trae-usage-cache 与 official-usage-cache），
+ * 这里只读文件聚合，不请求上游。
  */
 const fs = require('fs');
 const path = require('path');
@@ -83,7 +82,7 @@ function dailyCredits(days) {
     }
   }
 
-  // WB 逐请求账单：同命名规则
+  // WorkBuddy 逐请求账单：同命名规则
   const wdir = wbDir();
   const wbDays = new Set();
   if (fs.existsSync(wdir)) {
@@ -111,7 +110,7 @@ function dailyCredits(days) {
     d.traeTokens = Math.round(d.traeTokens);
     traeCreditTotal += d.traeCredit;
     wbCreditTotal += d.wbCredit;
-    // covered：该日已有账单缓存文件（读盘成功）。不代表当日一定有消耗——
+    // covered：该日已有账单缓存文件（读取成功）。不代表当日一定有消耗——
     // Trae 按会话入账有 1~2 天滞后，最近一两日 traeCredit=0 多半是「尚未入账」，
     // 调用方须结合该事实解读，不可读作「当天没花积分」。
     d.covered = traeDays.has(d.date) || wbDays.has(d.date);

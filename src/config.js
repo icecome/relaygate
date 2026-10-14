@@ -29,19 +29,18 @@ const modelConfig = readJson(path.join(ROOT, 'model-config.json'), {
  *
  * 该文件声明了 autoFallback / queueThreshold 与十余组模型降级映射，看起来
  * 像「配置降级策略」，但自 v3.0 全功能重构提交（5908f8f）加入后从未被任何
- * 业务代码消费 —— 全库对 fallbackConfig 的读写只有 config.js 内部的
+ * 业务代码消费——全库对 fallbackConfig 的读写只有 config.js 内部的
  * 读入/挂载/reload 三处，没有一处参与选型或降级决策。
  *
- * 也就是说：主人花时间配的降级策略**从未生效过**，而且面板上也没有任何
- * 入口能看出它不生效。这比没有这个文件更糟。
- * 若将来要实现模型降级，应作为新功能从零设计（并接入面板），而不是
- * 复用一份从未被读过的配置。
+ * 也就是说：用户花时间配置的降级策略从未生效过，而且面板上也没有任何
+ * 入口能看出它不生效，这比没有这个文件更糟。若将来要实现模型降级，
+ * 应作为新功能从零设计（并接入面板），而不是复用一份从未被读过的配置。
  *
  * 遗留文件检查在 index.js 启动流程里做：文件仍存在就打印警告，
  * 让升级的用户立刻知道自己的配置没被用上。
  */
 
-// 模型映射：key(对外模型名) -> { function, config_name, scene, reasoning }
+// 模型映射：key（对外模型名）-> { function, config_name, scene, reasoning }
 function buildModelMap(modelConfig) {
   const map = {};
   for (const [key, val] of Object.entries((modelConfig && modelConfig.models) || {})) {
@@ -78,7 +77,7 @@ function makeResolveModelOptions(map) {
         return { function: val.function || 'chat_v3', config_name: val.config_name, scene: val.scene || null, reasoning: val.reasoning === true };
       }
     }
-    // 未登记的上游 ID：function=chat_v3，config_name 原样透传
+    // 未登记的上游 ID：function=chat_v3，config_name 原样传给下游
     return { function: 'chat_v3', config_name: modelName, scene: null, reasoning: false };
   };
 }
@@ -91,7 +90,7 @@ const resolveModelOptions = makeResolveModelOptions(MODEL_MAP);
  *   - 管理域：ADMIN_KEY（env 过渡）/ DB 登录密钥 —— 仅管理面
  *   - 转发域：DB 访问密钥 —— 仅转发 API
  * API_KEY 不再参与运行期鉴权，仅为「库内尚无 access key」时的引导种子，
- * 且强制与管理密钥分值（同值视为配置事故，拒绝落库）。
+ * 且强制与管理密钥取不同值（同值视为配置事故，拒绝入库）。
  */
 const apiKey = process.env.API_KEY || '';
 const adminKey = process.env.ADMIN_KEY || '';
@@ -105,7 +104,7 @@ if (apiKey && adminKey && apiKey === adminKey) {
 const config = {
   ROOT,
   port: parseInt(process.env.PORT || '19900', 10),
-  // 个人本机默认只绑 loopback；跨机访问请显式设 HOST=0.0.0.0 并自配防火墙
+  // 个人本机默认只绑 loopback；跨机访问请显式设置 HOST=0.0.0.0 并自行配置防火墙
   host: process.env.HOST || '127.0.0.1',
   apiKey,
   adminKey,
@@ -131,14 +130,14 @@ const config = {
   requestTimeoutMs: parseInt(process.env.TRAE_REQUEST_TIMEOUT_MS || '600000', 10),
 
   // 截断自动续写：上游因输出上限中断（finish_reason=length）时，网关把已产出内容
-  // 拼回上下文继续请求，对客户端表现为一次完整回复。关闭则如实透传截断信号。
+  // 拼回上下文继续请求，对客户端表现为一次完整回复。关闭则如实传给客户端截断信号。
   autoContinue: process.env.AUTO_CONTINUE === 'true',
   maxContinues: Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0),
   // 残缺工具参数是否注入 __incomplete 诊断标记（默认关闭，避免严格 schema 客户端不认）
   markIncompleteToolArgs: process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true',
 
-  // 工具调用协议：'native'(默认) | 'text'
-  // 注意：当前**仅用于展示**（/v1/admin/config 与运维面板的「工具协议」行），
+  // 工具调用协议：'native'（默认）| 'text'
+  // 注意：当前仅用于展示（/v1/admin/config 与运维面板的「工具协议」行），
   // 没有任何行为分支消费它。工具调用形态由上游返回决定（见 transform/sse.js 的
   // 三种形态归一化）。如需真正切换协议，必须先在 openai.js 的请求构造处接入。
   toolProtocol: process.env.TOOL_PROTOCOL || 'native',
@@ -148,8 +147,8 @@ const config = {
   // 注意：补算值与上游模型的分词器不完全一致，仅供趋势参考，非账单精确值。
   estimateMissingTokens: process.env.ESTIMATE_MISSING_TOKENS !== 'false',
 
-  // 上游通道（多模式，对齐社区 trae 网关）
-  // function 覆盖：chat_v3 | solo_work_lite | inline_chat | …；空=用 model-config
+  // 上游通道（多模式，与社区 trae 网关一致）
+  // function 覆盖：chat_v3 | solo_work_lite | inline_chat | ……；留空则使用 model-config
   upstreamFunction: process.env.TRAE_UPSTREAM_FUNCTION || '',
   // chat 路径：默认 llm_utils_chat；raw 可用 /api/agent/v2/llm_raw_chat 等
   upstreamChatPath: process.env.TRAE_UPSTREAM_CHAT_PATH || '/api/agent/v3/llm_utils_chat',
@@ -161,7 +160,30 @@ const config = {
   maxInFlightPerAccount: parseInt(process.env.MAX_IN_FLIGHT_PER_ACCOUNT || '2', 10),
   minBalanceToUse: Number(process.env.MIN_BALANCE_TO_USE || '0') || 0,
 
-  // 出站节流（用于 3004 上游限流：实测同账号 ~30s 内第3个请求即 3004，冷却 ~20s）。
+  /**
+   * 跨平台账号级调度（POOL_ACCOUNT_PRIORITY，默认开）。
+   *
+   * 背景：账号池 FEFO（先到期先用）此前只在单个平台池内生效，模型层选候选时
+   * 完全不感知账号权益——同一手机号在 trae 池和 workbuddy 池是两个独立账号、
+   * 各自排序，跨池的流量分配只由「模型倍率 + 加权轮转」决定。结果是临期积分
+   * 可能整池闲置，而余额低、到期远的池反而被优先消耗。
+   *
+   * 开启后模型层先比较「候选所属池的最佳账号权益」：
+   *   1) 池内存在 ACCOUNT_PRIORITY_WINDOW_DAYS 内到期的未用尽权益包 → 该池抢占，
+   *      按最早到期时刻升序（临期/到期优先，作废是硬损失）；
+   *   2) 否则按池内最高可用余额降序（余额多的优先使用）；
+   *   3) 以上同档再回落到原有成本序（倍率/窗口）。
+   * 关闭（置 false）即恢复「纯成本序选候选」的旧行为。
+   */
+  poolAccountPriority: process.env.POOL_ACCOUNT_PRIORITY !== 'false',
+  // 临期抢占窗口（天）：只有窗口内的到期包才触发跨池抢占，避免把
+  // 「12 个月后到期」与「11 个月后到期」这类无意义差异当成优先级信号。
+  poolAccountPriorityWindowDays: (() => {
+    const n = parseInt(process.env.POOL_ACCOUNT_PRIORITY_WINDOW_DAYS || '7', 10);
+    return Number.isFinite(n) && n > 0 && n <= 365 ? n : 7;
+  })(),
+
+  // 出站节流（用于 3004 上游限流：实测同账号 ~30 秒内第 3 个请求即 3004，冷却 ~20 秒）。
   // ratePaceMs：同账号两次请求开始的最小间隔（下限）。
   // rateWindowMs / rateWindowMax：同账号在滚动窗口内最多承载的请求数，超出则转其他号。
   // rateCooldownMs：rate_limit 后账号冷却时长，贴近上游恢复窗口。
@@ -169,7 +191,7 @@ const config = {
   rateWindowMs: parseInt(process.env.RATE_WINDOW_MS || '30000', 10),
   rateWindowMax: parseInt(process.env.RATE_WINDOW_MAX || '2', 10),
   rateCooldownMs: parseInt(process.env.RATE_COOLDOWN_MS || '20000', 10),
-  // 连续 rate_limit 的指数退避封顶（20s → 40s → … → 此值）
+  // 连续 rate_limit 的指数退避上限（20s → 40s → …… → 此值）
   rateCooldownMaxMs: parseInt(process.env.RATE_COOLDOWN_MAX_MS || String(30 * 60 * 1000), 10),
 
   // 定时任务（进程内）
@@ -186,7 +208,7 @@ const config = {
 /**
  * 热重载 model-config.json 与 .env 可热更项（T4）。
  * 仅更新内存中的模型映射与可变运行参数；不重启进程。
- * 端口/host/密钥等监听或鉴权级配置不热更（需重启生效）。
+ * 端口/host/密钥等监听或鉴权级配置不热更（需重启后生效）。
  */
 config.reload = function reload() {
   // 重新读取 model-config.json
@@ -201,6 +223,11 @@ config.reload = function reload() {
   config.poolStrategy = process.env.POOL_STRATEGY || 'least_balance';
   config.maxInFlightPerAccount = parseInt(process.env.MAX_IN_FLIGHT_PER_ACCOUNT || '2', 10);
   config.minBalanceToUse = Number(process.env.MIN_BALANCE_TO_USE || '0') || 0;
+  config.poolAccountPriority = process.env.POOL_ACCOUNT_PRIORITY !== 'false';
+  {
+    const n = parseInt(process.env.POOL_ACCOUNT_PRIORITY_WINDOW_DAYS || '7', 10);
+    config.poolAccountPriorityWindowDays = Number.isFinite(n) && n > 0 && n <= 365 ? n : 7;
+  }
   config.ratePaceMs = parseInt(process.env.RATE_PACE_MS || '5000', 10);
   config.rateWindowMs = parseInt(process.env.RATE_WINDOW_MS || '30000', 10);
   config.rateWindowMax = parseInt(process.env.RATE_WINDOW_MAX || '2', 10);

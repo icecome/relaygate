@@ -4,7 +4,7 @@
  * 真实语义（对照 src/routes/workbuddy.js）：
  *   - 凭据只来自本机桌面客户端 auth 文件或粘贴的 .info 内容，
  *     后端不接受请求体传入的 token；
- *   - 导入的账号默认 enabled=false，避免污染 Trae 账号池调度；
+ *   - 导入的账号默认 enabled=false，避免混入 Trae 账号池调度；
  *   - 跨机粘贴导入不做在线验证，导入后需用 verify 补验。
  */
 import { api } from './http';

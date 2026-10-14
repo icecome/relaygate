@@ -24,7 +24,7 @@ const Ops = lazy(() => import('../features/ops/OpsPage'));
 const Audit = lazy(() => import('../features/security/AuditPage'));
 
 function RouteFallback() {
-  return <LoadingBlock label="加载模块" />;
+  return <LoadingBlock label="加载模块…" />;
 }
 
 export default function App() {

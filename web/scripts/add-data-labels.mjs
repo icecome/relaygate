@@ -2,12 +2,10 @@
  * 为卡片化表格自动补齐 data-label。
  *
  * 移动端（<768px）下 .card-table 规则把每个 td 渲染成「label: value」一行，
- * label 取自 td 的 data-label。手写容易漏、列序也容易错，所以按
+ * label 取自 td 的 data-label。手写容易遗漏，列序也容易错位，故按
  * 「表格 thead 的 th 文本」自动注入到该表格 JSX 行模板的对应 td 上。
  *
- * 用法：node scripts/add-data-labels.mjs [file ...]
- *   不带参数时处理 src 下所有含 card-table 的文件。
- *
+ * 用法：node scripts/add-data-labels.mjs [file ...]；不带参数时处理 src 下所有含 card-table 的文件。
  * 幂等：已有 data-label 的 td 会被跳过，重复运行安全。
  */
 import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs';
@@ -26,7 +24,7 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** 从 th 行提取列名；操作类列（无实际数据语义）用 null 表示不加 label。 */
+/** 从 th 行提取列名；操作类列无实际数据语义，用 null 表示不加 label。 */
 function labelsFromHeader(headerLines) {
   const labels = [];
   for (const line of headerLines) {
@@ -50,7 +48,7 @@ function processFile(file) {
   const lines = text.split('\n');
   let applied = 0;
 
-  // 找到每个 <table className="...card-table..."> 块
+  // 找到每个 className 含 card-table 的 table 块
   for (let i = 0; i < lines.length; i += 1) {
     if (!/className="[^"]*card-table/.test(lines[i])) continue;
 

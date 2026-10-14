@@ -1,13 +1,13 @@
 'use strict';
 /**
- * credentials/import.js — 凭据导入（面向"免本机登录"）。
+ * credentials/import.js — 凭据导入（面向「免本机登录」）。
  *
  * 允许从多种来源导入 Trae 账号凭据并写入 SQLite 存储，无需本机登录：
  *  - storageJsonText：上传的 storage.json 原始文本（自动解密 iCubeAuthInfo，并抽取 telemetry 设备指纹）
  *  - authObject：已解密的认证对象 { token, refreshToken, userId, ... }
  *  - refreshToken：仅 refreshToken 字符串（后续自动 ExchangeToken 续期）
  *
- * 设备指纹：上游签到按设备限次。导入/回填时保证每账号有独立 devices，避免共享本机指纹。
+ * 设备指纹：上游签到按设备限次。导入或回填时保证每账号有独立 devices，避免共享本机指纹。
  */
 const crypto = require('crypto');
 const store = require('./store');
@@ -43,7 +43,7 @@ function authFromStorageJson(text) {
   return JSON.parse(decrypted);
 }
 
-/** 生成稳定且互不相同的账号级设备指纹。字段形态对齐真实 Trae telemetry。 */
+/** 生成稳定且互不相同的账号级设备指纹。字段形态参照真实 Trae telemetry。 */
 function genDevices(seed) {
   const h = (v) => crypto.createHash('sha256').update(String(v)).digest('hex');
   const base = seed != null && seed !== '' ? String(seed) : crypto.randomBytes(16).toString('hex');
@@ -130,7 +130,7 @@ function toAccount(auth, extra = {}) {
     userRegion: extra.userRegion || auth.userRegion || null,
     devices: extra.devices || null,
     group: extra.group != null && extra.group !== '' ? String(extra.group) : (auth.group || null),
-    // OAuth 账号记住自己的 ClientID/authHost（refreshToken 必须同 ClientID 换新）
+    // OAuth 账号记住自己的 ClientID/authHost（refreshToken 必须用同一 ClientID 换新）
     authClientId: extra.authClientId || auth.authClientId || null,
     authHost: extra.authHost || auth.authHost || null,
   };
@@ -146,7 +146,7 @@ function findAccountByUserId(userId) {
 }
 
 /**
- * 账号缺少 devices 时生成并落库（已有账号回填）。
+ * 账号缺少 devices 时生成并写入数据库（已有账号回填）。
  * @returns {object|null} 更新后的脱敏账号；已有 devices 则返回 null
  */
 function ensureAccountDevices(accountId) {
@@ -237,7 +237,7 @@ function importAccount(input = {}) {
   }
 
   // 任何导入路径最终都保证有独立设备指纹；OAuth 登录传入的 pending.device（input.devices）
-  // 优先于随机生成，使登录面与 API 面使用同一设备身份
+  // 优先于随机生成，使登录面与 API 面使用同一设备身份。
   const devices = storageDevices || genDevices(auth.userId || input.label || Date.now());
 
   const account = toAccount(auth, {

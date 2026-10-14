@@ -108,7 +108,7 @@ async function chatAggregate(acct, body) {
   if (reasoning) message.reasoning_content = reasoning;
   if (toolCalls.length) message.tool_calls = toolCalls;
   // B2：工具参数半截（非空但解析不出 JSON）而上游未标截断时，补上截断语义，
-  // 让客户端走「续写」而非执行参数残缺的工具调用。
+  // 让客户端走续写而非执行参数残缺的工具调用。
   if (!isTruncatedFinish(finish) && hasIncompleteToolArgs(toolCalls)) finish = 'length';
   return {
     id: 'chatcmpl-wb-' + Date.now().toString(36),
@@ -121,7 +121,7 @@ async function chatAggregate(acct, body) {
   };
 }
 
-/** WorkBuddy 模型目录（静态兜底；2026-09-12 实测 catalog）。 */
+/** WorkBuddy 模型目录（静态最后手段；2026-09-12 实测 catalog）。 */
 const WB_MODELS = [
   'auto', 'default',
   'hy3', 'hy3-x', 'hy4-preview', 'hy4-preview-x',
@@ -145,7 +145,7 @@ function parseRate(credits) {
   return Number.isFinite(n) ? n : null;
 }
 
-/** 目录候选凭据：账号库 enabled 账号优先（与 chat 同源），本机桌面登录态兜底。 */
+/** 目录候选凭据：账号库 enabled 账号优先（与 chat 同源），再取本机桌面登录态。 */
 function catalogCredentials() {
   const out = [];
   let store = null;

@@ -11,8 +11,8 @@ const KEY_ENV_VAR = 'TRAE_API_ENCRYPT_KEY';
  * 本次进程是否「新生成」了加密密钥（而非从文件/env 读取）。
  *
  * 这是不可逆数据丢失的唯一入口：密钥文件被误删后，本模块会生成一把新 key
- * 落盘，而库里所有 token_enc / refresh_token_enc / api_key_enc 都用旧 key 加密，
- * 从此永远解不开 —— 用户只会看到账号「登录失效」，猜不到原因。
+ * 写入文件，而库里所有 token_enc / refresh_token_enc / api_key_enc 都用旧 key
+ * 加密，从此永远解不开——用户只会看到账号「登录失效」，猜不到原因。
  * index.js 启动时据此 + 「库里有密文行」判断并拒绝启动（见 assertKeyMatchesStore）。
  */
 let keyWasGenerated = false;
@@ -23,7 +23,7 @@ function wasKeyGenerated() {
 }
 
 // 密钥文件位置：{workspaceDir}/.trae-api/encrypt.key。
-// 读取时回退旧位置 {ROOT}/.trae-api/encrypt.key —— 这是硬要求：该密钥用于解密
+// 读取时回退旧位置 {ROOT}/.trae-api/encrypt.key——这是硬要求：该密钥用于解密
 // 账号库中既有 token，若因位置变更找不到旧密钥就会重新生成一把，导致所有已存
 // 账号无法解密（不可逆）。因此「旧文件存在」时绝不允许走生成分支。
 function keyFile() {
@@ -50,14 +50,14 @@ function getEncryptionKey() {
   let key = process.env[KEY_ENV_VAR];
   if (key) return normalizeKey(key);
 
-  // 未显式配置时，从持久化密钥文件读取；缺失则生成一次并落盘。
+  // 未显式配置时，从持久化密钥文件读取；缺失则生成一次并写入文件。
   // 禁止静默随机：否则重启后随机 key 会导致旧密文无法解密，凭据尽丢。
   try {
     const existing = existingKeyFile();
     if (existing) {
       key = fs.readFileSync(existing, 'utf-8').trim();
       if (key) {
-        // 从旧位置读到：顺手复制到新位置，后续统一读写新位置。
+        // 从旧位置读到：一并复制到新位置，后续统一读写新位置。
         // 旧文件保留不删——回退到旧版本代码时仍需用它解密。
         if (existing !== keyFile()) writeFileAtomic(keyFile(), key);
         return normalizeKey(key);

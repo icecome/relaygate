@@ -5,7 +5,7 @@
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
 import { forwardRef } from 'react';
 
-/* ---------------------------------------------------------------- Button */
+/* Button */
 
 type ButtonVariant = 'default' | 'primary' | 'ghost' | 'danger';
 
@@ -34,7 +34,7 @@ export function Button({
   return <button type={type} className={classes} {...rest} />;
 }
 
-/* ----------------------------------------------------------------- Field */
+/* Field */
 
 /**
  * 单输入框 + 可选标签。
@@ -85,7 +85,7 @@ export function FieldRow({ label, children }: { label: string; children: ReactNo
   );
 }
 
-/* ---------------------------------------------------------------- Stepper */
+/* Stepper */
 
 /**
  * 紧凑整数步进器。用于表格单元格等空间受限处：
@@ -168,7 +168,7 @@ export function Stepper({
   );
 }
 
-/* ------------------------------------------------------------------- Panel */
+/* Panel */
 
 export interface PanelProps {
   title?: ReactNode;
@@ -198,7 +198,7 @@ export function Panel({ title, description, actions, children, flush, footer }: 
   );
 }
 
-/* ------------------------------------------------------------ MetricGrid */
+/* MetricGrid */
 
 export interface Metric {
   key: string;
@@ -220,7 +220,7 @@ export function MetricGrid({ items }: { items: Metric[] }) {
   );
 }
 
-/* ------------------------------------------------------------- StateChip */
+/* StateChip */
 
 export type ChipTone = 'neutral' | 'brand' | 'ok' | 'warn' | 'danger';
 
@@ -248,7 +248,7 @@ export function Chip({ tone = 'neutral', dot, children }: ChipProps) {
   );
 }
 
-/* ------------------------------------------------------------------- Tabs */
+/* Tabs */
 
 export interface SegOption<T extends string> {
   value: T;
@@ -287,7 +287,7 @@ export function Segmented<T extends string>({
   );
 }
 
-/* -------------------------------------------------------------- KeyValue */
+/* KeyValue */
 
 export interface KeyValueRow {
   k: string;
@@ -309,7 +309,7 @@ export function KeyValue({ rows }: { rows: KeyValueRow[] }) {
   );
 }
 
-/* ------------------------------------------------------------- KeyCards */
+/* KeyCards */
 
 /**
  * 逐字段卡片。适合字段少、彼此独立且需要横向扫读的运行态指标。
@@ -396,7 +396,7 @@ export function KeyCardGroups({ groups }: { groups: KeyCardGroup[] }) {
   );
 }
 
-/* ------------------------------------------------------------------ Note */
+/* Note */
 
 export function Note({
   tone = 'neutral',
@@ -413,7 +413,7 @@ export function Note({
   );
 }
 
-/* ------------------------------------------------------------- ProgressBar */
+/* ProgressBar */
 
 export function ProgressBar({
   ratio,
@@ -432,7 +432,7 @@ export function ProgressBar({
   );
 }
 
-/* ------------------------------------------------------- Loading / Empty */
+/* Loading / Empty */
 
 export function LoadingBlock({ label = '加载中' }: { label?: string }) {
   return (
@@ -443,9 +443,9 @@ export function LoadingBlock({ label = '加载中' }: { label?: string }) {
 }
 
 /**
- * 空态。回答两个问题：为什么空 / 现在该做什么。
+ * 空态。回答两个问题：为什么空、现在该做什么。
  * 只有纯展示的空态可以省略 action，但 hint 至少要说明原因，
- * 否则用户停在空页面时无法判断是"还没配"还是"筛错了"。
+ * 否则用户停在空页面时无法判断是「还没配」还是「筛错了」。
  */
 export function EmptyState({
   label,
@@ -453,7 +453,7 @@ export function EmptyState({
   action,
 }: {
   label: string;
-  /** 原因说明，例如「官方账单通常在请求后 1-2 天出现」 */
+  /** 原因说明，例如「官方账单通常在请求后 1 至 2 天出现」 */
   hint?: string;
   /** 下一步动作，例如「接入第一个账号」 */
   action?: { label: string; onClick: () => void };

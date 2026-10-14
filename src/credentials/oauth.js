@@ -1,19 +1,19 @@
 'use strict';
 /**
- * credentials/oauth.js — Trae OAuth 登录（对齐 TraeWorkAssistant 实测流程）。
+ * credentials/oauth.js — Trae OAuth 登录（参照 TraeWorkAssistant 实测流程）。
  *
  * 流程：
  *   1. GET 授权 URL（www.trae.cn/authorization，SOLO ClientID，回调 127.0.0.1:<port>/authorize）
  *   2. 用户浏览器登录后 Trae 重定向到回调 URL，携带 refreshToken/accessToken/userId/userName
- *   3. 本进程内一次性 HTTP 监听接收回调（或手动 POST 回调 URL 兜底）
- *   4. ExchangeToken（同 ClientID @ api.trae.com.cn）→ GetUserInfo → importAccount 落库
+ *   3. 本进程内一次性 HTTP 监听接收回调（或手动 POST 回调 URL 作为最后手段）
+ *   4. ExchangeToken（同 ClientID @ api.trae.com.cn）→ GetUserInfo → importAccount 写入数据库
  *
  * 注意：OAuth 发放的 refreshToken 必须用同一 ClientID 换新（SOLO 线 en1oxy7wnw8j9n），
- * 账号落库时记录 authClientId/authHost，续期时按账号使用。
+ * 账号写入数据库时记录 authClientId/authHost，续期时按账号使用。
  *
  * 设备身份：授权 URL 携带的 machine_id/device_id 不再随机生成。随机值会让同一账号
- * 每次登录都表现为「全新设备」，与落库 devices 及后续 API 面指纹互相矛盾，是设备维度
- * 风控的典型触发信号。改为 genDevices 确定性指纹：登录面与 API 面同源。
+ * 每次登录都表现为全新设备，与已写入数据库的 devices 及后续 API 面指纹互相矛盾，
+ * 是设备维度风控的典型触发信号。改为 genDevices 确定性指纹：登录面与 API 面同源。
  */
 const http = require('http');
 const crypto = require('crypto');
@@ -33,7 +33,7 @@ const OAUTH_APP_ID = process.env.TRAE_APP_ID || TRAE_IDENTITY.appId;
 const OAUTH_AUTH_BASE = process.env.TRAE_OAUTH_AUTH_HOST || TRAE_HOSTS.oauthAuth;
 const OAUTH_EXCHANGE_HOST = process.env.TRAE_OAUTH_EXCHANGE_HOST || TRAE_HOSTS.oauthExchange;
 const OAUTH_REDIRECT_PORT = Number(process.env.TRAE_OAUTH_REDIRECT_PORT || 17388);
-// 监听窗口：用户登录 Trae 可能耗时较长（验证码/密码找回等），留足 30 分钟
+// 监听窗口：用户登录 Trae 可能耗时较长（验证码、密码找回等），留足 30 分钟
 const LISTEN_TIMEOUT_MS = 30 * 60 * 1000;
 
 // 上游请求 host 白名单（SSRF 防御：env 覆盖也不能指向白名单之外的地址）
@@ -55,9 +55,9 @@ function randomHex(n) {
 /**
  * 生成登录用设备身份。
  *
- * 授权 URL 的 machine_id/device_id 是 Trae 服务端记录「本次登录来自哪台设备」的依据。
- * 这里复用 genDevices 的确定性形态（与账号落库 devices 同一构造），使登录面与 API 面
- * 的设备身份同源；同时生成一次后挂在 pending 上，整个登录流程内保持一致。
+ * 授权 URL 的 machine_id/device_id 是 Trae 服务端记录本次登录来自哪台设备的依据。
+ * 这里复用 genDevices 的确定性形态（与账号写入数据库的 devices 同一构造），使登录面与
+ * API 面的设备身份同源；生成一次后挂在 pending 上，整个登录流程内保持一致。
  * @returns {{machineId:string, deviceId:string}}
  */
 function loginDeviceIdentity() {
@@ -112,6 +112,7 @@ function verifyAndConsumeState(state) {
 
 /** 本地回调监听（30 分钟超时自动关闭）。 */
 const CALLBACK_MSG = 'OK - callback received. You can close this window and check the dashboard.';
+
 function startListener() {
   try {
     pending.server = http.createServer((req, res) => {
@@ -243,7 +244,7 @@ function stopListener(reason) {
   }
 }
 
-/** 手动兜底：解析用户粘贴的完整回调 URL（仅本机回调地址，不向其发起请求）。 */
+/** 手动回调（最后手段）：解析用户粘贴的完整回调 URL（仅本机回调地址，不向其发起请求）。 */
 function manualCallback(callbackUrl) {
   const u = new URL(String(callbackUrl));
   if (!/^https?:$/.test(u.protocol) || !['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname)) {
@@ -257,7 +258,7 @@ function manualCallback(callbackUrl) {
   });
 }
 
-/** 处理回调参数 → 换 token → 拉用户信息 → 落库。 */
+/** 处理回调参数 → 换 token → 拉用户信息 → 写入数据库。 */
 async function handleCallbackParams(params) {
   return completeLogin({
     state: params.get('state'),
@@ -285,7 +286,7 @@ function hasPendingLogin() {
   return !!(pending.state && pending.server);
 }
 
-/** 用回调凭据完成登录：换 token → 拉用户信息 → 落库。 */
+/** 用回调凭据完成登录：换 token → 拉用户信息 → 写入数据库。 */
 async function completeLogin(creds = {}) {
   try {
     // Trae 授权页实测会重新生成 state（与初始 URL 不一致），故仅告警不拒绝
@@ -311,9 +312,9 @@ async function completeLogin(creds = {}) {
     }
 
     // GetUserInfo 仅为补充用户名/ID：服务端调用无浏览器 cookie 会话，可能 401，不作为失败条件。
-    // token 有效性由 JWT 解析兜底保证（伪造 token 无法通过 data.id + exp 校验）。
+    // token 有效性由 JWT 解析校验保证（伪造 token 无法通过 data.id + exp 校验）。
     let info = { userId: null, userName: null };
-    try { info = await getUserInfo(token); } catch (e) { /* 忽略，走 JWT 兜底 */ }
+    try { info = await getUserInfo(token); } catch (e) { /* 忽略，改由 JWT 解析确认身份 */ }
     const uid = info.userId || creds.userId || jwtUid(token);
     if (!uid) throw new Error('token 身份验证失败：GetUserInfo 未返回用户 ID 且 JWT 无法解析（token 可能无效）');
     const displayName = creds.userName || null; // 仅在用户显式命名时传入

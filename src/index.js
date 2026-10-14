@@ -1,10 +1,10 @@
 'use strict';
 /**
  * relay-gate v3 入口 — 暴露端点转发 API。
- * 分层：routes(薄) → transform(纯函数) → upstream(唯一上游通道) → auth(复用)。
+ * 分层：routes（薄）→ transform（纯函数）→ upstream（唯一上游通道）→ auth（复用）。
  * 启动：node src/index.js
  */
-// 先装全局兜底，再加载业务模块：模块加载期的异常也能被记录，避免静默退出
+// 先安装全局异常处理器，再加载业务模块：模块加载期的异常也能被记录，避免静默退出
 require('./log/crash').install();
 
 const express = require('express');
@@ -26,6 +26,7 @@ const responses = require('./routes/responses');
 const status = require('./routes/status');
 const workbuddy = require('./routes/workbuddy');
 const zcode = require('./routes/zcode'); // ZCode 运营面（凭据导入 / 套餐领取 / 额度）
+const qoder = require('./routes/qoder'); // Qoder 运营面（双区域凭据导入 / 每日积分领取 / 额度 / 目录）
 const catTrip = require('./routes/cat-trip'); // WorkBuddy 成长活动端点（/v1/workbuddy/growth）
 const apiKeys = require('./routes/api-keys');
 const modelRouterAdmin = require('./routes/model-router');
@@ -53,7 +54,7 @@ const CSP = [
   "frame-ancestors 'none'",
 ].join('; ');
 
-// 转发面与运维快照不是 HTML 文档，带上 CSP 只会干扰客户端处理响应体
+// 转发面与运维快照不是 HTML 文档，加 CSP 只会干扰客户端处理响应体
 const isDocumentRoute = (p) => !p.startsWith('/v1/') && p !== '/status' && p !== '/health';
 
 app.use((req, res, next) => {
@@ -68,7 +69,7 @@ const startT = Date.now();
 
 /**
  * 启动期健康快照。由 runStartupChecks() 在 listen 之前填充，
- * /health 读它返回真实状态而不是硬编码 'ok'。
+ * /health 读它返回真实状态，而不是硬编码 'ok'。
  * @type {{checks: object[], warnings: string[]}}
  */
 let startupHealth = { checks: [], warnings: [] };
@@ -122,6 +123,12 @@ app.use('/v1/workbuddy', workbuddy);
 app.use('/v1/workbuddy/growth', catTrip);
 // ZCode 运营面：凭据导入 / 套餐探测领取 / 额度 / 定时任务设置（全部管理鉴权）
 app.use('/v1/zcode', zcode);
+// Qoder 运营面 + 国际版对话转发。
+// 运营面端点自带 admin 鉴权；对话转发（/v1/qoder/chat/completions）在路由内
+// 用 authenticate，并与转发面共用同一限流中间件实例（同 key 同一额度池）。
+// 限流实例必须在此前创建——app.use 的顺序即中间件顺序。
+const rateLimitMw = keyRateLimit();
+app.use('/v1/qoder', qoder);
 app.use('/v1/admin', adminOverview);
 app.use('/v1/admin', adminTraffic);
 app.use('/v1/admin', adminJobs);
@@ -132,7 +139,6 @@ app.use('/v1/admin', adminSecurity);
 app.use('/v1/api-keys', apiKeys);
 // 模型列表双面可用（转发客户端 + 面板）：与转发面共用同一限流中间件实例。
 // K-2：访问密钥需 models:read scope；登录密钥/管理域直接放行（关卡内判定）。
-const rateLimitMw = keyRateLimit();
 app.use('/v1/models', authenticateAny, requireKeyScope('models:read'), rateLimitMw);
 app.use(models);
 app.use(authenticate);
@@ -140,8 +146,7 @@ app.use(rateLimitMw);
 app.use(openai);
 app.use(anthropic);
 app.use(responses);
-
-// 兜底 404
+// 最后手段：未命中任何路由时返回 404
 app.use((req, res) => {
   res.status(404).json({ error: { message: `Not found: ${req.method} ${req.path}`, type: 'invalid_request_error' } });
 });
@@ -166,10 +171,10 @@ function listen(port, host, fallbacks = []) {
       console.warn('[relay-gate] 仅绑定 IPv6；请使用 localhost 或 [::1] 访问（127.0.0.1 可能被其他进程占用，如 VMware NAT）。');
     }
 
-    // ---- 优雅停机链（P0-002）----
+    // 优雅停机链（P0-002）
     // 顺序：停止接受新连接 → 停定时器 → flush 日志 → 关 DB → 退出。
     // 信号处理器（log/crash.js 的 onShutdown）按注册顺序执行这些钩子，
-    // 任何钩子失败不阻断后续，5 秒兜底强制退出。
+    // 任何钩子失败不阻断后续，5 秒后强制退出。
     const { onShutdown } = require('./log/crash');
     const dbModule = require('./credentials/db');
     onShutdown('http-server', () => {
@@ -179,6 +184,7 @@ function listen(port, host, fallbacks = []) {
     onShutdown('balance-refresh', () => require('./jobs/balance-refresh').stop());
     onShutdown('backup', () => require('./jobs/backup').stop());
     onShutdown('zcode-rewards', () => require('./jobs/zcode-rewards').stop());
+    onShutdown('qoder-rewards', () => require('./jobs/qoder-rewards').stop());
     onShutdown('sqlite', () => dbModule.close());
 
     scheduler.start();
@@ -189,10 +195,13 @@ function listen(port, host, fallbacks = []) {
     require('./jobs/backup').start();
     // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
     require('./jobs/zcode-rewards').start();
+    // Qoder 每日积分（100 Credits）领取（默认关闭，需 QODER_REWARDS_ENABLED=true；
+    // 上游 UTC+8 10:00 刷新，默认本地 10:15 执行，时区不同时在 /v1/qoder/settings 调整）
+    require('./jobs/qoder-rewards').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
-    // 必须在调度器启动**之前**执行：先清出干净目录再排程，且它是同步阻塞的
+    // 必须在调度器启动之前执行：先清出干净目录再排程，且它是同步阻塞的
     require('./log/retention').pruneAtStartup(config.ROOT);
-    console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards)');
+    console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards + qoder rewards)');
   });
   server.on('error', (err) => {
     if (isPortBusy(err) && fallbacks.length) {
@@ -207,7 +216,7 @@ function listen(port, host, fallbacks = []) {
 }
 
 // 优先 HOST；Windows 上 0.0.0.0 可能被 vmnat 等独占，回退 ::（IPv6）再 127.0.0.1
-// 启动引导：库内无 Key 时用 API_KEY / WORKBUDDY_API_KEY 建初始转发 Key（可选种子）
+// 启动引导：库内无 Key 时用 API_KEY / WORKBUDDY_API_KEY 创建初始转发 Key（可选种子）
 try {
   const bootstrapped = apiKeyStore.bootstrapFromEnv();
   if (bootstrapped.length) {
@@ -226,7 +235,7 @@ try {
 
 // 已废弃配置的启动期提醒：model-fallback.json 从未被任何业务代码消费
 // （详见 config.js 的说明）。文件若还在，明确告知用户「你的配置没生效」，
-// 否则他会一直以为系统有降级兜底。
+// 否则他会一直以为系统有降级机制。
 try {
   if (fs.existsSync(path.join(config.ROOT, 'model-fallback.json'))) {
     console.warn(
@@ -238,7 +247,7 @@ try {
   /* 检查失败不影响启动 */
 }
 
-// ---- 启动期健康校验（把「静默降级」变成「明确失败」）----
+// 启动期健康校验（把「静默降级」变成「明确失败」）
 // 顺序要求：必须先打开 DB 拿到密文行信息，才能判断 encrypt.key 是否可用。
 try {
   const startupChecks = require('./lib/startup-checks');

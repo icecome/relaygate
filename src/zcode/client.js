@@ -2,7 +2,7 @@
 /**
  * zcode/client.js — ZCode 上游 HTTP 通道（billing 运营面）。
  *
- * 只负责「发请求 + 解析信封 + 按业务码抛错」，不含任何业务语义：
+ * 只负责发请求、解析信封与按业务码抛错，不含任何业务语义：
  *   - 目标域与路径全部取自 platform/variant.js（单一事实源）
  *   - 身份头取自 zcode/identity.js
  *   - 代理复用项目统一的 applyProxy 语义（HTTPS_PROXY / ALL_PROXY）
@@ -149,7 +149,7 @@ function unwrap(envelope, { method, path } = {}) {
 /** 便捷：带账号身份头发请求。 */
 async function accountRequest(acct, { method, path, body, query, extraHeaders, timeoutMs, allowEmpty }) {
   const fp = fingerprint.profileFor(acct, (fresh) => {
-    try { require('../credentials/store').update(acct.id, { fingerprint: fresh }); } catch { /* 落库失败不阻断 */ }
+    try { require('../credentials/store').update(acct.id, { fingerprint: fresh }); } catch { /* 账号库写入失败不阻断 */ }
   });
   const headers = { ...identity.identityHeaders(fp, { token: acct.token, apiKey: acct.apiKey }), ...extraHeaders };
   return request({ method, path, headers, body, query, timeoutMs, allowEmpty });

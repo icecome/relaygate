@@ -1,10 +1,10 @@
 /**
  * 通知与备份面板。
  *
- * 两块内容都直接落在后端真实能力上，不在前端推断业务状态：
- *   - 通知：总开关 + 四类渠道凭据 + 事件开关，由 /v1/admin/notify/settings 读写。
+ * 两块内容都直接对应后端真实能力，不在前端推断业务状态：
+ *   - 通知：总开关 + 四类渠道凭据 + 事件开关，由 /v1/admin/notify/settings 读写；
  *     「是否真的会发送」取后端 running / activeChannels 字段。
- *   - 备份：定时配置、立即备份、校验、内容预览与恢复，由 /v1/admin/backup/* 提供。
+ *   - 备份：定时配置、立即备份、校验、内容预览与恢复，由 /v1/admin/backup/* 提供；
  *     恢复是覆盖写，因此默认先做一次安全快照，并在确认弹窗中说明影响。
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -44,7 +44,7 @@ const CHANNELS: {
   channel: string;
   label: string;
   placeholder: string;
-  /** 密钥类字段：已配置时用掩码提示，避免明文占位 */
+  /** 密钥类字段：已配置时用掩码提示，避免明文占位。 */
   secret: boolean;
   hint?: string;
 }[] = [
@@ -118,7 +118,7 @@ const CHANNELS: {
 
 const CHANNEL_IDS = ['webhook', 'serverchan', 'pushplus', 'telegram'] as const;
 
-/** 表单字段全集，草稿与提交体共用，避免两处维护。 */
+/** 表单字段全集：草稿与提交体共用，避免两处维护。 */
 const FORM_FIELDS: (keyof NotifySettings)[] = CHANNELS.map((c) => c.id);
 
 function draftOf(src: NotifySettings | undefined): NotifySettings {
@@ -333,7 +333,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
   async function doRestore(path: string, file: string) {
     const ok = await prompt({
       title: '从该备份恢复？',
-      message: `将用 ${file} 覆盖同 id 的账号、密钥与配置。恢复前会自动生成一份当前状态快照。`,
+      message: `将用 ${file} 覆盖同 ID 的账号、密钥与配置。恢复前会自动生成一份当前状态快照。`,
       okText: '恢复',
       danger: true,
     });
@@ -412,7 +412,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               )}
             </div>
 
-            {/* 四张渠道卡等高对齐；字段多的渠道在卡内分两列，避免整行留白 */}
+            {/* 四张渠道卡等高；字段多的渠道在卡内分两列，避免整行留白 */}
             <div className="grid gap-4 grid-cols-2">
               {channelRows.map((ch) => {
                 const dense = ch.fields.length > 2;
@@ -437,7 +437,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                           key={String(f.id)}
                           label={f.hint ? `${f.label}（${f.hint}）` : f.label}
                           className="font-mono text-[12px]"
-                          // 密钥类字段不回显明文：已配置时留空并给掩码提示，避免 token 暴露在屏幕上
+                          // 密钥类字段不回显明文：已配置时留空并显示掩码提示，避免 token 出现在屏幕上
                           type={f.secret && notify.data?.[f.id] ? 'password' : 'text'}
                           value={String(draft[f.id] ?? '')}
                           placeholder={
@@ -488,7 +488,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
 
       <Panel
         title="备份"
-        description="备份为加密单文件，恢复会覆盖同 id 数据"
+        description="备份为加密单文件，恢复会覆盖同 ID 的数据"
         actions={
           <Button size="sm" variant="primary" onClick={doRunBackup} disabled={busy === 'backup-run'}>
             {busy === 'backup-run' ? '执行中…' : '立即备份'}

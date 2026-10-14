@@ -1,10 +1,9 @@
 'use strict';
 /**
- * log/crash.js — 进程级异常落盘。
- *
- * 背景：进程无任何全局兜底时，未捕获异常会静默退出（无堆栈、无 WER），
- * 导致「服务无声消失」难以定位。此模块把异常与退出事件写入
- * logs/YYYY-MM-DD/crash.jsonl，并提供进程生命周期（exit/signal）留痕。
+ * log/crash.js — 进程级异常记录。
+ * 进程无任何全局处理时，未捕获异常会静默退出（无堆栈、无 WER），导致「服务无声
+ * 消失」难以定位。本模块把异常与退出事件写入 logs/YYYY-MM-DD/crash.jsonl，
+ * 并提供进程生命周期（exit/signal）留痕。
  */
 const fs = require('fs');
 const path = require('path');
@@ -46,7 +45,7 @@ function writeEvent(entry) {
 let installed = false;
 /**
  * 优雅停机钩子，由 index.js 在启动时注册（registerShutdown）。
- * 信号处理在调用这些钩子后、force-exit 兜底计时器之前执行。
+ * 信号处理先执行这些钩子，再由 force-exit 最后手段计时器接管。
  * @type {{label:string, fn:()=>void|Promise<void>}[]}
  */
 const shutdownHooks = [];
@@ -63,13 +62,13 @@ function onShutdown(label, fn) {
 
 /**
  * 执行停机链并退出。
- * @param {string} reason 触发原因（信号名 / 手动调用说明）
+ * @param {string} reason 触发原因（信号名或手动调用说明）
  */
 async function runShutdown(reason) {
   if (shuttingDown) return;
   shuttingDown = true;
   writeEvent({ tag: 'lifecycle', event: 'shutdown_begin', reason });
-  // 5 秒兜底：钩子挂死也要退，服务管理器还需要进程真的退出去
+  // 5 秒最后手段：钩子挂死也要退出，服务管理器需要进程真正退出
   const force = setTimeout(() => {
     writeEvent({ tag: 'lifecycle', event: 'shutdown_timeout' });
     process.exit(1);
@@ -90,7 +89,7 @@ async function runShutdown(reason) {
 }
 
 /**
- * 注册全局兜底。应在任何业务模块 require 之前调用，以便捕获加载期异常。
+ * 注册全局异常处理。应在任何业务模块 require 之前调用，以便捕获加载期异常。
  * @param {{onFatal?: (event: object) => void}} [opts]
  */
 function install(opts = {}) {
@@ -102,9 +101,9 @@ function install(opts = {}) {
     try {
       if (typeof opts.onFatal === 'function') opts.onFatal({ event: 'uncaughtException', error: err });
     } catch {
-      /* 兜底回调失败不阻断退出 */
+      /* 最后手段回调失败不阻断退出 */
     }
-    // 未捕获异常后进程状态不可信，记录后退出交由服务管理器拉起
+    // 未捕获异常后进程状态不可信，记录后退出，交由服务管理器拉起
     process.exit(1);
   });
 

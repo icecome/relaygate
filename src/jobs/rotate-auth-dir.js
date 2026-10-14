@@ -2,10 +2,10 @@
 /**
  * jobs/rotate-auth-dir.js — WorkBuddy 客户端 auth 目录的定位与账号发现。
  *
- * 从 rotate-accounts.js 抽出：该能力被 rotate-accounts（切换/轮换）与
- * rotate-seed（写入种子备份）共同依赖，留在 rotate-accounts 里会形成
- * rotate-accounts ⇄ rotate-seed 循环依赖（两者互相 require）。
- * 抽到这一层后依赖方向变为单向：rotate-accounts → 本模块 ← rotate-seed。
+ * 从 rotate-accounts.js 抽出：该能力被 rotate-accounts（切换、轮换）与
+ * rotate-seed（写入种子备份）共同依赖，留在 rotate-accounts 里会形成两者的
+ * 循环依赖（互相 require）。抽到这一层后依赖方向变为单向：
+ * rotate-accounts → 本模块 ← rotate-seed。
  *
  * 默认目录取自 platform/variant.js（平台差异单一事实源）。
  */
@@ -38,7 +38,7 @@ function readUid() {
   } catch { return null; }
 }
 
-/** 发现 auth 目录下所有可用的账号备份（按 uid 去重，保留最新一份）。 */
+/** 发现 auth 目录下所有可用的账号备份（按 uid 去重，同一 uid 保留最新一份）。 */
 function discoverAccounts() {
   const found = [];
   try {

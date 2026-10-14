@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/admin-debug.js — 调试与诊断端点：模型探活、一键测试、SSE 事件流、配置热更新。
+ * routes/admin-debug.js —— 调试与诊断端点：模型探活、一键测试、SSE 事件流、配置热更新。
  * 挂载前缀：/v1/admin（见 index.js）。
  */
 const { Router } = require('express');
@@ -15,14 +15,13 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 /**
  * 按模型 id 前缀选择平台并发起一次最小 chat 调用（probe / test-chat 共用）。
- *
- * wb/ 前缀 → WorkBuddy（wbChat 聚合，OpenAI 兼容 passthrough）；
- * 其余    → Trae（llmUtilsChat 转换层）。
+ * wb/ 前缀走 WorkBuddy（wbChat 聚合，OpenAI 兼容原样转发）；其余走 Trae
+ * （llmUtilsChat 转换层）。
  *
  * edition 必须显式传给 pool.run：其缺省语义是「只选非 workbuddy 账号」，
  * 漏传时 wb 模型会被发给 Trae 上游，上游回 PARAM_INVALID 并被误判成
  * 「模型不可用」写入 7 天状态表（2026-10-06 实际事故的根因）。
- * 返回 { result, accountId }；pool.run 的换号/冷却语义与转发面一致。
+ * 返回 { result, accountId }；pool.run 的换号与冷却语义与转发面一致。
  */
 async function chatViaPlatform(model, chatBody) {
   if (model.startsWith('wb/')) {
@@ -46,8 +45,8 @@ async function chatViaPlatform(model, chatBody) {
 
 /**
  * 账号平台一致性校验：wb/ 模型必须由 workbuddy 账号服务。
- * 返回 true 表示确认发生了跨平台错路由（pool 选号语义变化 / 新调用点漏传
- * edition），此时上游报错只说明「请求发错了地方」，不是模型结论，禁止写状态表。
+ * 返回 true 表示确认发生了跨平台错路由（pool 选号语义变化或新调用点漏传
+ * edition）：上游报错只说明「请求发错了地方」，不是模型结论，禁止写状态表。
  * 非 wb/ 模型或账号不存在时返回 false（不阻断）。
  */
 function platformMismatch(model, accountId) {
@@ -59,8 +58,7 @@ function platformMismatch(model, accountId) {
 }
 
 /**
- * 模型探活：最小请求打上游（真实调用）。
- *
+ * 模型探活：以最小请求真实调用上游。
  * 可用性只以「成功」写表：hasBody=false（HTTP 200 但无内容）不判不可用也不判可用，
  * 留待下次探测。上游异常一律抛错进入 catch 分支按错误类别处理，此处仅剩
  * 「上游行为不符合预期」一种中性情况。
@@ -92,7 +90,7 @@ router.post('/models/probe', admin, async (req, res) => {
       });
     }
 
-    // wb/auto 是上游真实模型（Auto 档），探测结论允许落盘；仅裸 'auto' 是网关
+    // wb/auto 是上游真实模型（Auto 档），探测结论允许写入状态表；仅裸 'auto' 是网关
     // 本地语义（网关层自动路由），没有对应的上游调用实体，不写状态表。
     if (model !== 'auto') require('../models/availability').markUsable(model);
     res.json({
@@ -182,7 +180,7 @@ router.post('/test-chat', admin, async (req, res) => {
   }
 });
 
-/** ===== SSE 调试模式 ===== */
+// SSE 调试模式
 
 const SSE_DEBUG_ENABLED = () => process.env.TRAE_DEBUG_SSE === 'true';
 const SSE_DEBUG_DIR = () => path.join(config.ROOT, 'logs', new Date().toISOString().slice(0, 10));
@@ -223,7 +221,7 @@ router.get('/debug/sse', admin, (req, res) => {
   res.json({ object: 'list', enabled: true, total, data: rows.slice(0, limit) });
 });
 
-/** ===== 配置热更新 ===== */
+// 配置热更新
 
 /** 查看当前生效的关键配置。 */
 router.get('/config', admin, (req, res) => {
@@ -251,7 +249,7 @@ router.get('/config', admin, (req, res) => {
     retryBaseDelay: config.retryBaseDelay,
     requestTimeoutMs: config.requestTimeoutMs,
     statusPublic: config.statusPublic,
-    // K-1 后语义 = 「管理域已配置」（DB 登录密钥或 env ADMIN_KEY）
+    // K-1 后语义为「管理域已配置」（DB 登录密钥或 env ADMIN_KEY）
     adminSeparated: require('../credentials/api-keys').hasLoginKey() || !!config.adminKey,
   });
 });

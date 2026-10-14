@@ -6,7 +6,7 @@
  */
 const { createSettingsStore } = require('../lib/settings-store');
 
-/** key -> { env, default, min, max } */
+/** 字段表：key -> { env, default, min, max } */
 const SPECS = {
   checkinHour: { env: 'CHECKIN_HOUR', default: 9, min: 0, max: 23 },
   checkinMinute: { env: 'CHECKIN_MINUTE', default: 0, min: 0, max: 59 },
@@ -20,11 +20,11 @@ const SPECS = {
   // ROTATE_ENABLED env，存在「面板只开其一」的语义碰撞。时刻字段仍留此处。
   rotateHour: { env: 'ROTATE_HOUR', default: 0, min: 0, max: 23 },
   rotateMinute: { env: 'ROTATE_MINUTE', default: 10, min: 0, max: 59 },
-  // 成长中心独立轮询：0=关闭；与签到链解耦，用于及时领奖/补派（对齐轮询补签模型）
+  // 成长中心独立轮询：0=关闭；与签到流程解耦，用于及时领奖与补派（轮询补签模型）
   growthPollEnabled: { env: 'GROWTH_POLL_ENABLED', default: 1, min: 0, max: 1 },
   growthPollIntervalHours: { env: 'GROWTH_POLL_INTERVAL_HOURS', default: 4, min: 0, max: 168 },
-  // 确定性错峰窗口（分钟）：多账号签到/刷余额按 (日期,账号id) 哈希分散到窗口内，
-  // 避免固定时刻批量打上游自造洪峰；0=关闭（退回原批量行为）
+  // 确定性错峰窗口（分钟）：多账号签到与刷余额按（日期, 账号 ID）哈希分散到窗口内，
+  // 避免固定时刻批量请求上游；0=关闭（退回原批量行为）
   checkinSpreadMinutes: { env: 'CHECKIN_SPREAD_MINUTES', default: 30, min: 0, max: 720 },
   balanceSpreadMinutes: { env: 'BALANCE_SPREAD_MINUTES', default: 15, min: 0, max: 720 },
 };

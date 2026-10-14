@@ -1,5 +1,5 @@
 /**
- * 认证状态。沿用原有语义：密钥存sessionStorage，
+ * 认证状态。沿用原有语义：密钥存 sessionStorage，
  * 标签页生命周期内有效，关闭浏览器即清除。
  */
 import { createStore, useStore } from '../../lib/store';

@@ -1,16 +1,14 @@
 'use strict';
 /**
- * 迁移：旧项目 my-trae-api → 新项目 RelayGate
+ * 迁移：旧项目 my-trae-api → RelayGate。
  *
- * 策略（用户确认）：
- *   - 新增缺失：旧项目独有的 10 个账号（5 cn + 5 workbuddy）全量导入，
+ * 策略（经确认）：
+ *   - 新增缺失：旧项目独有 10 个账号（5 个 cn + 5 个 workbuddy）全量导入，
  *     含 token 密文、余额、签到记录、积分快照、设备指纹。
- *   - 保留新项目现有：6 个共有账号不动（两边配置 100% 一致，
- *     保留新项目更新的签到/冷却/余额状态）。
- *   - credit_history：仅迁移缺失账号的历史（避免与新项目已有记录重复）。
+ *   - 保留新项目现有：6 个共有账号不动，保留新项目更新的签到 / 冷却 / 余额状态。
+ *   - credit_history：仅迁移缺失账号的历史，避免与新项目已有记录重复。
  *
  * 两项目 encrypt.key 相同（sha256 EE1BE53C…），token 密文可直接复制。
- *
  * 安全：迁移前备份新项目 DB；全程只读旧库。
  */
 process.env.WORKSPACE_DIR = process.env.WORKSPACE_DIR || './output';
@@ -38,7 +36,7 @@ function main() {
 
   const old = new DatabaseSync(OLD_DB, { readOnly: true });
   const neu = new DatabaseSync(NEW_DB);
-  // 服务进程可能正持有新库：默认 busy_timeout=0 会直接 SQLITE_BUSY，给 15s 重试窗口
+  // 服务进程可能正持有新库：默认 busy_timeout=0 会直接 SQLITE_BUSY，故给 15s 重试窗口
   neu.exec('PRAGMA busy_timeout = 15000');
 
   const keyOf = (r) => `${r.edition}|${r.user_id || r.label}`;
@@ -71,7 +69,7 @@ function main() {
       console.log(`  + [${row.edition}] ${row.label}  uid=${String(row.user_id).slice(0, 8)}  balance=${row.balance}  enabled=${row.enabled}`);
     }
 
-    // 3) 迁移这些账号的 credit_history（避免与已有记录重复）
+    // 3) 迁移这些账号的 credit_history，避免与已有记录重复
     const oldCh = old.prepare('SELECT account_id, ts, remaining, used_total, source FROM credit_history WHERE account_id = ? ORDER BY ts');
     let chCount = 0;
     const insCh = neu.prepare('INSERT INTO credit_history (account_id, ts, remaining, used_total, source) VALUES (?, ?, ?, ?, ?)');
@@ -93,7 +91,7 @@ function main() {
     throw e;
   }
 
-  // 4) 终态核对
+  // 4) 核对迁移后终态
   const after = neu.prepare('SELECT edition, count(*) c FROM accounts GROUP BY edition').all();
   console.log('[migrate] 迁移后新库账号分布:', JSON.stringify(after));
   const total = neu.prepare('SELECT count(*) c FROM accounts').get();

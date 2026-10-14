@@ -1,13 +1,11 @@
 'use strict';
 /**
- * routes/responses.js — OpenAI Responses 最小兼容（Codex 友好）。
- *
- * POST /v1/responses
- * 入参：{ model, input, instructions?, stream? }
- * 实现策略：映射为 Chat 消息 → 复用 llmUtilsChat（非流式聚合 / 简化 SSE）。
- * 完整 Responses 事件族（response.output_item.* 等）后续增强；当前保证：
- * - 非流式：response.completed + output 文本
- * - 流式：有限 SSE 事件（response.created / output_text.delta / completed）
+ * routes/responses.js —— OpenAI Responses 最小兼容（Codex 友好）。
+ * POST /v1/responses，入参 { model, input, instructions?, stream? }。
+ * 实现：映射为 Chat 消息后复用 llmUtilsChat（非流式聚合 / 简化 SSE）。
+ * 完整 Responses 事件族（response.output_item.* 等）待后续增强；当前保证：
+ * 非流式返回 response.completed + output 文本；流式返回有限 SSE 事件
+ * （response.created / output_text.delta / completed）。
  */
 const { Router } = require('express');
 const { llmUtilsChat, consumeStream } = require('../upstream/client');
@@ -19,8 +17,8 @@ const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
 const { createLineFeeder } = require('../lib/sse-lines');
 const config = require('../config');
-// 模型 ACL 在模块加载期解析：包在请求路径的 try/catch 里会把 require 失败
-// 变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
+// 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
+// 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
 
 const router = Router();
@@ -82,7 +80,7 @@ router.post('/v1/responses', async (req, res) => {
   }
   // Responses 协议尚未实现工具调用事件族（m-39）：此前携带 tools 的 agentic
   // 请求会得到「成功但工具调用被静默丢弃」的响应，客户端无从感知能力缺失。
-  // 改为 fail-closed 显式拒绝，待事件族补全（Q-08）后移除本闸门。
+  // 已改为 fail-closed 显式拒绝；待事件族补全（Q-08）后移除本闸门。
   if (Array.isArray(body.tools) && body.tools.length > 0) {
     return res.status(400).json({
       error: {
@@ -176,7 +174,7 @@ router.post('/v1/responses', async (req, res) => {
     return;
   }
 
-  // 非流式
+  // 非流式分支
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
       llmUtilsChat(normalizeTraeMessages(messages), model, false, { tools: body.tools, accountId }),

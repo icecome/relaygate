@@ -11,7 +11,7 @@
  *         || `zcode-credential-fallback:${os.platform()}:${os.homedir()}:${os.userInfo().username}`
  *
  * 平台语义：os.platform() → 'win32'；homedir 用绝对路径（C:\Users\<user>）。
- * 本模块只做「读自己机器上自己账号的凭据」，不接受远程导入。
+ * 本模块只读取本机上自己账号的凭据，不接受远程导入。
  */
 const fs = require('fs');
 const os = require('os');
@@ -98,7 +98,7 @@ function readDeviceMid() {
  * mode 固定 'jwt'（billing 面只认 zcodejwttoken）；api_key 通道本机客户端不产生。
  *
  * 设备档案用 forHost 而非随机 SKU：本机账号就是这台机器上的真实客户端账号，
- * 沿用真实 deviceMid 与宿主平台形态，比随机「伦敦的 Mac」更少设备维度风险
+ * 沿用真实 deviceMid 与宿主平台形态，比随机生成伦敦的 Mac 更少设备维度风险
  * （客户端自己上报的激活/日活事件用的就是这个 deviceMid）。
  */
 function buildAccountFromLocal() {
@@ -122,7 +122,7 @@ function buildAccountFromLocal() {
   };
 }
 
-/** JWT payload 的 user_id（sub 兜底）。 */
+/** JWT payload 的 user_id（缺失时回退 sub）。 */
 function jwtUserId(token) {
   const t = String(token || '').trim();
   if (!t) return null;

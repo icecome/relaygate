@@ -1,18 +1,14 @@
 'use strict';
 /**
- * test/shutdown.test.js — 优雅停机链与调度锁（P0-002）。
+ * test/shutdown.test.js——优雅停机流程与调度锁（P0-002）。
+ * 运行：node src/test/shutdown.test.js
  *
  * 背景：此前 SIGTERM/SIGINT 的处理器在 writeEvent 之后立刻 process.exit(0)，
- * src/index.js 无 server.close()、无 flush、无 DB close —— 停机时在途 SSE 被硬切、
- * 内存态全丢、客户端看到的是「连接重置」。且调度器无跨进程防重，两个进程
- * 并行调度会让备份与账号轮换这类非幂等任务重复执行（start.bat 注释自承过这点）。
- *
- * 覆盖三件事：
- *   1) 停机钩子按注册顺序执行、失败不阻断后续、有 5 秒兜底；
- *   2) db.close() 幂等且真的释放连接；
- *   3) 调度锁：活进程持锁时拒绝获取、死进程留下的陈旧锁可接管、release 只删自己的。
- *
- * 运行：node src/test/shutdown.test.js
+ * src/index.js 无 server.close()、无 flush、无 DB close，停机时在途 SSE 被硬切、
+ * 内存态全丢，客户端看到「连接重置」。调度器也无跨进程防重，两个进程并行调度会让
+ * 备份与账号轮换这类非幂等任务重复执行（start.bat 注释自承过这点）。
+ * 停机钩子按注册顺序执行、失败不阻断后续、有 5 秒最后手段；db.close() 幂等且真的
+ * 释放连接；调度锁对活进程持锁拒绝获取，可接管死进程留下的陈旧锁，release 只删自己的。
  */
 const os = require('os');
 const path = require('path');
@@ -47,13 +43,13 @@ async function runAll() {
   }
 }
 
-// ------------------------------------------------------------ 停机钩子
+// 停机钩子
 
 console.log('log/crash — 停机钩子链');
 
 t('onShutdown 注册的钩子按顺序执行，且抛错的钩子不阻断后续', async () => {
-  // runShutdown 最后会 process.exit(0)，因此用子进程验证，并通过退出前写的
-  // 标记文件断言「哪些钩子跑了、按什么顺序」。第三个钩子故意抛错。
+  // runShutdown 最后会 process.exit(0)，因此改用子进程验证，通过退出前写入的
+  // 标记文件断言哪些钩子执行了、执行顺序。第三个钩子故意抛错。
   const marker = path.join(WORKSPACE, 'order.json');
   const script = `
     const fs = require('fs');
@@ -77,7 +73,7 @@ t('onShutdown 注册的钩子按顺序执行，且抛错的钩子不阻断后续
 });
 
 t('抛错的钩子不阻断后续钩子（且已记录）', async () => {
-  // 上一条已包含 throw 的钩子且顺序正确，这里显式断言日志里有 shutdown_hook_error
+  // 上一条用例已包含抛错的钩子且顺序正确，这里显式断言日志里有 shutdown_hook_error
   const day = new Date().toISOString().slice(0, 10);
   const crashFile = path.resolve(__dirname, '..', '..', 'logs', day, 'crash.jsonl');
   const lines = fs.readFileSync(crashFile, 'utf8').trim().split('\n');
@@ -110,13 +106,13 @@ t('runShutdown 重复调用不会重复执行钩子', async () => {
   assert.strictEqual(n, 1, `钩子应只执行一次，实际 ${n} 次`);
 });
 
-// ------------------------------------------------------------ DB 关闭
+// DB 关闭
 
 console.log('credentials/db — 显式关闭');
 
 t('db.close() 幂等且释放连接', () => {
   const dbMod = require('../credentials/db');
-  dbMod.db(); // 打开
+  dbMod.db(); // 先建立连接
   const first = dbMod.close();
   const second = dbMod.close();
   assert.strictEqual(first, true, '首次 close 应返回 true');
@@ -130,7 +126,7 @@ t('close 之后可重新打开（供测试后续用例）', () => {
   dbMod.close();
 });
 
-// ------------------------------------------------------------ 调度锁
+// 调度锁
 
 console.log('jobs/scheduler-lock — 跨进程单实例');
 
@@ -163,7 +159,7 @@ t('活进程持锁时，另一进程获取应被拒绝', () => {
         holderPid = cur.pid;
         break;
       }
-      // 同步等待 ~100ms（测试进程不能用 await 混排，保持简单）
+      // 同步等待约 100ms（测试进程内不用 await 混排，保持简单）
       const until = Date.now() + 100;
       while (Date.now() < until) {
         /* spin */
@@ -171,7 +167,7 @@ t('活进程持锁时，另一进程获取应被拒绝', () => {
     }
     assert.ok(holderPid, '子进程未能在超时内拿到锁（测试环境问题）');
 
-    // 现在本进程（不同 pid）再取一次 → 必须被拒
+    // 本进程（不同 pid）再取一次锁，必须被拒
     const r2 = lock.acquire();
     assert.strictEqual(r2.acquired, false, '活进程持锁时不得被抢');
     assert.strictEqual(Number(r2.holderPid), holderPid, 'holderPid 应指向持锁进程');
@@ -187,7 +183,7 @@ t('活进程持锁时，另一进程获取应被拒绝', () => {
 
 t('陈旧锁（进程已死）可被接管', () => {
   const lock = require('../jobs/scheduler-lock');
-  // 造一个指向已死 pid 的锁文件（pidAlive 对不存在的 pid 返回 false）
+  // 构造一个指向已死 pid 的锁文件（pidAlive 对不存在的 pid 返回 false）
   fs.mkdirSync(path.dirname(lock.lockFile()), { recursive: true });
   fs.writeFileSync(
     lock.lockFile(),
@@ -201,7 +197,7 @@ t('陈旧锁（进程已死）可被接管', () => {
 
 t('release 只删除属于自己的锁', () => {
   const lock = require('../jobs/scheduler-lock');
-  // 写一个属于别人的锁
+  // 写入一个 pid 属于其他进程的锁文件
   fs.writeFileSync(
     lock.lockFile(),
     JSON.stringify({ pid: process.pid + 1, startedAt: Date.now() }),
@@ -220,13 +216,13 @@ t('过期（超 STALE_MS）的锁被忽略并接管', () => {
     JSON.stringify({ pid: process.pid, startedAt: Date.now() - (lock.STALE_MS + 1000) }),
     'utf8',
   );
-  // 同 pid 但时间戳超龄 → 按陈旧处理
+  // 同 pid 但时间戳超龄，按陈旧处理
   const r = lock.acquire();
   assert.strictEqual(r.acquired, true, '超龄锁应被接管');
   lock.release();
 });
 
-// ---------------------------------------------------------------- 汇总
+// 汇总
 
 async function main() {
   await runAll();

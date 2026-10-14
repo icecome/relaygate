@@ -1,6 +1,6 @@
 'use strict';
 /**
- * test/security.test.js — 安全边界回归测试（真实起服务 + HTTP 断言）。
+ * test/security.test.js——安全边界回归测试（真实起服务 + HTTP 断言）。
  * 运行：node src/test/security.test.js
  *
  * 覆盖：
@@ -9,7 +9,7 @@
  *   M-S3  CSP 与安全响应头：面板文档带 CSP，/v1 转发响应不带
  *   M-S4  resources 资源 ACL 在 /v1/messages 与 /v1/responses 上生效
  *
- * 与 unit.test.js 同样必须在 require 业务模块前隔离 WORKSPACE_DIR，
+ * 与 unit.test.js 一致，必须在 require 业务模块前隔离 WORKSPACE_DIR，
  * 否则会污染真实账号库。
  */
 const os = require('os');
@@ -64,7 +64,7 @@ async function run() {
   const access = apiKeys.createKey({ label: 'sec-access', kind: 'access', platform: 'trae' });
   const login = apiKeys.createKey({ label: 'sec-login', kind: 'login' });
 
-  // ---- M-S2：运维子路由只认管理鉴权 ----
+  // M-S2：运维子路由只认管理鉴权
   let r = await req('GET', '/v1/models/status', { token: access.key });
   check('M-S2 转发密钥 GET /v1/models/status 被拒', r.status === 401 || r.status === 403, `-> ${r.status}`);
 
@@ -83,7 +83,7 @@ async function run() {
   r = await req('GET', '/v1/models', { token: access.key });
   check('M-S2 转发面 GET /v1/models 仍可用（双面语义保留）', r.status === 200, `-> ${r.status}`);
 
-  // ---- M-S1：首登端点跨源闸门 ----
+  // M-S1：首登端点跨源闸门
   for (const k of apiKeys.listKeys({ kind: 'login' })) apiKeys.deleteKey(k.id);
   check('前置：库内 login key 已清空', apiKeys.hasLoginKey() === false, '');
 
@@ -96,7 +96,7 @@ async function run() {
   r = await req('POST', '/v1/api-keys/setup/login-key', { ctype: 'application/json', body: { label: 'cli' } });
   check('M-S1 无 Origin（CLI）在已有 key 时返回 403 而非 origin 拒绝', r.status === 403 && /登录密钥已存在/.test(r.body), `-> ${r.status}`);
 
-  // ---- M-S3：CSP 与安全响应头 ----
+  // CSP 与安全响应头
   r = await req('GET', '/health', {});
   check('M-S3 X-Content-Type-Options', r.headers['x-content-type-options'] === 'nosniff', r.headers['x-content-type-options']);
   check('M-S3 X-Frame-Options', r.headers['x-frame-options'] === 'DENY', r.headers['x-frame-options']);
@@ -107,7 +107,7 @@ async function run() {
   r = await req('GET', '/v1/models/status', { token: login.key });
   check('M-S3 /v1 响应不带 CSP（避免干扰客户端）', r.headers['content-security-policy'] === undefined, String(r.headers['content-security-policy']));
 
-  // ---- M-S4：resources 资源 ACL ----
+  // M-S4：resources 资源 ACL
   const restricted = { platform: 'all', scopes: ['models:invoke'], resources: ['model:trae/glm-*'] };
   check('M-S4 通用密钥 resources 命中', canUseModel('all', 'glm-5', restricted).ok === true, JSON.stringify(canUseModel('all', 'glm-5', restricted)));
   check('M-S4 通用密钥 resources 拒绝', canUseModel('all', 'deepseek-v4-pro', restricted).ok === false, JSON.stringify(canUseModel('all', 'deepseek-v4-pro', restricted)));
@@ -120,9 +120,9 @@ async function run() {
   r = await req('POST', '/v1/responses', { token: restrictedKey.key, ctype: 'application/json', body: { model: 'deepseek-v4-pro', input: 'hi', stream: false } });
   check('M-S4 /v1/responses 受限模型被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 90)}`);
 
-  // ---- M-S5：平台密钥 resources ACL（此前 trae/workbuddy 分支不校验 resources） ----
-  // 纯函数层：trae 密钥 + 受限 resources，命中放行 / 越界拒绝
-  // 选型说明：拒绝用例必须用 Trae 专属模型（model-config.json 内、且不在 WB_MODELS
+  // M-S5：平台密钥 resources ACL（此前 trae/workbuddy 分支不校验 resources）
+  // 纯函数层：trae 密钥 + 受限 resources，命中放行，越界拒绝。
+  // 选型说明：拒绝用例必须用 Trae 专属模型（在 model-config.json 内、且不在 WB_MODELS
   // 中），否则先被 isWorkBuddyOnlyModel 的 platform_mismatch 拒绝，测不到资源 ACL。
   const traeRestricted = { platform: 'trae', scopes: ['models:invoke'], resources: ['model:trae/glm-*'] };
   check('M-S5 trae 密钥 resources 命中', canUseModel('trae', 'glm-5', traeRestricted).ok === true, JSON.stringify(canUseModel('trae', 'glm-5', traeRestricted)));
@@ -141,9 +141,9 @@ async function run() {
   // 不传 authKey 的对照：说明 ACL 依赖路由层补参（与 M-S4 对照用例同口径）
   check('M-S5 不传 authKey 时平台 ACL 被跳过（对照）', canUseModel('trae', 'doubao-1-6').ok === true, '');
 
-  // ---- K-1：管理/转发权限分离 ----
-  // env API_KEY 在启动时已被 bootstrapFromEnv 种成库内 access key（引导种子的设计角色），
-  // 因此转发面 /v1/models 200 是正确行为；权限分离的判定点是管理面被拒。
+  // K-1：管理权限与转发权限分离
+  // env API_KEY 在启动时已被 bootstrapFromEnv 写入库内 access key（引导种子的设计角色），
+  // 因此转发面 /v1/models 返回 200 是正确行为；权限分离的判定点是管理面被拒。
   r = await req('GET', '/v1/models', { token: process.env.API_KEY });
   check('K-1 env API_KEY（已引导为 access key）转发面可用', r.status === 200, `-> ${r.status}`);
 
@@ -156,8 +156,8 @@ async function run() {
   r = await req('GET', '/v1/models', { token: process.env.ADMIN_KEY });
   check('K-1 env ADMIN_KEY 管理视图 /v1/models 可用', r.status === 200, `-> ${r.status}`);
 
-  // ---- K-2：/v1/models 对访问密钥强制 models:read scope ----
-  // 库内密钥在启动迁移后均含 models:read；直接改库构造一个显式剔除的密钥验证 403。
+  // K-2：/v1/models 对访问密钥强制 models:read scope
+  // 库内密钥在启动迁移后均含 models:read；直接改库构造一个显式剔除该 scope 的密钥验证 403。
   const noRead = apiKeys.createKey({ label: 'sec-no-read', kind: 'access', platform: 'trae', scopes: ['models:invoke'] });
   const { db } = require('../credentials/db');
   db().prepare("UPDATE api_keys SET scopes = ? WHERE id = ?").run(JSON.stringify(['models:invoke']), noRead.id);
@@ -170,7 +170,7 @@ async function run() {
   r = await req('GET', '/v1/models', { token: noRead.key });
   check('K-2 迁移后同一密钥恢复 200', r.status === 200, `-> ${r.status}`);
 
-  // K-4：reveal 高危操作落审计（M-S1 已删除库内 login key，此处补建管理凭据）
+  // K-4：reveal 高危操作写入审计（M-S1 已删除库内 login key，此处补建管理凭据）
   const loginK4 = apiKeys.createKey({ label: 'sec-login-k4', kind: 'login' });
   r = await req('GET', `/v1/api-keys/${noRead.id}/reveal`, { token: loginK4.key });
   check('K-4 reveal 返回明文', r.status === 200, `-> ${r.status}`);
@@ -179,8 +179,8 @@ async function run() {
   apiKeys.deleteKey(loginK4.id);
   apiKeys.deleteKey(noRead.id);
 
-  // ---- E1：虚拟模型守门 400 透传 error.code=context_length_exceeded ----
-  // E2E 验证客户端可按 .env.example 承诺的结构化 code 识别超限，
+  // E1：虚拟模型守门返回 400 且原样带出 error.code=context_length_exceeded
+  // 端到端验证客户端可按 .env.example 承诺的结构化 code 识别超限，
   // 而非匹配错误文案（后端改文案即失效的脆弱契约）。
   // M-S1 段落已删除库内 login key，此处用 trae 平台 access key：
   // 虚拟模型对平台密钥不整单拒绝（model-access.js:48-59），守门在候选排序前触发。
@@ -202,10 +202,10 @@ async function run() {
   check('E1 守门 400 带 error.code=context_length_exceeded', guardCode === 'context_length_exceeded', `-> ${guardCode}`);
   mrStore.removeVirtual('vm/sec-guard');
 
-  // ---- E3：候选开关端点不得因候选 id 含斜杠而落到转发面鉴权 ----
-  // 候选 id 形如 `workbuddy/wb/hy3`。若放进路径段，即便 encodeURIComponent 编成
-  // %2F，Express 解码后仍按分隔符切分 → 管理面路由未命中 → 落到转发面
-  // authenticate → 401「Invalid access key」→ 面板误判为登录失效并退出登录。
+  // E3：候选开关端点不得因候选 id 含斜杠而落到转发面鉴权
+  // 候选 id 形如 `workbuddy/wb/hy3`。若放进路径段，即便经 encodeURIComponent 编成
+  // %2F，Express 解码后仍按分隔符切分，管理面路由未命中，落到转发面
+  // authenticate，返回 401「Invalid access key」，面板会误判为登录失效并退出登录。
   // 这里锁定：走查询参数的端点对含斜杠 id 返回 2xx，旧形态返回可读 404（非 401）。
   // 复用本文件已注入的 env ADMIN_KEY（等同管理面登录密钥）。
   const adminToken = process.env.ADMIN_KEY;

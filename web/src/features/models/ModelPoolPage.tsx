@@ -1,14 +1,10 @@
 /**
- * 模型池状态页。
- *
- * 展示三类模型（对照后端 routes/models.js 的 listModels）：
- *   虚拟模型  —— model-router 聚合，声明 contextWindow，带候选数与可用候选数；
- *   Trae CN   —— 官方模型配置接口目录，提供倍率与能力标签；
+ * 模型池状态页，展示三类模型（对照后端 routes/models.js 的 listModels）：
+ *   虚拟模型 —— model-router 聚合，声明 contextWindow，带候选数与可用候选数；
+ *   Trae CN —— 官方模型配置接口目录，提供倍率与能力标签；
  *   WorkBuddy —— 官方模型目录，提供倍率与最大输入 token。
- *
- * 请求数 / 错误数来自 /v1/admin/models/stats（traffic 日志聚合），
- * 与池状态按模型 id 关联；上游模型目录不提供上下文窗口，
- * 因此该列对非虚拟模型显示「—」而不是编造数值。
+ * 请求数 / 错误数来自 /v1/admin/models/stats（traffic 日志聚合），与池状态按模型 ID 关联；
+ * 上游模型目录不提供上下文窗口，该列对非虚拟模型显示「—」而不编造数值。
  */
 import { useMemo, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
@@ -45,13 +41,11 @@ type SourceFilter = 'all' | 'virtual' | 'trae' | 'workbuddy';
 type StatusFilter = 'all' | 'usable' | 'unavailable';
 
 /**
- * 状态映射。
- *
- * 取值与 models/availability.js 的三态一致：
- *   usable     探测成功过；
- *   unavailable  探测失败（带 TTL，过期自动回落unknown）；
- *   unknown    尚无探测记录。
- * 目录兜底路径下 status 可能缺失，故做穷举映射 + 默认值，
+ * 状态映射，取值与 models/availability.js 的三态一致：
+ *   usable       探测成功过；
+ *   unavailable  探测失败（带 TTL，过期自动回落 unknown）；
+ *   unknown      尚无探测记录。
+ * 后端回退到目录时 status 可能缺失，故做穷举映射并给出默认值，
  * 保证未知取值只降级显示、不中断整页渲染。
  */
 const STATUS_META: Record<string, { label: string; tone: 'ok' | 'warn' | 'danger'; dot: string }> = {
@@ -62,7 +56,7 @@ const STATUS_META: Record<string, { label: string; tone: 'ok' | 'warn' | 'danger
 
 const UNKNOWN_STATUS = { label: '未知', tone: 'warn' as const, dot: 'dot-cool' };
 
-/** 未知取值兜底，避免映射缺失导致渲染中断。 */
+/** 未知取值的最后手段映射，避免映射缺失导致渲染中断。 */
 function statusMeta(status: ModelInfo['status']) {
   return STATUS_META[status ?? ''] ?? UNKNOWN_STATUS;
 }
@@ -99,7 +93,7 @@ export default function ModelPoolPage() {
     { enabled: !!key },
   );
 
-  /** 用量按模型 id 索引；traffic 里的 model 名与池状态 id 同源。 */
+  /** 用量按模型 ID 索引；traffic 里的 model 名与池状态 ID 同源。 */
   const usageByModel = useMemo(() => {
     const map = new Map<string, ModelUsageStat>();
     for (const u of usage.data?.data ?? []) map.set(u.model, u);
@@ -181,7 +175,7 @@ export default function ModelPoolPage() {
   async function probe() {
     const model = probeModelName.trim();
     if (!model) {
-      toast('请输入模型名', 'warn');
+      toast('未填写模型名，无法开始探测', 'warn');
       return;
     }
     setBusy('probe');
@@ -189,7 +183,7 @@ export default function ModelPoolPage() {
     try {
       const r = await probeModel(model, key);
       setProbeResult({ model, ok: r.ok, message: r.message ?? (r.ok ? '探测通过' : '探测失败') });
-      // 探测会改变后端的可用性判定，需刷新池状态
+      // 探测会改变后端的可用性判定，需重新拉取池状态
       status_.reload();
     } catch (e) {
       setProbeResult({
@@ -205,7 +199,7 @@ export default function ModelPoolPage() {
   return (
     <PageShell
       title="模型池状态"
-      description="虚拟模型与两个上游平台的模型目录"
+      description="虚拟模型、Trae CN 与 WorkBuddy 的目录与可用性"
       actions={
         <>
           <Button onClick={clearAll} disabled={busy === 'clear'}>
@@ -269,7 +263,7 @@ export default function ModelPoolPage() {
           ) : (
             <KeyValue
               rows={[
-                { k: '池化策略', v: <span className="font-mono">{status_.data?.strategy || '—'}</span> },
+                { k: '模型池策略', v: <span className="font-mono">{status_.data?.strategy || '—'}</span> },
                 {
                   k: '上游函数',
                   v: <span className="font-mono">{status_.data?.upstreamFunction || '—'}</span>,
@@ -310,14 +304,14 @@ export default function ModelPoolPage() {
 
         <Panel
           title="模型清单"
-          description="可用性、倍率与区间用量"
+          description="可用性、倍率与所选区间用量"
           flush
         >
           {status_.loading && !status_.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
             <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              没有符合条件的模型
+              没有符合当前筛选条件的模型
             </div>
           ) : (
             <div className="scroll-y" style={{ maxHeight: 560 }}>
@@ -426,7 +420,7 @@ export default function ModelPoolPage() {
           )}
         </Panel>
 
-        <Panel title="模型探测" description="向上游发起一次真实请求以验证连通性">
+        <Panel title="模型探测" description="向上游发起一次真实请求，用于验证连通性">
           <div className="flex items-end gap-2 flex-wrap">
             <div className="w-[280px]">
               <Field
@@ -461,7 +455,7 @@ export default function ModelPoolPage() {
         </Panel>
 
         <Note>
-          上游模型目录不提供上下文窗口，仅虚拟模型声明该值；倍率（x）为真实积分消耗率，两平台接口均未提供峰谷价格。
+          上游模型目录不提供上下文窗口，仅虚拟模型声明该值；倍率（x）为真实积分消耗率，两个平台的接口均未提供峰谷价格。
         </Note>
       </Stack>
     </PageShell>

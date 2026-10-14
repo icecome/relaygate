@@ -2,24 +2,40 @@
 /**
  * model-router/autotier.js — 虚拟模型自动分层（按上下文窗口划分候选）。
  *
- * 设计（对齐 2026-10-06 模型参数探测报告）：
- * - 层级按「真实上下文窗口」静态定义（窗口值是分层键，也是虚拟模型 contextWindow 声明）：
- *     vm/unified-chat   116,000 —— 全量池：所有对外可见的对话模型
- *     vm/large-context  200,000 —— 窗口 ≥ 200K 的模型
- *     vm/long-context  1,000,000 —— 窗口 ≥ 1M 的模型（Trae 走 @max 档 / WorkBuddy 原生 1M）
- * - 候选生成规则：窗口 ∈ [层窗口, 下一层窗口) 的模型进入该层；层内不做手动增删，
- *   只保留候选级 enabled 开关（禁用后路由跳过，但下次重同步不会恢复或删除它）。
- * - 排序：sort=rate 时按倍率升序（免费/低成本优先），rate 缺失者排后；sort=window 时窗口大优先。
- * - Trae 模型带 maxTier（__max 档）时，long-context 层自动映射为 `<id>@max`
- *   （client.js 把 @max 翻译为上游 __max 模型名 + prompt_max_tokens=936000）。
- * - 账号维度调度不在本模块：账号池 pool.js 已按「临期积分 → 成本层 → 余额大优先」选号，
- *   天然满足「优先按账号剩余积分调用」。
+ * 层级按真实上下文窗口静态定义（窗口值既是分层键，也是虚拟模型的 contextWindow 声明）：
+ *   vm/unified-chat    116,000 —— 全量池：所有对外可见的对话模型
+ *   vm/large-context   200,000 —— 窗口 ≥ 200K 的模型
+ *   vm/long-context  1,000,000 —— 窗口 ≥ 1M 的模型（Trae 走 @max 档，WorkBuddy 原生 1M）
+ *
+ * 候选生成规则：窗口 ∈ [层窗口, 下一层窗口) 的模型进入该层；层内不做手动增删，
+ * 只保留候选级 enabled 开关（禁用后路由跳过，但下次重同步不会恢复或删除它）。
+ * 排序：sort=rate 按倍率升序（免费与低成本优先），rate 缺失者排后；sort=window 窗口大优先。
+ * Trae 模型带 maxTier（__max 档）时，long-context 层自动映射为 `<id>@max`
+ * （client.js 把 @max 翻译为上游 __max 模型名与 prompt_max_tokens=936000）。
+ * 账号维度调度不在本模块：账号池 pool.js 已按「临期积分 → 成本层 → 余额大优先」选号，
+ * 天然满足「优先按账号剩余积分调用」。
  */
 const store = require('./store');
 const health = require('./health');
-const { estimatePromptTokens } = require('../lib/token-estimate');
+const { estimateRequestTokens } = require('../lib/token-estimate');
+const windowCalib = require('./window-calibration');
 
 const CONTEXT_INPUT_HEADROOM_RATIO = 0.75;
+
+/**
+ * 候选未声明 contextWindow 时的兜底窗口（平台级安全地板）。
+ * 与 model-router/index.js 的同名常量保持一致：WorkBuddy 侧 hy3 与 space-bunny
+ * 的真实硬上限实测均为 100000（上游 11115 报文），取实测天花板作地板。
+ * 声明了真实窗口的候选不受影响。
+ */
+const NULL_WINDOW_FLOOR = 100000;
+
+/** 候选参与窗口守门的有效窗口：实测校准值 > 配置声明值 > 平台安全地板。 */
+function effectiveCandidateWindow(c) {
+  const cal = windowCalib.calibratedWindow(c);
+  if (cal != null) return cal;
+  return NULL_WINDOW_FLOOR;
+}
 
 /** 静态分层定义：minWindow 为该层准入窗口（也是对外声明窗口）。 */
 const TIERS = [
@@ -32,7 +48,7 @@ const DEFAULTS = () => ({
   enabled: true,
   strategy: 'priority',
   // 轮转池大小：取倍率升序前 N 个候选做加权轮转。
-  // 取 4 是「常见的低成本模型都有机会被选中、同时不把请求摊到高倍率模型上」的折中；
+  // 取 4 是「常见低成本模型都有机会被选中、同时不把请求摊到高倍率模型上」的折中；
   // 置 1 即退化为固定命中倍率最低者，置 0 或不声明则完全关闭轮转。
   rotateTopN: 4,
   failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'other'], cooldownMs: 20000 },
@@ -71,7 +87,7 @@ async function fetchAllModels() {
         maxTier: m.maxTier || null,
       });
       // 带长上下文档（__max）的模型：额外以 `<id>@max` 形态参与高层分配
-      //（窗口 = context_window_tokens.max，输出/输入上限取 maxTier 实测值）
+      // （窗口取 context_window_tokens.max，输出与输入上限取 maxTier 实测值）
       if (m.maxTier && Number.isFinite(Number(m.contextWindowMax)) && Number(m.contextWindowMax) > Number(m.contextWindow)) {
         out.push({
           provider: 'trae',
@@ -88,7 +104,7 @@ async function fetchAllModels() {
   } catch (e) {
     console.warn('[autotier] trae catalog failed:', e.message);
   }
-  // WorkBuddy：动态目录（失败回退静态 WB_MODELS，无窗口字段 → 窗口按 null 跳过）
+  // WorkBuddy：动态目录（失败回退静态 WB_MODELS，无窗口字段时窗口按 null 跳过）
   try {
     const wbChat = require('../workbuddy/chat');
     const cat = await wbChat.modelCatalog(true);
@@ -150,12 +166,12 @@ function sortCandidates(list, sort) {
 }
 
 /**
- * 按倍率反推候选权重（输入需为 sortCandidates 排序后的顺序：倍率升序）。
+ * 按倍率反推候选权重（输入须为 sortCandidates 排序后的顺序：倍率升序）。
  *
  * 轮转池内靠权重表达「便宜的模型多承担一些、更贵的少承担一些」，
  * 权重取倍率区间的反比并夹在 [MIN, MAX]，避免倍率 0（免费）产生无穷大权重，
  * 也避免倍率很高时权重被压到 0 而彻底退出轮转。
- * 未知倍率（null）按最贵处理，给出基础权重 1。
+ * 未知倍率（null）按最贵处理，给基础权重 1。
  */
 const WEIGHT_MIN = 1;
 const WEIGHT_MAX = 8;
@@ -200,8 +216,8 @@ async function syncAutoTiers(opts = {}) {
   }
 
   // 既有候选的手工调整跨重同步保留（键 = provider/model）：
-  // enabled=是否参与调度、pinned=是否强制入池。
-  // 缺此保留则定时任务会把用户在面板上的禁用/置顶操作整体抹掉。
+  // enabled 决定是否参与调度、pinned 决定是否强制入池。
+  // 缺此保留则定时任务会把用户在面板上的禁用与置顶操作整体抹掉。
   const keepEnabled = new Map();
   const keepPinned = new Map();
   for (const tier of TIERS) {
@@ -238,7 +254,7 @@ async function syncAutoTiers(opts = {}) {
       };
     });
     if (!candidates.length) {
-      // 层内无模型：声明层窗口但不建/不更新（保留既有配置，避免空候选）
+      // 层内无模型：声明层窗口但不建也不更新（保留既有配置，避免空候选）
       summary.push({ id: tier.id, candidates: 0, declaredWindow: tier.minWindow, skipped: 'empty' });
       continue;
     }
@@ -266,16 +282,20 @@ async function syncAutoTiers(opts = {}) {
 }
 
 /**
- * 按候选守门 + 择优：返回该虚拟模型下能容纳当前输入的候选排序。
- * - 候选声明了 contextWindow 时：估算输入 > 75% 窗口的候选被跳过；
- * - 无任何候选声明（旧配置）：全部放行（保持既有行为）。
+ * 按候选守门与择优：返回该虚拟模型下能容纳当前输入的候选排序。
+ * - 候选声明了 contextWindow 时：估算输入超过 75% 窗口的候选被跳过；
+ * - 未声明窗口（null）的候选不再无条件放行，而是按平台安全地板参与守门——
+ *   否则「全部候选都没声明窗口」会让候选级守门整体失效，超长输入绕过本地
+ *   拦截直接撞上游 11115（用户看到某些请求突然全 400）。
+ *
+ * 估算含 tools 声明：上游把工具 JSON schema 计入输入 token。
  */
-function filterCandidatesByInput(vm, messages) {
-  const estimated = estimatePromptTokens(messages);
+function filterCandidatesByInput(vm, messages, tools) {
+  const estimated = estimateRequestTokens(messages, tools);
   const list = (vm.candidates || []).filter((c) => {
     if (!c.enabled) return false;
-    if (!c.contextWindow) return true; // 未声明窗口的候选不参与窗口过滤
-    return estimated <= Math.floor(c.contextWindow * CONTEXT_INPUT_HEADROOM_RATIO);
+    const win = effectiveCandidateWindow(c);
+    return estimated <= Math.floor(win * CONTEXT_INPUT_HEADROOM_RATIO);
   });
   return { estimated, list };
 }
@@ -306,5 +326,7 @@ module.exports = {
   filterCandidatesByInput,
   clampMaxTokens,
   isAutoVm,
+  effectiveCandidateWindow,
   CONTEXT_INPUT_HEADROOM_RATIO,
+  NULL_WINDOW_FLOOR,
 };

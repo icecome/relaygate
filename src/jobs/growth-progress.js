@@ -3,8 +3,9 @@
  * jobs/growth-progress.js — 成长中心一键自动化的后台任务与进度跟踪。
  *
  * 面板「成长中心自动化」触发后，请求立即返回 taskId；后台串行执行各账号，
- * 进度（分账号/分阶段）写入内存 + 磁盘快照，前端轮询 /v1/admin/growth-auto/progress?taskId=…。
- * 仅保留最近 N 个任务；旧任务在 TTL 后清理。所有执行细节复用 jobs/growth-auto.js。
+ * 进度（分账号、分阶段）写入内存与磁盘快照，前端轮询
+ * /v1/admin/growth-auto/progress?taskId=…。仅保留最近 N 个任务，旧任务在 TTL 后清理。
+ * 所有执行细节复用 jobs/growth-auto.js。
  */
 const store = require('../credentials/store');
 const { autoRunGrowth, runAccount } = require('./growth-auto');

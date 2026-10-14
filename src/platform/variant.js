@@ -2,21 +2,16 @@
 /**
  * platform/variant.js — 平台差异的单一事实源。
  *
- * 背景：Trae 与 WorkBuddy 的差异此前散落在至少 9 个文件里——域名在
- * lib/auth.js、credentials/oauth.js、upstream/checkin.js、upstream/balance.js、
- * workbuddy/auth.js、workbuddy/cat-trip.js 各自定义一份；能力有无靠调用方
- * 自行 `edition === 'workbuddy'` 判断（全库 40 余处）。后果：
- *   1. 新增平台要改多处，且容易漏改（漏一处就是运行时 4001/404）
- *   2. 同一事实出现多个副本后会分叉（例如 checkin.js 与 balance.js 各有一份
- *      DEFAULT_UG_HOST，改一处不改另一处即静默不一致）
+ * 此前平台差异散落在至少 9 个文件（域名分别定义于 lib/auth.js、credentials/oauth.js、
+ * upstream/checkin.js、upstream/balance.js、workbuddy/auth.js、workbuddy/cat-trip.js），
+ * 能力有无靠调用方自行比较 `edition === 'workbuddy'`（全库 40 余处），后果是新增平台
+ * 容易漏改（漏一处即运行时 4001 或 404），同一事实的多个副本会分叉（如 checkin.js 与
+ * balance.js 各有一份 DEFAULT_UG_HOST，改一处不改另一处即静默不一致）。
  *
- * 本模块把「一个平台是什么」收敛为一张表：域名、数据根、凭据文件名、
- * 应用身份、能力声明、错误码语义。所有业务模块从这里取，不再自带副本。
- *
- * 边界（刻意不做的事）：不定义 chat/balance/checkin 的统一方法签名，
- * 也不把两个平台的实现搬进同一个目录。那是 Provider 接口的范畴，
- * 需要真正接入第三平台时再做——过早抽象会把当前两家的特例
- * （Trae 的设备指纹、WorkBuddy 的 region 映射）硬塞进一个假接口里。
+ * 本模块把「一个平台是什么」收敛为一张表：域名、数据根、凭据文件名、应用身份、
+ * 能力声明、错误码语义。边界（刻意不做的事）：不定义 chat/balance/checkin 的统一方法签名，
+ * 也不把两个平台的实现搬进同一目录——那是 Provider 接口的范畴，需要真正接入第三平台时再做，
+ * 过早抽象会把当前两家的特例（Trae 的设备指纹、WorkBuddy 的 region 映射）硬塞进假接口。
  */
 const path = require('path');
 const os = require('os');
@@ -25,6 +20,11 @@ const os = require('os');
 const TRAE = 'trae';
 const WORKBUDDY = 'workbuddy';
 const ZCODE = 'zcode';
+const QODER = 'qoder';
+
+/** Qoder 区域（realm）：国内版与国际版的账号体系、域名、协议三者都不同。 */
+const QODER_REALM_CN = 'cn';
+const QODER_REALM_INTL = 'intl';
 
 /**
  * 平台定义表。
@@ -48,8 +48,8 @@ const VARIANTS = {
       balance: true,
       growth: false,
       // 会话级用量明细（query_user_usage_group_by_session）。注意粒度：
-      // 是「逐会话聚合」而非 WorkBuddy 那种逐请求，一行 = 一次完整会话
-      // 的积分/token 汇总。2026-10 实测 CN 域可用（v1 路径）。
+      // 是「逐会话聚合」而非 WorkBuddy 那种逐请求，一行等于一次完整会话的
+      // 积分与 token 汇总。2026-10 实测 CN 域可用（v1 路径）。
       billing: true,
       oauthLogin: true,
       deviceFingerprint: true,
@@ -84,7 +84,7 @@ const VARIANTS = {
       checkinStatus: '/trae/api/v2/ug/checkin_credits/status',
       checkinClaim: '/trae/api/v2/ug/checkin_credits/claim',
       entitlementUsage: '/trae/api/v2/pay/ide_user_ent_usage',
-      // 会话级用量明细（v1，非 v2；v2 实测 404）。参数 usage_type:[7] 为
+      // 会话级用量明细（v1，非 v2；v2 实测返回 404）。参数 usage_type:[7] 为
       // Cloud-IDE 会话积分口径，page_size 上限 20。
       sessionUsage: '/trae/api/v1/pay/query_user_usage_group_by_session',
     },
@@ -96,6 +96,9 @@ const VARIANTS = {
       modelUnavailable: 4001,
       modelRateLimit: 6004,
       planLimit: 1005,
+      // 上下文窗口超限（输入超模型真实上限）。Trae 实测无独立码，统一按
+      // 网关本地拦截与文案正则兜底；WorkBuddy 显式为 11115（msg: prompt is too long）。
+      contextTooLong: null,
     },
   },
 
@@ -141,6 +144,9 @@ const VARIANTS = {
       alreadyText: ['已签到'],
       rateLimitCodes: [6004],
       modelRateLimit: 6004,
+      // 上下文窗口超限。WorkBuddy chat 上游在输入超模型上限时返回 HTTP 400，
+      // body {"code":11115,"msg":"prompt is too long: N tokens > MAX maximum"}。
+      contextTooLong: 11115,
     },
     // 桌面客户端凭据文件（导入 / 轮换用）
     clientAuth: {
@@ -149,10 +155,10 @@ const VARIANTS = {
     },
   },
 
-  // ZCode（智谱 / Z.ai 的官方桌面客户端）。当前只接入「账号运营面」：
+  // ZCode（智谱 / Z.ai 的官方桌面客户端）。当前只接入账号运营面：
   // 本机凭据导入、限时套餐领取、额度查询、激活上报。转发面（messages）
-  // 刻意留空——上游按设备指纹+追踪头识别客户端，头形态写错会触发 3012
-  // 「unusual activity」，不适合在未充分验证前并入转发池。
+  // 刻意留空——上游按设备指纹与追踪头识别客户端，头形态写错会触发 3012
+  // 「unusual activity」，未充分验证前不宜并入转发池。
   [ZCODE]: {
     id: ZCODE,
     label: 'ZCode',
@@ -204,7 +210,7 @@ const VARIANTS = {
       messagesFallback: '/api/anthropic/v1/messages',
     },
     errors: {
-      // billing/claim 业务码（对齐 zcode2api claim.py 的实证映射）
+      // billing/claim 业务码（与 zcode2api claim.py 的实证映射统一）
       planNotFound: 1001,
       campaignEnded: 1002,
       alreadyClaimed: 1003,
@@ -228,6 +234,116 @@ const VARIANTS = {
     // 激活事件元素（preview 前的活跃上报，官方客户端首启/日活同源）
     activationElements: ['app_launch', 'app_daily_active'],
   },
+
+  // Qoder（字节/阿里系 Agent 工作台）。双区域（cn / intl）账号体系独立，
+  // 凭据加密链路同构（Chromium os_crypt v10 + DPAPI）但域名与对话协议不同：
+  //   - 国际版：新版 OpenAI 兼容面 api2-v2.qoder.sh/model/v1/chat/completions（纯 Bearer）
+  //   - 国内版：统一走 gateway.qoder.com.cn，/model/v1/* 实测 503，
+  //             对话只能走老版 COSY 签名协议 /algo/api/v2/...
+  // 运营面（每日 100 积分 / 额度查询）双区域同构，仅域名不同。
+  // 转发面（capability.chat）：**仅国际版**。api2-v2.qoder.sh/model/v1/*
+  // 纯 Bearer、OpenAI 兼容 SSE，已实测打通（单账号）。
+  // 国内版 /model/v1/* 实测 503 必须走 COSY 老协议（未实现）——
+  // realm 维度的收口见 qoderChatRealms() 与 pool.js 的 editionOk，
+  // 切勿据 capability.chat=true 就认为两个 realm 都能转发。
+  [QODER]: {
+    id: QODER,
+    label: 'Qoder',
+    edition: QODER,
+    // 区域相关域名/路径的取值表。realm 由本机客户端目录推导，见 qoder/local.js。
+    realms: {
+      [QODER_REALM_CN]: {
+        openapi: 'https://openapi.qoder.com.cn',
+        gateway: 'https://gateway.qoder.com.cn',
+        docsBase: 'https://docs.qoder.cn',
+        // 桌面客户端目录（凭据扫描用）：%APPDATA%\<appDir> 与 ~/<homeDir>
+        appDir: 'com.qodercn.app.stable',
+        homeDir: '.qoder-cn',
+        // 对话协议形态：intl=新版 OpenAI 兼容；cn=COSY 老版
+        chatProtocol: 'cosy',
+      },
+      [QODER_REALM_INTL]: {
+        openapi: 'https://openapi.qoder.sh',
+        gateway: 'https://api2-v2.qoder.sh',
+        docsBase: 'https://docs.qoder.com',
+        appDir: 'com.qoder.app.stable',
+        homeDir: '.qoder',
+        chatProtocol: 'openai',
+      },
+    },
+    capability: {
+      // 转发面（仅国际版，见 qoderChatRealms 白名单；国内版 503 未开放）
+      chat: true,
+      // 运营面签到（每日 100 Credits 活动领取）由自有时段任务驱动，
+      // 不并入 checkin-all 的批量签到（后者是「今日签到」语义，Qoder 是活动领取）。
+      checkin: false,
+      balance: true,
+      growth: false,
+      billing: false,
+      oauthLogin: false,
+      deviceFingerprint: true,
+      // 运营面能力位
+      rewardClaim: true,
+      // 本机客户端凭据导入（auth.v1.dat，双区域）
+      localImport: true,
+    },
+    // 默认（未知 realm 时按国际版）：运营面端点双区域同构，域名是唯一差异
+    hosts: {
+      openapi: 'https://openapi.qoder.sh',
+      gateway: 'https://api2-v2.qoder.sh',
+    },
+    identity: {
+      // 桌面端身份头（/sash 活动平台必需；缺失时服务端不报错但返回空活动列表）
+      userAgent: 'Qoder',
+      clientType: '10',      // CLI=5，QoderWork=6，桌面端=10
+      clientVersion: '0.4.3',
+      machineOs: 'x86_64_win32',
+      machineHostname: 'DESKTOP-QODER',
+      // COSY 协议版本（官方客户端内置常量，不是桌面版版本号）
+      cosyVersion: '1.1.64',
+      defaultUserType: 'personal_profession_trial',
+    },
+    paths: {
+      // 运营面（挂 openapi 基址，纯 Bearer，无签名）
+      userinfo: '/api/v1/userinfo',
+      quota: '/api/v2/quota/usage',
+      plan: '/api/v2/user/plan',
+      devicePoll: '/api/v1/deviceToken/poll',
+      deviceRefresh: '/api/v1/deviceToken/refresh',
+      jobExchange: '/api/v1/jobToken/exchange',
+      jobRefresh: '/api/v1/jobToken/refresh',
+      // 活动平台（官方新活动平台，双区域通用）
+      campaigns: '/sash/api/v1/me/campaigns',
+      campaignReward: '/sash/api/v1/me/campaigns/%s/reward',
+      campaignClaim: '/sash/api/v1/me/campaigns/%s/claim',
+      // 旧签到接口（部分区域仍可用；实测国内版走 campaigns）
+      checkinStatus: '/sash/api/v1/me/daily-check-in/status',
+      checkinClaim: '/sash/api/v1/me/daily-check-in/claim',
+      proEligibility: '/sash/api/v1/me/pro-upgrade/eligibility',
+      proClaim: '/sash/api/v1/me/pro-upgrade/claim',
+      // 对话面
+      chat: '/model/v1/chat/completions',
+      cosyChat: '/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1',
+      cosyModels: '/algo/api/v2/model/list?Encode=1',
+    },
+    errors: {
+      // 活动平台业务码
+      alreadyClaimed: 409,
+      regionUnavailable: [404, 405, 410],
+      rateLimitCodes: [429],
+      // COSY 签名被拒（code 101）
+      signatureInvalid: 101,
+    },
+    // 每日积分活动的投放时刻（UTC+8 10:00 刷新；服务端时段，本地任务在其后触发）
+    rewardClaimHours: [10],
+    rewardClaimMinute: 15,
+    // 多账号确定性错峰窗口（分钟）；0=关闭
+    spreadMinutes: 10,
+    // 桌面端身份头必需的 cosy-machine* 六头：本服务部署在服务器、无原生桥，
+    // 按 qoder2api-hub 实证必须整体省略（发派生假值会被服务端过滤掉活动）。
+    // 国内版不发头是正确行为；国际版可能因此看不到活动，UI 需明示。
+    omitMachineHeaders: true,
+  },
 };
 
 /** Trae 侧的 edition 历史值（cn/sg/us/manual）归一到 trae。 */
@@ -235,6 +351,7 @@ function normalizeEdition(edition) {
   const e = String(edition || '').toLowerCase();
   if (e === WORKBUDDY) return WORKBUDDY;
   if (e === ZCODE) return ZCODE;
+  if (e === QODER) return QODER;
   return TRAE;
 }
 
@@ -250,9 +367,9 @@ function variantOf(id) {
 /**
  * 账号 edition 的规范值（转发池分流用）。
  *
- * 与 variantOf 的区别：本函数不把未知值兜底成 trae，而是原样返回小写值，
- * 让调用方能区分「真的是 trae」与「不认识的值」。pool.pick 这类
- * 会实际发上游请求的地方必须用本函数，否则新增平台会被静默当成 Trae。
+ * 与 variantOf 的区别：本函数不把未知值回退成 trae，而是原样返回小写值，
+ * 让调用方能区分「确实是 trae」与「不认识的值」。pool.pick 这类会实际发上游请求的
+ * 地方必须用本函数，否则新增平台会被静默当成 Trae。
  */
 function editionOf(id) {
   return String(id || '').toLowerCase();
@@ -267,17 +384,17 @@ function canChat(platformId) {
 const TRAE_EDITIONS = new Set([TRAE, 'cn', 'sg', 'us', 'manual']);
 
 /**
- * 是否为 Trae 系账号——显式白名单判定，不做未知值兜底。
+ * 是否为 Trae 系账号——显式白名单判定，不回退未知值。
  *
- * 与 variantOf 的区别：variantOf('__unknown__') 会兜底成 Trae（保持历史行为），
- * 但「按平台筛账号」的地方绝不能兜底，否则新增平台会被静默抓进 Trae 链路。
- * 需要按平台过滤账号时一律用本函数 / capability 位。
+ * 与 variantOf 的区别：variantOf('__unknown__') 会回退成 Trae（保持历史行为），
+ * 但「按平台筛账号」的地方绝不能回退，否则新增平台会被静默抓进 Trae 链路。
+ * 需要按平台过滤账号时一律用本函数或 capability 位。
  */
 function isTrae(edition) {
   return TRAE_EDITIONS.has(String(edition || '').toLowerCase());
 }
 
-/** 是否为指定平台的账号（显式比较，不兜底）。 */
+/** 是否为指定平台的账号（显式比较，不回退）。 */
 function isEdition(edition, platformId) {
   const e = String(edition || '').toLowerCase();
   const want = String(platformId || '').toLowerCase();
@@ -301,7 +418,7 @@ function hostFor(hostSpec, region) {
   return region === 'global' ? hostSpec.global : hostSpec.cn;
 }
 
-/** 由域名/主机串推导 region（无法识别时归 cn）。 */
+/** 由域名或主机串推导 region（无法识别时归 cn）。 */
 function regionOf(domainOrHost, platformId = WORKBUDDY) {
   const v = variantOf(platformId);
   const s = String(domainOrHost || '').toLowerCase();
@@ -321,10 +438,78 @@ function clientAuthDir(platformId = WORKBUDDY) {
   return path.join(process.env.LOCALAPPDATA || os.homedir() || '', ...spec.dirName);
 }
 
+/** 规范化 Qoder realm；无法识别时归 intl（运营面端点双区域同构，域名是唯一差异）。 */
+function qoderRealm(realm) {
+  const r = String(realm || '').toLowerCase();
+  if (r === QODER_REALM_CN) return QODER_REALM_CN;
+  return QODER_REALM_INTL;
+}
+
+/**
+ * Qoder 某 realm 的域名/目录/协议定义。
+ * @param {string} realm 'cn' | 'intl'
+ */
+function qoderRealmConfig(realm) {
+  return variantOf(QODER).realms[qoderRealm(realm)];
+}
+
+/**
+ * 由账号记录推导 Qoder realm。
+ *
+ * 刻意不用域名后缀判断：国际版客户端的 fastEndpoint 实测指向 api6.qoder.com.cn
+ * （一个 .com.cn 域名），靠 host 猜 realm 会误判。realm 只在凭据导入时由
+ * 「扫到哪个客户端目录」确定，之后随账号持久化（accounts.qoder_realm）。
+ */
+function qoderRealmOfAccount(acct) {
+  if (!acct) return QODER_REALM_INTL;
+  return qoderRealm(acct.qoderRealm || acct.qoder_realm);
+}
+
+/** Qoder 账号的 openapi 基址（运营面）。 */
+function qoderOpenapiBase(realm) {
+  return qoderRealmConfig(realm).openapi;
+}
+
+/** Qoder 账号的 gateway 基址（对话面 / COSY）。 */
+function qoderGatewayBase(realm) {
+  return qoderRealmConfig(realm).gateway;
+}
+
+/**
+ * Qoder 支持对话转发的 realm 白名单。
+ *
+ * 国内版不在其中：/model/v1/* 实测 503，必须走 COSY 老协议（签名 + 自定义
+ * Base64），实现成本高且未经多账号验证。国际版 api2-v2.qoder.sh 纯 Bearer、
+ * OpenAI 兼容，已实测打通（单账号）。
+ *
+ * 用函数而非常量导出：测试需要能临时改写白名单以覆盖「国内版被显式请求」
+ * 这条拒绝分支，写死的常量只能靠改模块源码。
+ */
+function qoderChatRealms() {
+  const raw = String(process.env.QODER_CHAT_REALMS || '').trim();
+  if (!raw) return [QODER_REALM_INTL];
+  return raw.split(',').map((s) => qoderRealm(s)).filter((r, i, arr) => arr.indexOf(r) === i);
+}
+
+/**
+ * Qoder 账号能否进入对话转发池。
+ * 两个条件同时满足：realm 在白名单内 + 有 token。
+ * 供 credentials/pool.js 的 editionOk 调用（那里负责 edition 维度的分池）。
+ */
+function qoderChatOk(acct) {
+  if (!acct) return false;
+  const realm = qoderRealmOfAccount(acct);
+  if (!qoderChatRealms().includes(realm)) return false;
+  return !!String(acct.token || '').trim();
+}
+
 module.exports = {
   TRAE,
   WORKBUDDY,
   ZCODE,
+  QODER,
+  QODER_REALM_CN,
+  QODER_REALM_INTL,
   VARIANTS,
   TRAE_EDITIONS,
   variantOf,
@@ -338,4 +523,11 @@ module.exports = {
   regionOf,
   validRegion,
   clientAuthDir,
+  qoderRealm,
+  qoderRealmConfig,
+  qoderRealmOfAccount,
+  qoderOpenapiBase,
+  qoderGatewayBase,
+  qoderChatRealms,
+  qoderChatOk,
 };

@@ -1,7 +1,7 @@
 'use strict';
 /**
- * 只读探测：ZCode 当前可领取套餐 + 持有权益（完整原始响应，便于判断
- * 「确实无活动」还是「请求失败/资格不符」）。
+ * 只读探测：ZCode 当前可领取套餐与持有权益。输出完整原始响应，
+ * 用于区分「确实无活动」与「请求失败 / 资格不符」。
  */
 const store = require('../src/credentials/store');
 const variant = require('../src/platform/variant');
@@ -41,7 +41,7 @@ const V = variant.variantOf('zcode');
   console.log('\n[3] billing/balance:');
   console.log(JSON.stringify(bal, null, 1).slice(0, 1500));
 
-  // 4) 活动投放（banner/popup 里若有 claim_zcode_plan 动作即有活动）
+  // 4) 活动投放：banner / popup 中若出现 claim_zcode_plan 动作，即表示有活动
   const mt = await request({
     method: 'GET', path: V.paths.marketingTouch,
     headers: identity.identityHeaders(fp, { token: acct.token }),
@@ -50,7 +50,7 @@ const V = variant.variantOf('zcode');
   console.log('\n[4] marketing/touch:');
   console.log(JSON.stringify(mt, null, 1).slice(0, 1200));
 
-  // 5) 服务端下发的 startPlanPreview（活动模板声明，非账号态）
+  // 5) 服务端下发的 startPlanPreview：活动模板声明，非账号态
   const cfg = await request({
     method: 'GET', path: V.paths.clientConfigs,
     headers: {

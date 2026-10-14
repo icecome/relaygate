@@ -149,7 +149,7 @@ export default function TokenStatsPage() {
         exact: acc.exact + (r.exact ?? 0),
         estimated: acc.estimated + (r.estimated ?? 0),
         none: acc.none + (r.none ?? 0),
-        // 历史脱敏缺陷把 token 写成 "***"，原值从未落盘，无法逐行还原
+        // 历史脱敏缺陷把 token 写成 "***"，原值从未写入文件，无法逐行还原
         tokensLost: acc.tokensLost + (r.tokensLost ?? 0),
         unmetered: acc.unmetered + r.unmetered,
         cacheRead: acc.cacheRead + (r.cacheReadTokens ?? 0),
@@ -228,7 +228,7 @@ export default function TokenStatsPage() {
       toast('客户端统计缓存已清理', 'ok');
       client.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '清理失败', 'err');
+      toast(e instanceof ApiError ? e.message : '客户端统计缓存清理失败，可重试', 'err');
     }
   }
 
@@ -257,15 +257,14 @@ export default function TokenStatsPage() {
       <Stack>
         {daily.error && <ErrorState message={daily.error} onRetry={daily.reload} />}
 
-        {/* ---- 口径卡片区：两问两答 —— 花了多少积分（成本）+ 用了多少 token（用量）。
-              成本两张卡并列（官方=主读数，估算=对照），用量与换算各一张，
-              四卡一行，不再换行散落。 ---- */}
+        {/* 口径卡片区：花了多少积分（成本）+ 用了多少 token（用量）。
+            成本两张卡并列（官方=主读数，估算=对照），用量与换算各一张，四卡一行。 */}
         <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
-          {/* 1. 成本主读数：官方账单 */}
+          {/* 成本主读数：官方账单 */}
           <CaliberCard
             label="官方账单积分"
             value={formatNumber(officialTotals.credit)}
-            unit="credits"
+            unit="积分"
             caliber="exact"
             loading={official.loading && !official.data}
           >
@@ -282,12 +281,12 @@ export default function TokenStatsPage() {
                 tone="muted"
               />
               {/* 主口径的可信度前提：Trae 按会话入账有 1~2 天滞后，最近一两日必然偏低。
-                  这是全站唯一一处该警告，放在读数旁边而不是页面底部。 */}
-              <CaliberRow k="入账滞后" v="Trae 1~2 天" tone="muted" />
+                  该警告只放在读数旁边，不重复出现在页面底部。 */}
+              <CaliberRow k="入账滞后" v="Trae 1 至 2 天" tone="muted" />
             </div>
           </CaliberCard>
 
-          {/* 2. 用量主读数：Token 总量 + 来源拆解 + 丢失提示 */}
+          {/* 用量主读数：Token 总量 + 来源拆解 + 丢失提示 */}
           <CaliberCard
             label="Token 总量"
             value={formatNumber(totals.tokens)}
@@ -295,20 +294,20 @@ export default function TokenStatsPage() {
             loading={daily.loading && !daily.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
-              {/* 下面三行是「请求数」而不是 token 数，单位必须写明，
+              {/* 以下三行是「请求数」而非 Token 数，单位必须写明，
                   否则会被读成上方大数字的构成拆解 */}
-              <CaliberRow k="上游真值请求" v={`${formatNumber(totals.exact)} 次`} />
+              <CaliberRow k="上游精确值请求" v={`${formatNumber(totals.exact)} 次`} />
               <CaliberRow k="tiktoken 补算请求" v={`${formatNumber(totals.estimated)} 次`} />
-              <CaliberRow k="无 token 请求" v={`${formatNumber(totals.none)} 次`} />
+              <CaliberRow k="无 Token 请求" v={`${formatNumber(totals.none)} 次`} />
               {totals.cacheRead > 0 && totals.tokens > 0 && (
                 <CaliberRow
-                  k="其中缓存读"
+                  k="其中缓存读 Token"
                   v={`${((totals.cacheRead / totals.tokens) * 100).toFixed(1)}% · ${formatNumber(totals.cacheRead)}`}
                 />
               )}
               {totals.tokensLost > 0 && (
                 <CaliberRow
-                  k="token 已丢失（历史脱敏）"
+                  k="Token 已丢失（历史脱敏缺陷）"
                   v={`${formatNumber(totals.tokensLost)} 行`}
                   tone="warn"
                 />
@@ -316,20 +315,20 @@ export default function TokenStatsPage() {
             </div>
           </CaliberCard>
 
-          {/* 3. 换算比：token ↔ 积分的关系，账单实测均值 */}
+          {/* 换算比：token ↔ 积分的关系，账单实测均值 */}
           <CaliberCard
             label="换算比（账单实测）"
             value={ratio ? `${ratio.tokensPerCredit.toLocaleString('zh-CN')}` : '—'}
-            unit={ratio ? 'token / 积分' : undefined}
+            unit={ratio ? 'Token / 积分' : undefined}
             caliber="exact"
             loading={calibration.loading && !calibration.data}
           >
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
               {ratio ? (
                 <>
-                  <CaliberRow k="积分 / 千 token" v={ratio.creditsPer1k.toFixed(6)} />
+                  <CaliberRow k="积分 / 千 Token" v={ratio.creditsPer1k.toFixed(6)} />
                   <CaliberRow k="账单日" v={ratio.asOf ?? '—'} />
-                  <CaliberRow k="样本" v={`${formatNumber(ratio.tokens)} token · ${formatNumber(ratio.credits)} 积分`} />
+                  <CaliberRow k="样本" v={`${formatNumber(ratio.tokens)} Token · ${formatNumber(ratio.credits)} 积分`} />
                 </>
               ) : (
                 <CaliberRow k="状态" v="暂无账单样本" />
@@ -337,7 +336,7 @@ export default function TokenStatsPage() {
             </div>
           </CaliberCard>
 
-          {/* 4. 计量覆盖率：网关侧 usage 回传情况 */}
+          {/* 计量覆盖率：网关侧 usage 回传情况 */}
           <CaliberCard
             label="计量覆盖率"
             value={`${meteredRate.toFixed(1)}%`}
@@ -349,7 +348,7 @@ export default function TokenStatsPage() {
               <CaliberRow k="错误" v={formatNumber(totals.errors)} />
               <CaliberRow
                 k="估算口径"
-                v={calibCount > 0 ? `账单标定 · ${calibCount} 模型` : '费率表推算'}
+                v={calibCount > 0 ? `账单标定 · ${calibCount} 模型` : '内置费率表推算'}
                 tone="muted"
               />
             </div>
@@ -358,16 +357,16 @@ export default function TokenStatsPage() {
 
                 <Panel
           title="每日积分对照"
-          description="官方账单（权威）与网关估算（对照）按日并列"
+          description="官方账单为权威口径，网关估算仅作对照"
           flush
-          footer="网关估算基于已计量 token：历史日期因 token 缺失显示 0 属数据丢失，不是零消耗；两者不可相加。"
+          footer="网关估算基于已计量 Token：历史日期因 Token 缺失显示 0 属数据丢失，不是零消耗；官方账单与估算不可相加。"
         >
           {daily.loading && !daily.data ? (
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有统计数据。"
-              hint="产生转发请求后即会出现；官方账单通常还有 1-2 天的入账滞后。"
+              hint="产生转发请求后即会出现；官方账单通常还有 1 至 2 天的入账滞后。"
             />
           ) : (
             <table className="card-table w-full border-collapse text-[13px]">
@@ -380,10 +379,10 @@ export default function TokenStatsPage() {
                 </tr>
               </thead>
               <tbody>
-                {/* 差异只在账单「已完整入账」的日子才有意义。
+                {/* 差异只在账单「已完整入账」的日子才有意义：
                   Trae 按会话入账有 1~2 天滞后，滞后期内账单只覆盖 WB 一侧，
-                  而网关估算覆盖双平台 —— 拿全平台估算除单平台账单会算出
-                  1000%+ 这种假差异。故近 TRAE_LAG_DAYS 天不出差异，标「入账中」。 */}
+                  而网关估算覆盖双平台，拿全平台估算除单平台账单会算出
+                  1000%+ 的假差异。故近 TRAE_LAG_DAYS 天不出差异，标「入账中」。 */}
                 {(daily.data?.data ?? []).map((d) => {
                   const hasBill = typeof d.officialCredit === 'number' && d.officialCredit > 0;
                   const est = d.estimatedCost;
@@ -409,7 +408,7 @@ export default function TokenStatsPage() {
                             {upper && <span className="ml-0.5 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>↑</span>}
                           </span>
                         ) : unpriced ? (
-                          <span style={{ color: 'var(--rg-text-tertiary)' }} title="该日 token 数据缺失，无法估算">数据缺失</span>
+                          <span style={{ color: 'var(--rg-text-tertiary)' }} title="该日 Token 数据缺失，无法估算">数据缺失</span>
                         ) : (
                           <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
                         )}
@@ -417,7 +416,7 @@ export default function TokenStatsPage() {
                       <td className="td cell-num" data-label="差异">
                         {diff == null ? (
                           !settled && hasBill ? (
-                            <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1~2 天滞后，该日账单尚未完整">入账中</span>
+                            <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1 至 2 天滞后，该日账单尚未完整">入账中</span>
                           ) : (
                             <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                           )
@@ -444,7 +443,7 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="区间内无请求数据。"
+              label="所选区间内没有请求记录。"
               hint="产生转发请求后即会出现。"
             />
           ) : (
@@ -452,7 +451,7 @@ export default function TokenStatsPage() {
           )}
         </Panel>
 
-        {/* ---- 官方账单：主口径，行内展开模型拆分 ---- */}
+        {/* 官方账单：主口径，行内展开模型拆分 */}
         <Panel
           title="官方账单积分"
           description="上游精确值 · Trae 逐会话聚合 / WorkBuddy 逐请求"
@@ -463,7 +462,7 @@ export default function TokenStatsPage() {
           ) : billRows.length === 0 ? (
             <EmptyState
               label="还没有官方账单记录。"
-              hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1-2 天出现。"
+              hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1 至 2 天出现。"
             />
           ) : (
             <table className="card-table w-full border-collapse text-[13px]">
@@ -474,7 +473,7 @@ export default function TokenStatsPage() {
                   <th className="th">状态</th>
                   <th className="th cell-num">明细行</th>
                   <th className="th cell-num">Token</th>
-                  <th className="th cell-num">Credit</th>
+                  <th className="th cell-num">积分</th>
                 </tr>
               </thead>
               <tbody>
@@ -525,7 +524,7 @@ export default function TokenStatsPage() {
                         <td className="td cell-num" data-label="Token">
                           {a.available && a.tokens != null ? formatNumber(a.tokens) : '—'}
                         </td>
-                        <td className="td cell-num font-semibold" data-label="Credit">
+                        <td className="td cell-num font-semibold" data-label="积分">
                           {a.available ? formatNumber(a.credit) : '—'}
                         </td>
                       </tr>
@@ -558,12 +557,15 @@ export default function TokenStatsPage() {
           )}
         </Panel>
 
-        {/* ---- 网关计量：模型 / 账号两张表 ---- */}
+        {/* 网关计量：模型 / 账号两张表 */}
         <Panel title="模型用量" description="按模型聚合的请求与 Token" flush>
           {models.loading && !models.data ? (
             <LoadingBlock />
           ) : (models.data?.data ?? []).length === 0 ? (
-            <EmptyState label="所选区间内没有模型用量。" hint="产生转发请求后即会出现。" />
+            <EmptyState
+              label="所选区间内没有模型用量。"
+              hint="产生转发请求后即会出现。"
+            />
           ) : (
             <table className="card-table w-full border-collapse text-[13px]">
               <thead>
@@ -621,7 +623,10 @@ export default function TokenStatsPage() {
           {accounts.loading && !accounts.data ? (
             <LoadingBlock />
           ) : (accounts.data?.data ?? []).length === 0 ? (
-            <EmptyState label="所选区间内没有账号用量。" hint="产生转发请求后即会出现。" />
+            <EmptyState
+              label="所选区间内没有账号用量。"
+              hint="产生转发请求后即会出现。"
+            />
           ) : (
             <table className="card-table w-full border-collapse text-[13px]">
               <thead>
@@ -674,7 +679,7 @@ export default function TokenStatsPage() {
         <div className="grid gap-4 grid-cols-1 xl:grid-cols-2">
           <Panel
             title="本机客户端"
-            description="扫描本机 WorkBuddy 会话日志，与网关转发并列但来源不同"
+            description="扫描本机 WorkBuddy 会话日志，与网关转发记录并列但来源不同"
           >
             {client.error ? (
               <ErrorState message={client.error} onRetry={client.reload} />
@@ -682,19 +687,19 @@ export default function TokenStatsPage() {
               <LoadingBlock />
             ) : !client.data?.available ? (
               <Note>
-                本机统计不可用：{client.data?.reason || '未返回原因'}。该数据依赖本机会话日志文件，网关转发数据不受影响。
+                本机统计不可用：{client.data?.reason || '网关未返回原因'}。该数据依赖本机会话日志文件，网关转发数据不受影响。
               </Note>
             ) : (
               <table className="card-table w-full border-collapse text-[13px]">
                 <tbody>
                   {(
                     [
-                      ['可用状态', <Chip tone="ok" dot="dot-ok">可用</Chip>],
-                      ['扫描 / 已解析', `${formatNumber(client.data.files)} / ${formatNumber(client.data.parsedFiles)}`],
+                      ['状态', <Chip tone="ok" dot="dot-ok">可用</Chip>],
+                      ['扫描文件 / 已解析', `${formatNumber(client.data.files)} / ${formatNumber(client.data.parsedFiles)}`],
                       ['请求数', formatNumber(client.data.totals.requests)],
                       ['Token', formatNumber(client.data.totals.tokens)],
                       ['缓存命中', `${(client.data.totals.cacheHitRate * 100).toFixed(1)}%`],
-                      ['Credit', formatNumber(client.data.totals.credit)],
+                      ['积分', formatNumber(client.data.totals.credit)],
                     ] as [string, ReactNode][]
                   ).map(([k, v]) => (
                     <tr key={k}>
@@ -714,8 +719,8 @@ export default function TokenStatsPage() {
               <LoadingBlock />
             ) : (credit.data?.data ?? []).length === 0 ? (
               <EmptyState
-                label="还没有快照差分记录。"
-                hint="余额自动刷新运行过至少两轮后，这里会出现按账号的消耗估计。"
+                label="还没有积分快照差分记录。"
+                hint="余额自动刷新任务运行过至少两轮后，这里会出现按账号的消耗估计。"
               />
             ) : (
               <table className="card-table w-full border-collapse text-[13px]">
@@ -738,13 +743,13 @@ export default function TokenStatsPage() {
           </Panel>
         </div>
 
-        {/* ---- 标定系数：估算成本的来源与可信度，全量透明 ---- */}
+        {/* 标定系数：估算成本的来源与可信度，全部公开 */}
         <Panel
           title="积分标定系数"
           description={
             calibCount > 0
               ? `由官方账单最小二乘回归得出 · ${calibCount} 个「平台:模型」组合 · ${calibration.data?.calibratedAt ? `标定于 ${calibration.data.calibratedAt.slice(0, 16).replace('T', ' ')}` : ''}`
-              : '尚无标定：无账单数据时估算成本回退费率表'
+              : '尚无标定：无账单数据时，估算成本按内置费率表推算'
           }
           flush
         >
@@ -752,7 +757,7 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : calibRows.length === 0 ? (
             <EmptyState
-              label="还没有标定样本。"
+              label="还没有积分标定样本。"
               hint="官方账单同步过来之后会自动生成；在那之前估算成本使用内置费率表。"
             />
           ) : (
@@ -796,7 +801,7 @@ export default function TokenStatsPage() {
         </Panel>
 
         <Note>
-          官方账单积分是上游精确值；带 * 的估算成本是网关推算值，仅供对照，两者不可相加。
+          官方账单积分是上游精确值；带 * 的估算成本是网关推算值，仅供对照，官方账单与估算不可相加。
         </Note>
       </Stack>
     </PageShell>

@@ -1,15 +1,14 @@
 'use strict';
 /**
- * test/startup-checks.test.js — 启动期健康校验（P3-001）。
+ * test/startup-checks.test.js——启动期健康校验（P3-001）。
+ * 运行：node src/test/startup-checks.test.js
  *
  * 覆盖三类此前「静默降级」的场景：
- *   1. DB 打不开 → 此前进程照常启动、每请求 500；现在必须 fatal 拒绝启动；
- *   2. encrypt.key 丢失且库里有密文 → 此前静默生成新 key，凭据永久不可解；
+ *   1. DB 打不开：此前进程照常启动、每请求 500；现在必须 fatal 拒绝启动；
+ *   2. encrypt.key 丢失且库里有密文：此前静默生成新 key，凭据永久不可解，
  *      现在必须 fatal（唯一的不可逆数据丢失入口）；
- *   3. model-config / model-router 损坏 → 此前静默兜底成空对象，
- *      面板仍显示正常；现在必须让 /health 报 unhealthy。
- *
- * 运行：node src/test/startup-checks.test.js
+ *   3. model-config / model-router 损坏：此前静默降级为空对象，面板仍显示正常，
+ *      现在必须让 /health 报 unhealthy。
  */
 const os = require('os');
 const path = require('path');
@@ -47,7 +46,7 @@ function withRoot(files, fn) {
 const pathMod = require('path');
 const fsMod = require('fs');
 
-// ---------------------------------------------------------------- 加密密钥
+// 加密密钥
 
 console.log('startup-checks — 加密密钥不可逆丢失防护');
 
@@ -99,7 +98,7 @@ t('密钥不可持久化 → fatal 并给出明确原因', () => {
   assert.match(r.detail, /EACCES/);
 });
 
-// ---------------------------------------------------------------- 数据库
+// 数据库
 
 console.log('startup-checks — 数据库不可用必须 fatal');
 
@@ -121,7 +120,7 @@ t('db 正常 → 通过', () => {
   assert.strictEqual(r.ok, true);
 });
 
-// ------------------------------------------------------------ 模型配置
+// 模型配置
 
 console.log('startup-checks — 配置文件损坏不再静默兜底');
 
@@ -164,7 +163,7 @@ t('model-router.json 不存在 → 可选配置，通过', () => {
   });
 });
 
-// ---------------------------------------------------------------- 汇总
+// 汇总
 
 console.log('startup-checks — 汇总语义');
 
@@ -195,7 +194,7 @@ t('DB 失败时 runAll 报出 fatal（供 index.js 拒绝启动）', () => {
   assert.strictEqual(result.fatal.name, 'db');
 });
 
-// ---------------------------------------------------------------- 汇总
+// 汇总
 
 async function main() {
   for (const { name, fn } of queue) {

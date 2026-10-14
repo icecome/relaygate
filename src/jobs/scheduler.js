@@ -1,9 +1,9 @@
 'use strict';
 /**
- * jobs/scheduler.js — 进程内定时：Token 预刷新 / 每日签到 / 签到后刷余额 / 保活 / 模型探活。
+ * jobs/scheduler.js — 进程内定时：Token 预刷新、每日签到、签到后刷余额、保活、模型探活。
  *
  * 时刻与间隔优先读 .trae-api/scheduler-settings.json，其次 .env，最后默认值。
- * 对齐 trae2api-web 与 Sliverkiss 的「预刷新 + 定时签到 + 保活」模型。
+ * 沿用 trae2api-web 与 Sliverkiss 的「预刷新 + 定时签到 + 保活」模型。
  */
 const config = require('../config');
 const scheduleSettings = require('./scheduler-settings');
@@ -31,11 +31,11 @@ const schedulerLock = require('./scheduler-lock');
 let timers = [];
 let started = false;
 /**
- * 调度代次：每次 stop() 递增。scheduleOnce 的 setTimeout 回调闭包持有自己
- * 注册时的代次，重排前先比对 —— 不一致说明这条链属于上一代（stop 前注册、
- * 回调已 fire 在途），必须丢弃，否则 restart()（面板保存设置/恢复备份触发）
- * 后旧回调复活，与新链并存，同一任务每天被触发两次（m-39：日志实测 15 个
- * 进程周期出现重复 next checkin/keepalive 排程）。
+ * 调度代次：每次 stop() 递增。scheduleOnce 的 setTimeout 回调闭包持有注册时的
+ * 代次，重排前先比对；不一致说明该次排程属于上一代（stop 前注册、回调已触发但在途），
+ * 必须丢弃。否则 restart()（面板保存设置或恢复备份触发）后旧回调复活并与新排程
+ * 并存，同一任务每天被触发两次（m-39：日志实测 15 个进程周期出现重复的
+ * next checkin/keepalive 排程）。
  */
 let scheduleEpoch = 0;
 const state = {
@@ -76,7 +76,7 @@ function isExpiringSoon(acct) {
 /** 扫描并刷新临期账号 token。 */
 async function refreshExpiringTokens() {
   // 只刷新声明了 oauthLogin 能力的账号：ZCode 的 JWT 无 exp、也不返回 refresh_token，
-  // 走 Trae 的换票链路既无意义也会打错端点
+  // 走 Trae 的换票流程既无意义也会请求错误端点
   const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
   let refreshed = 0;
   let failed = 0;
@@ -93,7 +93,7 @@ async function refreshExpiringTokens() {
         console.log(`[scheduler] refreshed workbuddy token for ${full.label || full.id}`);
         continue;
       }
-      // OAuth 账号必须用自身 ClientID/authHost 换新，否则会打到全局默认主机
+      // OAuth 账号必须用自身 ClientID/authHost 换新，否则会请求全局默认主机
       const refreshedTok = await legacy.exchangeToken(full.refreshToken, {
         clientId: full.authClientId || undefined,
         host: full.authHost || undefined,
@@ -121,7 +121,7 @@ async function refreshExpiringTokens() {
         message: e.message,
       }).catch(() => {});
     }
-    // 账号间随机间隔：替代固定 300ms 的整齐节奏
+    // 账号间随机间隔，替代固定 300ms 的整齐节奏
     await sleep(600 + Math.floor(Math.random() * 1600));
   }
   state.lastRefreshAt = new Date().toISOString();
@@ -130,14 +130,14 @@ async function refreshExpiringTokens() {
 }
 
 /** 每日任务：Trae 签到 + WorkBuddy 签到 → 刷余额 → 解冻。
- *  多账号按 (日期,账号id) 确定性错峰分散，避免固定时刻批量打上游自造洪峰；
+ *  多账号按（日期, 账号 ID）确定性错峰分散，避免固定时刻批量请求上游；
  *  窗口由 scheduler-settings 的 checkinSpreadMinutes / balanceSpreadMinutes 控制（0=关闭）。 */
 async function runDailyCheckin() {
   console.log('[scheduler] daily checkin start');
   const eff = scheduleSettings.getEffective();
   const checkinSpread = Number(eff.checkinSpreadMinutes) || 0;
   const balanceSpread = Number(eff.balanceSpreadMinutes) || 0;
-  // 两侧共用同一窗口起点，保证 Trae 与 WorkBuddy 的分散区间对齐
+  // 两侧共用同一窗口起点，保证 Trae 与 WorkBuddy 的分散区间一致
   const windowStartMs = Date.now();
   try {
     const r = await checkinAllEnabled({ spreadMinutes: checkinSpread, windowStartMs });
@@ -148,7 +148,7 @@ async function runDailyCheckin() {
       console.error('[scheduler] workbuddy checkin error', e.message);
       wb.failed.push({ reason: e.message });
     }
-    // WorkBuddy 成长中心自动化：旅行（领奖/派猫）+ 任务 + 补登 + 兑换 + 抽奖 + 盲盒
+    // WorkBuddy 成长中心自动化：旅行（领奖或派猫）、任务、补登、兑换、抽奖、盲盒
     try {
       const { autoRunGrowth } = require('./growth-auto');
       const ga = await autoRunGrowth();
@@ -183,10 +183,10 @@ async function runDailyCheckin() {
     const okCount = (r.ok?.length || 0) + (wb.ok?.length || 0);
     const failedCount = (r.failed?.length || 0) + (wb.failed?.length || 0);
     console.log(`[scheduler] checkin trae ok=${r.ok.length} failed=${r.failed.length} | wb ok=${wb.ok?.length || 0} failed=${wb.failed?.length || 0}`);
-    // 签到链写入任务日志（Trae / WorkBuddy 分批）
+    // 签到流程写入任务日志（Trae 与 WorkBuddy 分批）
     if (r.total || r.claimed?.length) appendCheckinTaskLog({ edition: 'trae', batch: r, trigger: 'checkin-chain' });
     if (wb.total || wb.claimed?.length || wb.failed?.length) appendCheckinTaskLog({ edition: 'workbuddy', batch: wb, trigger: 'checkin-chain' });
-    // 签到完成即推送汇总（成功/失败均通知）
+    // 签到完成即推送汇总（成功与失败均通知）
     if (okCount || failedCount) {
       const first = (r.failed && r.failed[0]) || (wb.failed && wb.failed[0]) || {};
       const event = failedCount ? 'checkin_fail' : 'checkin_ok';
@@ -218,7 +218,7 @@ async function runDailyCheckin() {
             failed: b.failed.length,
             total: b.total,
           });
-        } catch { /* 日志失败不影响签到链 */ }
+        } catch { /* 日志失败不影响签到流程 */ }
         try {
           await checkCreditAlerts();
         } catch (e) {
@@ -248,21 +248,21 @@ async function runKeepalive() {
   try {
     // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）。
     // 排除 oauthLogin=false 的平台（ZCode）：它没有 refresh_token 也没有换票端点，
-    // 保活只会打错链路。
+    // 保活只会请求错误端点。
     const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
     // 账号间加随机间隔：固定 200ms 的整齐节奏是上游易识别的机器化特征
     const gapMin = 800;
     const gapMax = 2500;
     for (const a of accounts) {
       try {
-        // ensureAuth 不抛「续期失败」：它吞错后照常返回旧凭据（保证业务可用）。
-        // 因此这里以返回值里的 _refreshError 为准判定保活结果——只凭「没抛错」
-        // 记 ok 会把刷新失败伪装成保活成功（m-35 回归正是这样掩盖了 3 天）。
+        // ensureAuth 不抛「续期失败」：它吞掉错误后照常返回旧凭据（保证业务可用）。
+        // 因此以返回值里的 _refreshError 判定保活结果；只凭「没抛错」记 ok 会把
+        // 刷新失败伪装成保活成功（m-35 回归正是这样掩盖了 3 天）。
         const ensured = await auth.ensureAuth(a.id);
         const refreshError = ensured && ensured._refreshError;
         if (refreshError) failed += 1;
-        // 保活结果逐账号落库：面板「保活时间」列据此回答
-        // 「这个号上次刷新是什么时候、结果如何」，而不是只有一个全局时间戳
+        // 保活结果逐账号写入数据库：面板「保活时间」列据此回答
+        // 「该账号上次刷新的时间与结果」，而非只有一个全局时间戳
         store.update(a.id, {
           lastKeepaliveAt: new Date().toISOString(),
           lastKeepaliveResult: refreshError
@@ -293,7 +293,7 @@ async function runKeepalive() {
       await sleep(gapMin + Math.floor(Math.random() * (gapMax - gapMin)));
     }
     state.lastKeepaliveAt = new Date().toISOString();
-    // 与签到链/轮换同口径：结果写任务日志，面板「任务日志」才看得到保活失败
+    // 与签到、轮换同一处理方式：结果写任务日志，面板「任务日志」才看得到保活失败
     appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: accounts.length - failed, failed, total: accounts.length });
     if (failed) {
       state.lastError = `keepalive: ${failed}/${accounts.length} 个账号刷新失败`;
@@ -312,8 +312,8 @@ async function runKeepalive() {
  * 账号轮换：自动部分仅按每日定时（scheduleOnce 的 rotate 时刻）触发，
  * 总开关唯一事实源为 rotate-settings.enabled（m-32 收敛，scheduler-settings
  * 的 rotateEnabled 镜像已移除）。
- * 手动触发（面板「立即轮换一遍」/ POST /rotate/run）传 { manual: true }，
- * 不受任何开关限制——用户点了按钮就是明确意图，开关只约束自动调度。
+ * 手动触发（面板「立即轮换一遍」或 POST /rotate/run）传 { manual: true }，
+ * 不受任何开关限制：用户点了按钮就是明确意图，开关只约束自动调度。
  */
 let rotateTimer = null;
 async function runRotateAccounts(opts = {}) {
@@ -321,7 +321,7 @@ async function runRotateAccounts(opts = {}) {
   if (!manual) {
     const rs = require('./rotate-settings').getEffective();
     if (!rs.enabled) {
-      // 跳过也落任务日志：否则面板「任务日志」只见成功记录，开关被关无从知晓
+      // 跳过也写入任务日志：否则面板「任务日志」只见成功记录，开关被关无从知晓
       appendTaskLog({ task: 'account-rotate', trigger: 'scheduler', ok: 0, failed: 0, total: 0, skipped: 1, reason: 'rotate_disabled' });
       return { ok: 0, failed: 0, skipped: 1, reason: 'rotate_disabled' };
     }
@@ -349,8 +349,8 @@ async function runRotateAccounts(opts = {}) {
   }
 }
 
-/** 兼容保留的空实现：旧调用点（restartRotate / 设置保存后的重排）不再需要
- *  重排间隔链，轮换唯一入口是每日 scheduleOnce('rotate')，由 restart() 统一重排。 */
+/** 兼容保留的空实现：旧调用点（restartRotate 与设置保存后的重排）不再需要
+ *  重排间隔定时；轮换唯一入口是每日 scheduleOnce('rotate')，由 restart() 统一重排。 */
 function scheduleRotatePoll() {
   if (rotateTimer) { clearInterval(rotateTimer); rotateTimer = null; }
 }
@@ -358,9 +358,9 @@ function scheduleRotatePoll() {
 /**
  * 定时模型探活：对 unknown 模型发最小请求，更新可用性。
  *
- * 覆盖两个平台：Trae 目录（裸 id，走 llmUtilsChat）与 WorkBuddy 目录
- * （wb/ 前缀 id，走 wbChat 聚合）。此前只探 Trae 目录，导致 wb/* 的 unknown
- * 永远无法自动收敛——一旦被手动探测误标 unavailable，只能等 7 天 TTL 或人工清理。
+ * 覆盖两个平台：Trae 目录（裸 ID，走 llmUtilsChat）与 WorkBuddy 目录
+ * （wb/ 前缀 ID，走 wbChat 聚合）。此前只探 Trae 目录，导致 wb/* 的 unknown
+ * 永远无法自动收敛：一旦被手动探测误标 unavailable，只能等 7 天 TTL 或人工清理。
  *
  * 平台必须显式传给 pool.run：edition 缺省时 pool 只选非 workbuddy 账号，
  * 把 wb 模型发给 Trae 上游只会拿到 PARAM_INVALID 这类「模型不存在」的假结论。
@@ -371,8 +371,8 @@ async function runModelProbe() {
   if (maxPerRun <= 0) return { probed: 0, usable: 0, unavailable: 0, skipped: 0 };
   console.log(`[scheduler] model probe start (max ${maxPerRun})`);
   try {
-    // 无启用账号时整轮跳过：探测会因池空失败，任何错误归类都是噪音。
-    // 双平台分别判定——只有 Trae 号时不该探 wb，反之亦然。
+    // 无启用账号时整轮跳过：探测会因池空失败，任何错误归类都没有参考价值。
+    // 双平台分别判定：只有 Trae 账号时不该探 wb，反之亦然。
     const enabledEditions = new Set(
       store.list().filter((a) => a.enabled).map((a) => variant.normalizeEdition(a.edition)),
     );
@@ -385,7 +385,7 @@ async function runModelProbe() {
         .map((m) => ({ id: m.id, platform: 'trae' }))
       : [];
 
-    // WorkBuddy 目录：wb 账号存在时才纳入探活
+    // WorkBuddy 目录：存在 wb 账号时才纳入探活
     if (enabledEditions.has('workbuddy')) {
       try {
         let wbModels = await wbChat.modelCatalog(false);
@@ -417,7 +417,7 @@ async function runModelProbe() {
             });
           }, { maxSwitches: 2, edition: 'workbuddy' });
         } else {
-          // maxSwitches:2 — PlanLimit 等账号级错误应换号再试
+          // maxSwitches:2 —— PlanLimit 等账号级错误应换号再试
           await pool.run(
             (accountId) => llmUtilsChat(
               normalizeTraeMessages([{ role: 'user', content: 'ping' }]),
@@ -458,7 +458,7 @@ async function runModelProbe() {
     };
     console.log(`[scheduler] model probe done ${JSON.stringify(state.lastProbeSummary)}`);
 
-    // 自动分层重算：目录/探活状态变化后，自动虚拟模型（vm/*-context）候选随之刷新。
+    // 自动分层重算：目录或探活状态变化后，自动虚拟模型（vm/*-context）候选随之刷新。
     // 失败不影响探活结果，仅告警。
     try {
       const autotier = require('../model-router/autotier');
@@ -487,7 +487,7 @@ function scheduleOnce(hour, minute, label, fn) {
     try {
       await fn();
     } catch { /* logged inside */ }
-    // 代次不符：本回调属于 stop() 之前的那一代调度，不得复活成新链
+    // 代次不符：本回调属于 stop() 之前的那一代调度，不得复活
     if (started && epoch === scheduleEpoch) scheduleOnce(hour, minute, label, fn);
   }, delay);
   t.unref?.();
@@ -588,7 +588,7 @@ function scheduleGrowthPoll(eff) {
   }
   const intervalMs = hours * 3600 * 1000;
   state.nextGrowthAt = new Date(Date.now() + intervalMs).toISOString();
-  // 首轮延迟 45 秒，避开冷启动与签到链
+  // 首轮延迟 45 秒，避开冷启动与签到流程
   const firstDelay = 45 * 1000;
   const first = setTimeout(async () => {
     await runGrowthAuto().catch(() => {});
@@ -608,7 +608,7 @@ function start() {
     if (!config.schedulerEnabled) console.log('[scheduler] disabled');
     return;
   }
-  // 跨进程单实例：两个进程并行调度会让非幂等任务（备份/轮换）重复执行。
+  // 跨进程单实例：两个进程并行调度会让非幂等任务（备份、轮换）重复执行。
   // 拿不到锁时本进程不排程，但 HTTP 服务继续提供（避免整机不可用）。
   const lock = schedulerLock.acquire();
   if (!lock.acquired) {
@@ -632,15 +632,18 @@ function start() {
   scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', () => runRotateAccounts());
   scheduleModelProbe(eff);
   scheduleGrowthPoll(eff);
-  // ZCode 限时套餐探测/领取由 jobs/zcode-rewards.js 自管两个时段
-  // （00:30 / 21:30），此处不重复排程，避免两处时刻定义分叉。
+  // ZCode 限时套餐探测与领取由 jobs/zcode-rewards.js 自管两个时段
+  // （00:30 与 21:30），此处不重复排程，避免两处时刻定义分叉。
+  // Qoder 每日积分（100 Credits）同样由 jobs/qoder-rewards.js 自管时段
+  // （默认 10:15，对应上游 UTC+8 10:00 刷新），且 Qoder 未声明
+  // capability.checkin，本就不会进入下方 runDailyCheckin 的平台枚举。
 
   console.log('[scheduler] started (checkin + keepalive + token sweep + model probe + rotate + growth poll)');
 }
 
 function stop() {
   started = false;
-  // 递增代次：所有已注册链（含回调已 fire、仍在 await 的在途链）就此作废
+  // 递增代次：所有已注册排程（含回调已触发、仍在 await 的在途排程）就此作废
   scheduleEpoch += 1;
   if (growthTimer) {
     clearInterval(growthTimer);
@@ -671,7 +674,7 @@ function restart() {
   return snapshot();
 }
 
-/** 账号轮换配置热重载：间隔链已移除，轮换时刻变更需 restart() 整体重排每日定时。 */
+/** 账号轮换配置热重载：间隔定时已移除，轮换时刻变更需由 restart() 整体重排每日定时。 */
 function restartRotate() {
   if (started && config.schedulerEnabled) {
     return restart();

@@ -1,6 +1,6 @@
 /**
  * 账号权益包弹窗：展示单个账号的全部权益包。
- * 由账号表「到期」列点击触发，替代行内展开，避免表格结构被撑高。
+ * 由账号表「到期」列点击触发，替代行内展开，避免表格被撑高。
  */
 import type { Account } from '../../shared/api/types';
 import Modal from '../../shared/ui/Modal';

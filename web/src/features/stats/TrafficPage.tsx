@@ -3,7 +3,7 @@
  *
  * 真实语义：
  *   - /v1/admin/traffic 后端已实现分页（page / totalPages / total），页面直接使用；
- *   - /v1/admin/debug/sse 接口名为 sse，实际读取落盘JSONL 文件，不是实时推送，
+ *   - /v1/admin/debug/sse 接口名为 sse，实际读取写入文件的 JSONL 数据，不是实时推送，
  *     页面如实标注，避免运维误判。
  */
 import { useState } from 'react';
@@ -77,14 +77,14 @@ export default function TrafficPage() {
     { key: '总请求', value: formatNumber(traffic.data?.total) },
     {
       key: '总 Token',
-      // 历史日志的 token 被误脱敏成 "***" 无法还原，此时总量是下界；
-      // 把受损行数显式带出，避免被读成「消耗确实这么少」
+      // 历史日志的 Token 被误脱敏成 "***" 无法还原，此时总量是下界；
+      // 显式带出受损行数，避免被读成「消耗确实这么少」
       value:
         (summary?.tokensMasked ?? 0) > 0
           ? `${formatNumber(summary?.tokens)} *`
           : formatNumber(summary?.tokens),
       delta: (summary?.tokensMasked ?? 0) > 0
-        ? `另有 ${formatNumber(summary?.tokensMasked)} 行 token 已丢失`
+        ? `另有 ${formatNumber(summary?.tokensMasked)} 行 Token 已丢失`
         : undefined,
     },
     { key: '涉及模型', value: formatNumber(Object.keys(summary?.byModel ?? {}).length) },
@@ -93,11 +93,11 @@ export default function TrafficPage() {
 
   async function sendTest() {
     if (!probeModel.trim()) {
-      toast('请输入模型名', 'warn');
+      toast('未填写模型名，无法发送测试请求', 'warn');
       return;
     }
     if (!probeMsg.trim()) {
-      toast('请输入测试消息', 'warn');
+      toast('未填写测试消息，无法发送测试请求', 'warn');
       return;
     }
     setBusy(true);
@@ -118,7 +118,7 @@ export default function TrafficPage() {
       });
       toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, r.ok ? 'ok' : 'err');
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '测试请求失败', 'err');
+      toast(e instanceof ApiError ? e.message : '测试请求发送失败，可重试', 'err');
     } finally {
       setBusy(false);
     }
@@ -127,7 +127,7 @@ export default function TrafficPage() {
   return (
     <PageShell
       title="请求日志"
-      description="查看网关转发记录、定位失败请求与验证链路连通性"
+      description="查看网关转发记录、定位失败请求与测试连通性"
       actions={
         <Segmented
           ariaLabel="时间范围"
@@ -177,7 +177,7 @@ export default function TrafficPage() {
           ) : rows.length === 0 ? (
             model.trim() ? (
               <EmptyState
-                label={`没有匹配模型「${model.trim()}」的记录。`}
+                label={`没有匹配模型「${model.trim()}」的转发记录。`}
                 hint="模型名需与请求日志中的名称完全一致（如 trae/glm-5）。"
                 action={{ label: '清除筛选', onClick: () => { setModel(''); setPage(1); } }}
               />
@@ -252,7 +252,7 @@ export default function TrafficPage() {
         </div>
 
         {failed && (
-          <Panel title="失败详情" footer="错误信息来自网关转发链路的原始记录。">
+          <Panel title="失败详情" footer="错误信息来自网关转发记录的原文。">
             <div className="flex items-center gap-2 mb-2">
               <Chip tone="danger" dot="dot-error">
                 {failed.status ?? 'ERR'}
@@ -270,15 +270,15 @@ export default function TrafficPage() {
                 color: 'var(--rg-state-error)',
               }}
             >
-              {failed.error || '未返回错误文本'}
+              {failed.error || '网关未返回错误文本'}
             </pre>
           </Panel>
         )}
 
         <Panel
           title="SSE 调试记录"
-          description="读取落盘的调试日志文件"
-          footer="该接口读取落盘 JSONL 文件，不是实时推送；最新记录可能滞后于线上请求。"
+          description="读取已写入文件的调试日志"
+          footer="该接口读取已写入文件的 JSONL 记录，不是实时推送；最新记录可能滞后于线上请求。"
           flush
         >
           {sse.error ? (
@@ -287,7 +287,7 @@ export default function TrafficPage() {
             <LoadingBlock />
           ) : (sse.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="区间内没有 SSE 调试记录。"
+              label="所选区间内没有 SSE 调试记录。"
               hint="这类记录只在排查上游事件流问题时产生（TRAE_DEBUG_SSE 开启），平时为空是正常的。"
             />
           ) : (
@@ -330,7 +330,7 @@ export default function TrafficPage() {
               aria-label="测试用模型名"
             />
             <Field
-              label="消息"
+              label="测试消息"
               value={probeMsg}
               onChange={(e) => setProbeMsg(e.target.value)}
               placeholder="输入测试内容"
@@ -357,7 +357,7 @@ export default function TrafficPage() {
                 )}
                 {testResult.totalTokens != null && (
                   <span className="text-[11px] font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
-                    {testResult.totalTokens} tokens
+                    {testResult.totalTokens} Token
                   </span>
                 )}
                 {testResult.finishReason && (

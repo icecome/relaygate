@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/models.js — 模型列表端点。
+ * routes/models.js —— 模型列表端点。
  * 主数据源：上游 get_detail_param 动态目录（catalog）；失败回退本地 model-config。
  * 默认过滤 unavailable；?availability=all|usable|unknown|unavailable 过滤视图。
  */
@@ -25,8 +25,13 @@ function wantCustom(req) {
 async function listModels(req, res) {
   const view = String(req.query.availability || 'default');
   const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
-  // 平台过滤：转发 Key 按绑定平台；管理 Key 可用 ?platform=；缺省管理面返回全部
-  const platformFilter = req.platform || String(req.query.platform || '').toLowerCase() || null;
+  // 平台过滤：转发 Key 按绑定平台；管理 Key 可用 ?platform=；缺省管理面返回全部。
+  //
+  // 显式 ?platform= 优先于 Key 绑定平台：通用密钥（platform=all）带
+  // ?platform=workbuddy 时，此前 req.platform='all' 会让查询参数被静默忽略，
+  // 结果返回「全部」而非请求的那个平台。qoder 也走同一条路。
+  const queryPlatform = String(req.query.platform || '').toLowerCase();
+  const platformFilter = queryPlatform || req.platform || null;
   try {
     const cat = await catalog.listWithStatus({ force: refresh, includeCustom: wantCustom(req) });
     let rows = cat.models;
@@ -62,15 +67,37 @@ async function listModels(req, res) {
       virtual: false,
     }));
 
+    // Qoder 国际版目录：可调用集合来自 src/qoder/chat.js 的实测清单
+    // （is_free 不等于可调用，qfmodel 实测 invalid_model_error，故不列）。
+    // 只有真有启用的国际版账号时才列出——否则客户端会拿到一组必然失败的 id。
+    const qoderChat = require('../qoder/chat');
+    const variant = require('../platform/variant');
+    const qoderHasAccount = require('../credentials/store').list().some((a) => a.enabled
+      && variant.isEdition(a.edition, variant.QODER)
+      && variant.qoderChatRealms().includes(variant.qoderRealmOfAccount(a)));
+    const qoderList = qoderHasAccount ? qoderChat.CALLABLE_INTL_MODELS.map((id) => ({
+      id,
+      object: 'model',
+      created: Math.floor(Date.now() / 1000),
+      owned_by: 'qoder',
+      display_name: id,
+      custom: false,
+      virtual: false,
+    })) : [];
+
     let data;
     if (platformFilter === 'workbuddy') {
       data = wbList;
     } else if (platformFilter === 'trae') {
       data = list;
+    } else if (platformFilter === 'qoder') {
+      // Qoder 无前缀：端点本身就是 /v1/qoder/chat/completions
+      data = qoderList;
     } else {
-      data = list.concat(wbList.map((m) => ({ ...m, id: 'wb/' + m.id, display_name: 'wb/' + m.id })));
+      data = list
+        .concat(wbList.map((m) => ({ ...m, id: 'wb/' + m.id, display_name: 'wb/' + m.id })))
+        .concat(qoderList);
     }
-
     // 虚拟模型 ID（model-router）：仅通用密钥（all）与管理视图可见
     try {
       const allowVirtual = !req.platform || req.platform === 'all' || req.keyKind === 'login';
@@ -111,7 +138,7 @@ router.get('/v1/models/status', admin, async (req, res) => {
   try {
     const cat = await catalog.listWithStatus({ force: refresh, includeCustom: wantCustom(req) });
     const availability = require('../models/availability');
-    // 预热动态目录（含倍率）；失败/未就绪时以静态目录兜底（倍率列显示 —）
+    // 预热动态目录（含倍率）；失败或未就绪时回退静态目录（倍率列显示 —）
     let wbModels = [];
     try { wbModels = await wbChat.modelCatalog(refresh); } catch (e) { /* 回退静态 */ }
     if (!wbModels.length) wbModels = wbChat.WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null }));

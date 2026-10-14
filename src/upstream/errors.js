@@ -25,11 +25,32 @@ const CODE_MODEL_UNAVAILABLE = TRAE_ERR.modelUnavailable;
 const CODE_MODEL_RATE_LIMIT = WB_ERR.modelRateLimit ?? TRAE_ERR.modelRateLimit;
 /** 套餐额度耗尽（账号级，应换号）。 */
 const CODE_PLAN_LIMIT = TRAE_ERR.planLimit;
+/**
+ * 上下文窗口超限码（两平台并集）：WorkBuddy 11115；Trae 无独立码（null），
+ * 靠 isContextLengthError 的文案正则兜底。
+ */
+const CONTEXT_TOO_LONG_CODES = Array.from(new Set([
+  TRAE_ERR.contextTooLong,
+  WB_ERR.contextTooLong,
+].filter((c) => Number.isFinite(Number(c)))));
+
+/** 上游 context_length / "prompt is too long" 的识别（两平台同语义）。 */
+function isContextLengthError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '');
+  if (err.code === 'context_length_exceeded') return true;
+  if (CONTEXT_TOO_LONG_CODES.some((c) => Number(err.upstreamCode) === c || err.status === c)) return true;
+  // 上游正文：{"code":11115,"msg":"prompt is too long: 100001 tokens > 100000 maximum"}
+  if (CONTEXT_TOO_LONG_CODES.some((c) => new RegExp(`"code"\\s*:\\s*${c}\\b`).test(msg))) return true;
+  return /context[_\s-]?length[_\s-]?exceeded/i.test(msg)
+    || /prompt is too long/i.test(msg)
+    || /上下文.*超(?:长|出)|超出.*上下文|token.*超过.*(?:上限|最大)/i.test(msg);
+}
 
 /**
  * 解析上游错误，返回分类标签。
  * @param {Error} err
- * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'other'}
+ * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'context_length'|'other'}
  */
 function classifyError(err) {
   if (!err) return 'other';
@@ -39,7 +60,10 @@ function classifyError(err) {
     const m = msg.match(/"code"\s*:\s*(\d{3,5})/);
     if (m) err.upstreamCode = Number(m[1]);
   }
-  // 套餐额度尽（账号级额度问题）：应换号；见 TRADEWORK-ASSISTANT-COMPARISON §1.4
+  // 上下文超限先于其它分类：窗口问题与账号/模型健康度无关，
+  // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
+  if (isContextLengthError(err)) return 'context_length';
+  // 套餐额度耗尽（账号级额度问题）：应换号；见 TRADEWORK-ASSISTANT-COMPARISON §1.4
   if (Number(err.upstreamCode) === CODE_PLAN_LIMIT || /PlanLimit|plan.?limit/i.test(msg)) return 'quota';
   if (err.status === 402 || /quota|积分已耗尽|余额不足|credits.?exhaust/i.test(msg)) return 'quota';
   // 模型级限流须先于泛化 429 判定：模型问题非账号问题，换号/冷却整号无意义
@@ -80,21 +104,21 @@ function isPlanLimitError(err) {
 
 /**
  * 是否为模型级限流（modelRateLimit / "exceeded the rate limit"）：
- * 模型在当前时刻被限流，属模型问题非账号问题，不冷却账号（对齐 Sliverkiss）。
+ * 模型在当前时刻被限流，属模型问题非账号问题，不冷却账号（与 Sliverkiss 一致）。
  */
 function isModelRateLimitError(err) {
   if (!err) return false;
   const msg = String(err.message || '');
   if (Number(err.upstreamCode) === CODE_MODEL_RATE_LIMIT || err.status === CODE_MODEL_RATE_LIMIT) return true;
-  // WorkBuddy 中文「使用量已超出频率限制…切换其他模型」；勿用过于宽泛的英文
-  // “exceeded the rate limit”——那会把 3004 账号级限流误判成 model 类
+  // WorkBuddy 中文「使用量已超出频率限制…切换其他模型」；勿用过宽的英文
+  // 「exceeded the rate limit」——那会把 3004 账号级限流误判成 model 类
   return /model rate limit/i.test(msg)
     || (/使用量已超出频率限制/.test(msg) && /切换其他模型/.test(msg));
 }
 
 /**
  * 从上游限流文案中解析精确恢复时刻。
- * 实测两种形态（对齐 hub parse_rate_limit_reset 的输入面）：
+ * 实测两种形态（输入面与 hub parse_rate_limit_reset 一致）：
  *   - WorkBuddy 6004 中文: "…将在 2026-09-29 20:48:47 UTC+8 重置…"
  *   - 英文: "usage will reset at 2026-10-04 23:00:00"（按本地时区解释）
  * 解析失败返回 null，调用方退回指数退避。
@@ -111,7 +135,7 @@ function parseRateLimitReset(text) {
     const ms = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(sec || 0)) - 8 * 3600 * 1000;
     return new Date(ms).toISOString();
   }
-  // 英文形态：无时区后缀，按上游惯用 UTC 解释（对齐 hub 口径）
+  // 英文形态：无时区后缀，按上游惯用的 UTC 解释（与 hub 口径一致）
   const en = s.match(/(?:usage will )?reset at (\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/i);
   if (en) {
     const [, y, mo, d, h, mi, sec] = en;
@@ -122,10 +146,17 @@ function parseRateLimitReset(text) {
 }
 
 /**
- * 是否值得重试：限流/网络/5xx 可重试；auth 与 other 不重试。
+ * 是否值得重试：限流/网络/5xx 可重试；auth、other、context_length 不重试。
+ * 上下文超限属终端错误——换候选与冷却账号都解决不了窗口问题，重试只会
+ * 把每个候选都撞一遍同一天花板并污染健康度表。
  */
 function isRetryable(kind) {
   return kind === 'rate_limit' || kind === 'network' || kind === '5xx';
+}
+
+/** 是否为上下文超限（输入超模型真实窗口）：终端错误，不 failover、不冷却。 */
+function isContextLengthErrorKind(kind) {
+  return kind === 'context_length';
 }
 
 /**
@@ -161,6 +192,9 @@ module.exports = {
   isModelConfigError,
   isPlanLimitError,
   isModelRateLimitError,
+  isContextLengthError,
+  isContextLengthErrorKind,
   parseRateLimitReset,
   RATE_LIMIT_CODES,
+  CONTEXT_TOO_LONG_CODES,
 };

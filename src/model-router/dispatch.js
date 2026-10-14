@@ -1,10 +1,10 @@
 'use strict';
 /**
- * model-router/dispatch.js — 将一次 chat 请求派发到具体 Provider 候选。
+ * model-router/dispatch.js — 将一次 chat 请求派发到具体的 Provider 候选。
  *
  * Provider 形态：
  * - openai：通用 OpenAI 兼容端点（baseUrl + apiKey）
- * - builtin/trae | builtin/workbuddy：复用现有账号池与上游客户端
+ * - builtin/trae 与 builtin/workbuddy：复用现有账号池与上游客户端
  */
 const { classifyError } = require('../upstream/errors');
 const { logRequest } = require('../log/traffic');
@@ -66,7 +66,7 @@ async function dispatchOpenAINonStream(provider, remoteModel, body) {
   }
 }
 
-/** 通用 OpenAI 兼容：流式（SSE 透传，失败且未写头时抛错以便切换）。 */
+/** 通用 OpenAI 兼容：流式（SSE 原样传给下游，失败且未写头时抛错以便切换候选）。 */
 async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {}) {
   const base = safeBaseUrl(provider.baseUrl);
   const key = resolveApiKey(provider);
@@ -104,7 +104,7 @@ async function dispatchOpenAIStream(provider, remoteModel, body, res, opts = {})
   const dec = new TextDecoder();
   let usage = null;
   try {
-    // 旁路窥探 usage（转发字节原样写出，不经解析改写，保持透传语义）
+    // 旁路窥探 usage（转发字节原样写出，不经解析改写，保持原样传给下游的语义）
     const feeder = createLineFeeder((line) => {
       const t = line.trim();
       if (!t.startsWith('data:')) return;
@@ -151,12 +151,12 @@ function sanitizeUsage(u) {
   };
 }
 
-/** 上游因输出上限/内容策略提前中断的结束原因；这些必须原样透传给客户端。 */
+/** 上游因输出上限或内容策略提前中断的结束原因；这些必须原样传给客户端。 */
 const { isTruncatedFinish } = require('../transform/finish');
 
 /**
  * 流式末帧 finish_reason 决策。
- * - 截断（length/max_tokens/content_filter）优先：让客户端走「续写/提示超长」而非「执行工具」
+ * - 截断（length/max_tokens/content_filter）优先：让客户端走「续写或提示超长」而非「执行工具」
  * - 未被截断且有 tool_calls：必须是 tool_calls，否则客户端会在首段文本后自动停止
  */
 function resolveStreamFinish({ sawToolCalls, lastFinish } = {}) {
@@ -167,7 +167,7 @@ function resolveStreamFinish({ sawToolCalls, lastFinish } = {}) {
 
 /**
  * 将聚合 completion 写成标准 OpenAI SSE chunk 流。
- * 顺序：role → content/tool_calls → finish(+usage) → [DONE]
+ * 顺序：role → content/tool_calls → finish（含 usage）→ [DONE]。
  * 每个 data 块都带 choices，避免「usage-only chunk」触发客户端 schema 校验失败。
  */
 function writeCompletionChunks(res, data, shownModel) {
@@ -188,7 +188,7 @@ function writeCompletionChunks(res, data, shownModel) {
   write({ ...base, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] });
 
   if (msg.reasoning_content) {
-    // 仅透出标准字段，reasoning 不进 delta，避免非标字段校验失败
+    // 仅输出标准字段，reasoning 不进 delta，避免非标字段校验失败
   }
   if (msg.content) {
     write({ ...base, choices: [{ index: 0, delta: { content: msg.content }, finish_reason: null }] });
@@ -228,13 +228,14 @@ function writeCompletionChunks(res, data, shownModel) {
   return { id, finish, usage };
 }
 
-/** 内置 WorkBuddy：走账号池 + wbChat 聚合。 */
+/** 内置 WorkBuddy：走账号池与 wbChat 聚合。 */
 async function dispatchWorkBuddy(provider, remoteModel, body, opts = {}) {
   const pool = require('../credentials/pool');
   const auth = require('../auth');
   const wbChat = require('../workbuddy/chat');
-  const { result } = await pool.run(async (accountId) => {
-    const acct = await auth.ensureAuth(accountId);
+  const { result, accountId } = await pool.run(async (id) => {
+    if (typeof opts.onAccount === 'function') opts.onAccount(id);
+    const acct = await auth.ensureAuth(id);
     try {
       return await wbChat.chatAggregate(acct, { ...body, model: remoteModel, stream: true });
     } catch (err) {
@@ -242,12 +243,15 @@ async function dispatchWorkBuddy(provider, remoteModel, body, opts = {}) {
       throw err;
     }
   }, { edition: 'workbuddy', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
+  // 账号归属经回调上报，不塞进 result —— 非流式路径 result 就是客户端响应体，
+  // 加私有字段会污染协议（客户端会看到非标字段）。
+  if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
   return result;
 }
 
 /**
- * 内置 Trae：走账号池 + llmUtilsChat（非流式聚合）。
- * 流式场景由 handleVirtual 的 SSE 路径调用 dispatchTraeStream。
+ * 内置 Trae：走账号池与 llmUtilsChat（非流式聚合）。
+ * 流式场景由 handleChat 的 SSE 路径调用 dispatchTraeStream。
  */
 async function dispatchTraeNonStream(provider, remoteModel, body, opts = {}) {
   const pool = require('../credentials/pool');
@@ -261,6 +265,7 @@ async function dispatchTraeNonStream(provider, remoteModel, body, opts = {}) {
     max_tokens: typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
   };
   const { result: up } = await pool.run(async (accountId) => {
+    if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
     const r = await llmUtilsChat(normalizeTraeMessages(body.messages), remoteModel, false, { ...callOpts, accountId });
     return r;
   }, { edition: 'trae', stickyKey: opts.stickyKey, stickyAccountId: opts.stickyAccountId });
@@ -290,11 +295,11 @@ async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
 
 /**
  * 流式统一入口：
- * - openai：SSE 直通
- * - workbuddy：上游 SSE 直通（改写 model 字段可选）
+ * - openai：SSE 原样写入
+ * - workbuddy：上游 SSE 原样写入（可选改写 model 字段）
  * - trae：真流式（M-P1 根因修复）——llmUtilsChat(stream=true) 逐事件下发，
  *   出口统一走 exportOpenAI 规范化；usage 合并进末帧、finish_reason 语义
- *   （tool_calls / 截断优先）与聚合出口 writeCompletionChunks 保持等价。
+ *   （tool_calls 与截断优先）与聚合出口 writeCompletionChunks 保持等价。
  *   上游失败时抛错，交由 handleChat 切换候选或补错误帧（与旧聚合行为一致）。
  */
 function dispatchStream(provider, remoteModel, body, res, opts = {}) {
@@ -308,7 +313,7 @@ function dispatchStream(provider, remoteModel, body, res, opts = {}) {
 }
 
 /**
- * 流式透传路径的 usage 窥探：保留官方三字段给客户端，同时抽出
+ * 流式路径的 usage 窥探：保留官方三字段给客户端，同时抽出
  * 缓存读 token（prompt_tokens_details.cached_tokens 等）供计费日志使用。
  * 原实现 sanitizeUsage 把细节字段整段丢弃，标定费率只能按全量输入计价，
  * 系统性高估积分消耗（缓存读单价约为未缓存输入的 1/4~1/8）。
@@ -327,7 +332,7 @@ function peekUsageDetail(u) {
 
 /**
  * 内置 Trae 真流式：pool.run 租约 + llmUtilsChat(stream=true) + createStreamHandler。
- * 事件边界（text/tool_call/done/token_usage/error）与 routes/openai.js 同一套解析层，
+ * 事件边界（text/tool_call/done/token_usage/error）与 routes/openai.js 用同一套解析层，
  * 差异仅在出口：这里直接写 SSE 字节（echoModel 改写 model 字段），无续写聚合。
  */
 async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
@@ -367,6 +372,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   };
 
   await pool.run(async (accountId) => {
+    if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
     let roundFinish = null;
     let sawToolCalls = false;
     const handler = createStreamHandler((evt) => {
@@ -392,7 +398,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
           roundFinish = evt.finish_reason || 'stop';
           break;
         case 'error': {
-          // 抛错交还上层：未写头 → handleChat 切换候选；已写头 → 补错误帧路径收尾。
+          // 抛错交还上层：未写头时由 handleChat 切换候选；已写头则走补错误帧路径收尾。
           const e = new Error(evt.message || 'upstream stream error');
           e.code = 'UPSTREAM_STREAM_ERROR';
           if (evt.code != null) e.upstreamCode = evt.code;
@@ -420,7 +426,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
     });
 
     ensureStart();
-    // usage 合并进末帧（官方三字段），与 WB 直通路径同形
+    // usage 合并进末帧（官方三字段），与 WorkBuddy 原样写入路径同形
     const usage = peekUsageDetail(lastUsage);
     outUsage = usage;
     const finalChunk = {
@@ -440,7 +446,7 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   return { streamed: true, finishReason: outFinish, usage: outUsage, outputText: outText, messages: body.messages };
 }
 
-/** WorkBuddy 流式：上游 OpenAI SSE 直通，必要时改写 model。 */
+/** WorkBuddy 流式：上游 OpenAI SSE 原样写入，必要时改写 model。 */
 async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = {}) {
   const pool = require('../credentials/pool');
   const auth = require('../auth');
@@ -452,6 +458,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
   let outUsage = null;
   let outText = '';
   await pool.run(async (accountId) => {
+    if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
     const acct = await auth.ensureAuth(accountId);
     const up = await wbChat.chatStream(acct, { ...body, model: remoteModel, stream: true });
     if (up.status !== 200 || !up.body) {
@@ -502,7 +509,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
         usage = peekUsageDetail(ev.usage);
         delete ev.usage;
       }
-      // 去掉可能触发客户端校验的非标字段；并记录 tool_calls / finish_reason
+      // 去掉可能触发客户端校验的非标字段；并记录 tool_calls 与 finish_reason
       const d = ev.choices && ev.choices[0] && ev.choices[0].delta;
       if (d) {
         // 输出侧 token 补算的原料（usage 缺失时由 handleChat 使用）

@@ -10,9 +10,7 @@ interface Props {
 }
 
 /**
- * 首登引导。
- *
- * 两种进入方式，按后端 setup/status 的 hasLoginKey 自动选择默认项：
+ * 首登引导。两种进入方式，按后端 setup/status 的 hasLoginKey 自动选择默认项：
  *   输入已有密钥 —— 库中已存在登录密钥但手上没有明文时使用；
  *   创建首把密钥 —— 库中确实没有任何登录密钥时使用（后端仅允许本机来源调用）。
  */
@@ -34,7 +32,7 @@ export default function SetupGate({ onReady }: Props) {
       .then((s) => {
         if (cancelled) return;
         setHasLoginKey(s.hasLoginKey);
-        // 已有登录密钥且本地有会话：直接放行，不必打扰用户
+        // 已有登录密钥且本地有会话：直接放行，无需再打扰用户
         if (s.hasLoginKey && sessionStorage.getItem('trae_key')) {
           setPhase('ready');
           onReady();
@@ -69,7 +67,7 @@ export default function SetupGate({ onReady }: Props) {
       setPhase('ready');
       onReady();
     } catch (e) {
-      setErr(e instanceof ApiError && e.status === 401 ? '密钥无效或已被重置' : (e as Error).message);
+      setErr(e instanceof ApiError && e.status === 401 ? '登录密钥无效或已被重置' : (e as Error).message);
     } finally {
       setVerifying(false);
     }
@@ -97,7 +95,7 @@ export default function SetupGate({ onReady }: Props) {
       setCopied(true);
       toast('已复制', 'ok');
     } catch {
-      toast('复制失败', 'err');
+      toast('复制失败，请手动选择文本', 'err');
     }
   }
 
@@ -137,7 +135,7 @@ export default function SetupGate({ onReady }: Props) {
             <div>
               <div className="text-[16px] font-semibold leading-tight">RelayGate</div>
               <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
-                管理面板 · {hasLoginKey ? '请输入登录密钥' : '首次使用'}
+                管理面板 · {hasLoginKey ? '登录' : '首次使用'}
               </div>
             </div>
           </div>
@@ -159,13 +157,13 @@ export default function SetupGate({ onReady }: Props) {
                   </Button>
                   <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--rg-border)' }}>
                     <p className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
-                      没有现成密钥？服务器上执行
+                      没有可用的登录密钥？在服务器本机执行
                     </p>
                     <code className="block mt-1 font-mono text-[11px]" style={{ color: 'var(--rg-text-primary)' }}>
                       node scripts/login-key.js reset
                     </code>
                     <p className="mt-2 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                      重置会立即使旧密钥失效，需重新分发；该操作只能在服务器本机执行。
+                      重置会立即使旧登录密钥失效，需要重新分发；该命令只能在服务器本机执行。
                     </p>
                   </div>
                 </>
@@ -174,8 +172,8 @@ export default function SetupGate({ onReady }: Props) {
                   <p className="text-[13px] mb-4 leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
                     库中尚未配置登录密钥，无法打开管理面板。
                     {hasLoginKey
-                      ? '你也可以直接粘贴一把已有的登录密钥进入。'
-                      : '请创建首把登录密钥，或粘贴一把已有的密钥。'}
+                      ? '也可以直接粘贴已有的登录密钥进入。'
+                      : '请创建首把登录密钥，或粘贴已有的登录密钥。'}
                   </p>
                   <Field
                     label="已有登录密钥（可选）"
@@ -195,7 +193,7 @@ export default function SetupGate({ onReady }: Props) {
                   </Button>
                   <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--rg-border)' }}>
                     <p className="text-[12px] mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
-                      确认没有任何密钥？创建一把新的
+                      确认没有任何登录密钥时，创建一把新的
                     </p>
                     <Field
                       label="备注（可选）"
@@ -225,7 +223,7 @@ export default function SetupGate({ onReady }: Props) {
             <>
               <h1 className="text-[16px] font-semibold mb-1">登录密钥已生成</h1>
               <p className="text-[13px] mb-4" style={{ color: 'var(--rg-text-secondary)' }}>
-                请立即复制并妥善保存。关闭后无法再次查看完整明文。
+                请立即复制并妥善保存。离开本页后将无法再次查看完整明文。
               </p>
               <div
                 className="rounded-md border p-3 mb-3"

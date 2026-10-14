@@ -3,7 +3,7 @@
  * jobs/rotate-accounts.js — WorkBuddy 多账号活跃度维护（账号轮换）。
  *
  * 原理：替换客户端 auth 文件触发热加载，客户端自动发 API 调用，计入每日活跃分。
- * 与 growth-auto（成长中心任务）、wb-checkin（签到）并列，属于活跃度维护的一环。
+ * 与 growth-auto（成长中心任务）、wb-checkin（签到）并列，属于活跃度维护的其中一步。
  */
 const fs = require('fs');
 const path = require('path');
@@ -18,7 +18,7 @@ const { AUTH_DIR, AUTH_FILE, resolveAuthDir, readUid, discoverAccounts } = requi
 const GROWTH_HOST = variant.variantOf(variant.WORKBUDDY).hosts.growth;
 
 // auth 目录定位与账号发现已抽到 rotate-auth-dir.js：该能力与 rotate-seed 共用，
-// 留在本文件会形成 rotate-accounts ⇄ rotate-seed 循环依赖。
+// 留在本文件会形成 rotate-accounts 与 rotate-seed 的循环依赖。
 const SWITCH_WAIT_MS = 60000;
 
 /** 客户端可执行文件：env WB_EXE > 进程路径探测 > 常见安装位置。 */
@@ -38,11 +38,11 @@ function resolveWbExe() {
   for (const c of candidates) {
     if (fs.existsSync(c)) return c;
   }
-  return 'WorkBuddy'; // 兜底：交给 PATH
+  return 'WorkBuddy'; // 最后手段：交给 PATH 解析
 }
 
 /**
- * 判断客户端当前是否在运行（用户会话视角：服务 Session0 不可见，故以计划任务查询用户会话）。
+ * 判断客户端当前是否在运行（用户会话视角：服务会话 Session 0 不可见，故以计划任务查询用户会话）。
  * @returns {boolean|null} true/false；探测命令本身失败时返回 null（无法判定）
  */
 function probeClientRunning() {
@@ -81,7 +81,7 @@ function execSyncQuiet(cmd) {
   }
 }
 /**
- * 停止客户端（普通权限 → 提权兜底 → 调度式重启兜底）。
+ * 停止客户端（普通权限 → 提权重试 → 计划任务式重启）。
  * 注意：relay-gate 以 LocalSystem 服务运行（Session 0），看不到也无法停止
  * 普通用户在 Session 1 启动的 WorkBuddy 进程（Access denied）。UAC RunAs 在服务
  * 会话中不弹窗。最终可靠方案：注册临时计划任务（schtasks），以交互用户身份执行
@@ -182,7 +182,7 @@ function probeClientSession() {
 }
 
 /** 轮询等待客户端进程真实出现。
- *  基线 count0 之后的增量才算新进程——否则启动前残留的旧进程（如
+ *  基线 count0 之后的增量才算新进程；否则启动前残留的旧进程（如
  *  Session 0 隐形实例）会让验证误判成功。count0 为 null 时退化为存在性判断。 */
 async function waitForClientStart(timeoutMs, count0) {
   const deadline = Date.now() + timeoutMs;
@@ -213,7 +213,7 @@ function clientProcessCount() {
 }
 
 /** 删除临时计划任务；延迟 2s 再试（任务刚 /run 完处于状态切换期，立即删除易失败）。
- *  原实现的 10s 单次删除在服务下长期失败，累积数百残留。 */
+ *  早期实现的 10s 单次删除在服务下长期失败，累积数百个残留。 */
 function deleteTaskQuiet(taskName) {
   setTimeout(() => {
     (async () => {
@@ -232,7 +232,7 @@ function schtasksCmd(args) {
     require('child_process').execFileSync('schtasks', args, { encoding: 'utf8', timeout: 20000 });
     return true;
   } catch (e) {
-    // WARNING 类输出（/ST 早于当前时间）退出码为 0，走 ok 分支；非 0 才是失败
+    // WARNING 类输出（/ST 早于当前时间）退出码为 0，走成功分支；非 0 才算失败
     return false;
   }
 }
@@ -242,7 +242,7 @@ function schtasksCmd(args) {
  *
  * 首选 schtasks /IT 交互式任务：客户端必须在用户交互会话才有窗口；
  * 服务会话（Session 0）里 execFile 直接启动产生的正是无窗口的隐形后台
- * 进程，因此服务会话下禁止该兜底。/IT 任务在服务上下文触发时可能静默
+ * 进程，因此服务会话下禁止该方式。/IT 任务在服务上下文触发时可能静默
  * 不运行（历史实测 Last Result=267011），故必须轮询验证并向调用方如实
  * 报告失败原因，而非默认成功。
  *
@@ -266,7 +266,7 @@ async function startClient() {
         if (ownSession !== 0 && w.session === 0) return { ok: false, reason: 'session0', session: w.session };
         return { ok: true, via: 'schtasks', session: w.session };
       }
-      // /run 已下发但进程未出现：落到下方判断（服务会话下不再兜底）
+      // /run 已下发但进程未出现：落到下方判断（服务会话下不再尝试直接启动）
     } finally {
       deleteTaskQuiet(taskName);
     }
@@ -275,7 +275,7 @@ async function startClient() {
   }
 
   if (ownSession === null) {
-    // 会话未知时不得兜底：execFile 若落在 Session 0 会产生隐形后台进程
+    // 会话未知时不得用 execFile 尝试：若落在 Session 0 会产生隐形后台进程
     console.error('[rotate] 无法判定本进程会话，拒绝 execFile 兜底以防隐形进程');
     return { ok: false, reason: 'service_session' };
   }
@@ -305,7 +305,7 @@ function writeState(s) {
   writeJsonAtomic(STATE_FILE, s);
 }
 
-/** 若无任何可用备份，先从账号库生成种子备份（一键免手动登录）。 */
+/** 若无任何可用备份，先从账号库生成种子备份（无需手动登录）。 */
 function ensureSeedBackups() {
   if (discoverAccounts().length > 0) return { needed: false, ...seedAll() };
   return { needed: true, ...seedAll() };
@@ -347,14 +347,14 @@ function switchTo(account) {
  * 轮换所有账号一遍（每个账号停留 stayMs 让客户端完成初始化）。
  *
  * 失败隔离（m-39 根因修复）：此前循环里任一账号的 startClient/stopClient 失败
- * 都会 `break` 整遍 —— 服务会话（Session 0）下 startClient 必然返回
- * reason='service_session'，于是整遍轮换在第一个账号就断链，剩余账号连 auth
- * 都不切换，表现为「轮换触发不了」。现在改为逐账号记录失败并 `continue`：
+ * 都会 break 整遍。服务会话（Session 0）下 startClient 必然返回
+ * reason='service_session'，于是整遍轮换在第一个账号就中断，剩余账号连 auth
+ * 都不切换，表现为「轮换触发不了」。现在改为逐账号记录失败并 continue：
  * 单账号失败不影响其余账号，整遍的 ok/failed 如实反映每个账号的结果。
  *
  * 另外区分两种失败：（a）switchTo 失败 = 这个号没轮换到；（b）switchTo 成功但
  * 客户端未拉起 = auth 已改写、活跃度未必记上。两者分别记 failed，但都不再
- * 中止整遍 —— 前者是账号自身问题，后者是运行环境（服务会话）问题。
+ * 中止整遍：前者是账号自身问题，后者是运行环境（服务会话）问题。
  *
  * 互斥：定时轮与手动触发并发时会互杀进程，进行中的轮换直接拒绝新请求。
  * @returns {Promise<{ok:number, failed:number, results:Array, skippedUids?:Array, busy?:boolean}>}
@@ -372,7 +372,7 @@ async function rotateAll() {
   }
 }
 
-/** 单账号切换与整遍轮换共用互斥（同锁：两者都杀/启客户端进程）。 */
+/** 单账号切换与整遍轮换共用互斥（同一把锁：两者都会停止或启动客户端进程）。 */
 async function switchAccount(uid) {
   if (rotateRunning) {
     return { ok: false, busy: true, msg: '轮换已在进行中，请稍后再切换账号' };
@@ -428,18 +428,18 @@ async function rotateAllInner() {
     results.push({ label: acct.label, uid: acct.uid, ...r });
     if (r.ok) ok++; else failed++;
     if (!r.ok) {
-      // 该号备份缺失/复制失败：跳过它，继续轮换下一个（不再 break 断链）
+      // 该账号备份缺失或复制失败：跳过它，继续轮换下一个（不再 break 中断）
       continue;
     }
     // 切换后启动客户端热加载该账号，停留观察；启动失败如实计失败。
     // 服务会话下 startClient 必失败（reason=service_session）：auth 已改写但
     // 客户端不在场，活跃度不会实时记上（下次用户打开客户端会以当前 auth 生效）。
-    // 此前这里 break 导致整遍轮换中断 —— 现在继续下一个账号。
+    // 此前这里 break 导致整遍轮换中断，现在继续下一个账号。
     const s = await startClient();
     if (!s.ok) {
       results.push({ label: acct.label, uid: acct.uid, ok: false, msg: `auth 已切换但客户端启动失败（${s.reason || 'unknown'}），活跃度待客户端在场时生效` });
       failed++;
-      // 客户端没起来：无需（也无法）为下一个账号做「停止客户端」步骤，直接继续
+      // 客户端没起来：无需（也无法）为下一个账号执行「停止客户端」步骤，直接继续
       continue;
     }
     await sleep(stayMs);
@@ -480,7 +480,7 @@ async function switchAccountInner(uid) {
   const acct = discoverAccounts().find((a) => a.uid.startsWith(uid) || a.label === uid);
   if (!acct) return { ok: false, msg: '账号未找到: ' + uid };
   const cur = readUid();
-  // 备份当前 auth（防止目标与当前相同仍先备份当前）
+  // 备份当前 auth（即使目标与当前相同也先备份当前）
   if (cur && cur !== acct.uid && acct.backup !== 'workbuddy-desktop.info') {
     try {
       fs.copyFileSync(AUTH_FILE, path.join(AUTH_DIR, 'workbuddy-desktop.info.bak-' + cur.slice(0, 8)));

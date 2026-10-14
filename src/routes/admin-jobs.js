@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/admin-jobs.js — 定时任务、余额刷新、备份与账号轮换端点。
+ * routes/admin-jobs.js —— 定时任务、余额刷新、备份与账号轮换端点。
  * 挂载前缀：/v1/admin（见 index.js）。
  */
 const { Router } = require('express');
@@ -12,10 +12,9 @@ const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 /**
- * 手动触发定时任务（立即签到/保活/模型探测）。
- *
- * action=balance 已删除：它与 POST /v1/credentials/balance、POST
- * /balance-refresh/run 同义，属于重复的「立刻刷一遍」入口，前端从未调用。
+ * 手动触发定时任务（立即签到、保活、模型探测）。
+ * action=balance 已删除：它与 POST /v1/credentials/balance、
+ * POST /balance-refresh/run 同义，是重复的「立刻刷一遍」入口，前端从未调用。
  */
 router.post('/scheduler/:action', admin, async (req, res) => {
   const action = req.params.action;
@@ -68,11 +67,9 @@ router.post('/task-log/clear', admin, (req, res) => {
 });
 
 /**
- * 余额自动刷新（可配间隔）。
- *
- * 只保留配置读写与状态查询。原先的 POST /balance-refresh/run 与
- * POST /scheduler/balance 是「立刻刷一遍」的重复入口（与
- * POST /v1/credentials/balance 同义），前端从未调用，已删除；
+ * 余额自动刷新（可配间隔），只保留配置读写与状态查询。
+ * 原先的 POST /balance-refresh/run 与 POST /scheduler/balance 是与
+ * POST /v1/credentials/balance 同义的重复入口，前端从未调用，已删除；
  * 需要手动刷新时由账号页对单个账号触发。
  */
 router.get('/balance-refresh', admin, (req, res) => {
@@ -172,7 +169,18 @@ router.get('/rotate/status', admin, async (req, res) => {
       object: 'rotate_status',
       currentUid: rotate.currentUid(),
       authDir: rotate.resolveAuthDir(),
-      accounts: accounts.map((a) => ({ uid: a.uid, label: a.label, backup: a.backup })),
+      accounts: accounts.map((a) => {
+        // auth 备份里只有 uid（新版客户端 nickname/phoneNumber 已加密不可读），
+        // 身份信息取账号库：按 userId=uid 关联，label 即导入时的手机号/用户名
+        let identity = null;
+        try {
+          const acct = require('../credentials/store')
+            .list()
+            .find((x) => String(x.userId || '') === String(a.uid));
+          if (acct && acct.label) identity = acct.label;
+        } catch { /* 账号库不可用时退化为 uid 展示 */ }
+        return { uid: a.uid, label: a.label, backup: a.backup, identity };
+      }),
       heatmap: status,
       lastRotateAt: st.lastRotateAt || null,
       lastRotateOk: st.lastRotateOk ?? null,

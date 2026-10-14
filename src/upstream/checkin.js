@@ -19,7 +19,7 @@ const DEFAULT_UG_HOST = variant.variantOf(variant.TRAE).hosts.ug;
 const TIMEOUT_MS = 15000;
 const CLAIM_GAP_MS = 2500;
 const RATE_RETRY = 3;
-/** 9074 实测较顽固，退避需拉长；第 1/2/3 次重试约 +5s/+10s/+20s。 */
+/** 9074 实测较顽固，退避需拉长；第 1/2/3 次重试约 +5 s/+10 s/+20 s。 */
 const RATE_RETRY_DELAY_MS = 5000;
 
 /** 上游业务码：设备/账号今日已签到。 */
@@ -40,7 +40,7 @@ async function postUg(acct, apiPath) {
     token: acct.token,
     userId: acct.userId,
     devices: acct.devices,
-    // 版本指纹兜底按登录态选 CN/SG 内置默认值
+    // 版本指纹缺失时按登录态选 CN/SG 内置默认值
     _edition: acct.edition || 'cn',
   });
   const resp = await fetch(url, {
@@ -64,7 +64,7 @@ function pickCheckinFields(data) {
   const d = (root.data && typeof root.data === 'object') ? root.data : root;
   const code = Number(root.code ?? d.code ?? 0);
   const message = String(root.message ?? d.message ?? root.msg ?? d.msg ?? '');
-  // checked_in 表示「本账号今日是否已签」；did_checked_in 仅作缺省兜底，避免设备侧字段抢占
+  // checked_in 表示本账号今日是否已签；did_checked_in 仅作缺省取值，避免设备侧字段抢占
   let checkedIn;
   if (d.checked_in !== undefined) checkedIn = !!d.checked_in;
   else if (d.checkedIn !== undefined) checkedIn = !!d.checkedIn;
@@ -266,18 +266,18 @@ async function checkinAccount(accountId) {
 /**
  * 对所有 enabled 的 Trae 账号签到。
  *
- * 默认按 (本地日期, 账号id) 确定性错峰：账号在同一时间窗内分散触发，
- * 避免固定时刻批量打上游自造洪峰；窗口由 checkinSpreadMinutes 控制
- * （0=关闭，退回原先的「立即顺序执行」行为）。
+ * 默认按（本地日期, 账号 id）确定性错峰：账号在同一时间窗内分散触发，
+ * 避免固定时刻批量请求上游自造洪峰；窗口由 checkinSpreadMinutes 控制
+ * （0 = 关闭，退回原先的立即顺序执行）。
  *
  * 错峰偏移与调用时刻无关，因此同日重跑（手动触发、重启后补跑）会落在
- * 同一时刻，天然幂等；上游另有「已签到」业务码兜底，重复调用不会重复领取。
+ * 同一时刻，天然幂等；上游另有「已签到」业务码作最后保障，重复调用不会重复领取。
  *
  * @param {{windowStartMs?:number, spreadMinutes?:number}} [opts]
  */
 async function checkinAllEnabled(opts = {}) {
   // 只跑 Trae 系账号（显式白名单）。不能写 edition !== 'workbuddy'：
-  // 那会把新平台（如 zcode）的账号误抓进 Trae 签到链。
+  // 否则会把新平台（如 zcode）的账号误抓进 Trae 签到链。
   const accounts = store.list().filter((a) => a.enabled && variant.isTrae(a.edition));
   const claimed = [];
   const already = [];

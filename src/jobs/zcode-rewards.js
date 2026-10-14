@@ -7,14 +7,13 @@
  *   - 21:30：晚间补投窗口（活动包常在晚间二次下发）
  * 时刻可在 .trae-api/zcode-settings.json 或 env 调整（ZCODE_REWARD_*）。
  *
- * 每轮流程（对每账号）：
- *   reportActivation（激活上报，资格信号）→ preview（可领列表）
- *   → 逐个 claim（无感验证码现解）→ 结果落任务日志 + 通知
+ * 每轮流程（对每个账号）：reportActivation（激活上报，资格信号）→ preview（可领列表）
+ *   → 逐个 claim（无感验证码现解）→ 结果写入任务日志并通知。
  *
  * 幂等与安全：
  *   - 已领取（1003）按 already 计，不重复扣、不告警
  *   - 风控（3012）立即中止该账号并通知（不再继续领取）
- *   - 无凭据/无求解器 → 记 failed，不影响其它账号
+ *   - 无凭据或无求解器 → 记 failed，不影响其它账号
  */
 const store = require('../credentials/store');
 const variant = require('../platform/variant');
@@ -75,7 +74,7 @@ function zcodeAccounts() {
   return ids.map((id) => store.get(id)).filter(Boolean);
 }
 
-/** 求解器可用性（供面板/路由展示）。 */
+/** 求解器可用性（供面板与路由展示）。 */
 function solverStatus() {
   return {
     available: captcha.solverAvailable(),
@@ -165,7 +164,7 @@ async function runRewards(opts = {}) {
     salt,
     windowStartMs: Date.now(),
     windowMs,
-    gapMs: 2000, // 账号间保底间隔，避免同刻连击
+    gapMs: 2000, // 账号间最小间隔，避免同一时刻连续请求
   });
 
   state.lastRunAt = new Date().toISOString();
@@ -191,7 +190,7 @@ async function runRewards(opts = {}) {
     detail: summary.claimedPlans,
   });
 
-  // 通知：领取成功 / 风控 / 失败
+  // 通知：领取成功、风控或失败
   if (summary.claimed) {
     const lines = summary.claimedPlans
       .map((c) => `${c.label}: ${c.planName || c.planId}${c.grants && c.grants.length ? `（${c.grants.join('、')}）` : ''}`)

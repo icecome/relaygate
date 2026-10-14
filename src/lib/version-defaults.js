@@ -3,7 +3,7 @@
  * lib/version-defaults.js — Trae 客户端版本指纹默认值与取值函数（m-35：从 lib/auth.js 抽出，
  * auth 与 headers 共用，避免拆分后出现两份声明）。
  *
- * 对齐 TraeWorkAssistant 实测可用的 SOLO 线指纹（0.1.50 / 20260811），
+ * 与 TraeWorkAssistant 实测可用的 SOLO 线指纹一致（0.1.50 / 20260811）；
  * 旧值 3.3.67 / 20260401 与当前在售客户端脱节，易被上游风控识别。
  *
  * m-35 拆分回归修复：getIdeVersion / getAppVersion / getIdeVersionCode 一并收敛到此。
@@ -13,7 +13,7 @@
  * 依赖方向：本模块是叶子模块，绝不 require lib/auth（auth 要 require 本模块，
  * 反向引用会构成加载环，也被守门测试「全库无双向依赖」拒绝）。需要按登录态
  * 选 CN/SG 默认值时，由调用方把 edition 作为参数传进来；缺省按 CN（与拆分前
- * 取不到登录态时的兜底一致）。
+ * 取不到登录态时的缺省值一致）。
  */
 const clientMeta = require('./client-meta');
 

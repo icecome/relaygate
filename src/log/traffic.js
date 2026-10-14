@@ -2,7 +2,7 @@
 /**
  * log/traffic.js — 请求级流量日志。
  * 1) 控制台一行 JSON（结构化）
- * 2) logs/YYYY-MM-DD/traffic.jsonl 追加
+ * 2) 追加到 logs/YYYY-MM-DD/traffic.jsonl
  * 3) 仍可选逐条 JSON（LEGACY_TRAFFIC_FILES=true）
  */
 const fs = require('fs');
@@ -14,7 +14,7 @@ const { estimateCost } = require('../models/rates');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 let seq = 0;
-// 已确认存在的日志目录。跨日时才变化，避免每请求一次 mkdir syscall。
+// 已确认存在的日志目录，仅跨日时变化，避免每请求一次 mkdir syscall。
 let ensuredDir = null;
 
 function todayDir() {
@@ -77,21 +77,21 @@ function logRequest(entry) {
 
     // 控制台一行：仅在 LOG_LEVEL=debug 时输出。
     // start.bat 把 stdout 重定向到 logs/relay.out.log 且该文件无上限，默认每请求
-    // 打一行会让它持续增长；traffic.jsonl 已完整留档，面板也有流量视图，
+    // 打一行会让它持续增长；traffic.jsonl 已完整留存，面板也有流量视图，
     // 故默认不重复写 stdout。
     if (config.logLevel === 'debug') console.log(JSON.stringify(line));
 
-    // jsonl 追加：保持同步写（面板读取与失效判定都依赖「写完即可见」），
+    // jsonl 追加：保持同步写（面板读取与缓存失效判定都依赖「写完即可见」），
     // 但去掉每请求一次的 mkdir syscall
     const dir = todayDir();
     ensureDir(dir);
     fs.appendFileSync(path.join(dir, 'traffic.jsonl'), JSON.stringify(line) + '\n', 'utf-8');
-    // 增量失效统计缓存（当日聚合失效，下次面板请求时重建）
+    // 使当日统计缓存失效（下次面板请求时重建聚合）
     try {
       require('./stats-cache').invalidateDay();
-    } catch { /* 缓存失效失败不影响日志 */ }
+    } catch { /* 缓存失效失败不影响日志写入 */ }
 
-    // 可选旧格式逐文件
+    // 可选的旧格式逐文件写入
     if (config.legacyTrafficFiles) {
       const d = path.join(dir, 'traffic');
       writeJsonAtomic(path.join(d, `traffic-${String(seq).padStart(5, '0')}.json`), line, { newline: false });
@@ -109,7 +109,7 @@ function logRequest(entry) {
  * 让统计层把该请求记为「未计量」而不是「消耗 0 token」。
  * 兼容 OpenAI 蛇形与 Trae 驼峰两种键名。
  *
- * cacheReadTokens（缓存读）单独抽出：标定费率对「未缓存输入 / 输出 / 缓存读」
+ * cacheReadTokens（缓存读）单独抽出：标定费率对未缓存输入、输出与缓存读
  * 三类 token 分别计价，缺这个字段就只能按全量输入估，会系统性高估。
  * 上游键名实测三套：prompt_tokens_details.cached_tokens（OpenAI）、
  * inputTokensDetails[0].cached_tokens（WB 客户端）、cache_read_input_tokens（Anthropic）。

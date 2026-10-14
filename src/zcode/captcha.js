@@ -14,7 +14,7 @@
  *   失败   退出码 2 超时 / 3 初始化失败 / 4 fail / 5 onError / 6 参数无效
  *
  * 参数是一次性的（certifyId 不可复用，官方客户端日志有 F008 重复提交检测），
- * 且 TTL 约 2 分钟，故此处按「用时现解 + FIFO 淘汰」而非长驻池：
+ * 且 TTL 约 2 分钟，故此处按用时现解 + FIFO 淘汰，而非长驻池：
  * 定时任务一天两轮、单次领取数量有限，同步求解的等待（数秒）远小于业务代价。
  *
  * 零依赖降级：求解器不可用时抛 CaptchaUnavailableError，上层据此只探测不领取。
@@ -27,7 +27,7 @@ const identity = require('./identity');
 
 const V = variant.variantOf(variant.ZCODE);
 
-/** client/configs 返回空时的兜底配置（2026-10 实测值）。 */
+/** client/configs 返回空时的默认配置（2026-10 实测值）。 */
 const CAPTCHA_DEFAULTS = Object.freeze({
   enabled: true,
   prefix: 'no8xfe',
@@ -63,7 +63,7 @@ class CaptchaSolveError extends Error {
 
 /**
  * 拉取验证码配置（client/configs）。
- * 注意：该端点**禁止**带 platform 参数（实测带则 400 code 3001），
+ * 注意：该端点禁止带 platform 参数（实测带则 400 code 3001），
  * 也不需要 Authorization；故单独走最小头集，不复用 billing 身份头。
  */
 async function fetchConfig() {

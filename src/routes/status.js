@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/status.js — 运维快照。
+ * routes/status.js —— 运维快照。
  * 鉴权：authenticateAdminOrPublic —— STATUS_PUBLIC=true 时免鉴权，否则要求管理密钥。
  * 该端点会返回账号池规模与调度状态，公网暴露前请确认 STATUS_PUBLIC 的取值。
  */

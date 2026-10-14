@@ -12,7 +12,7 @@
  * 三件套与「start-plan 不发 x-query-id/x-session-id」等禁忌）在接入转发时
  * 另行补齐并单独验证，不在此处推测。
  *
- * 字段顺序与取值对齐官方客户端 asar 的 pio 头集合（与 zcode2api/app/identity.py
+ * 字段顺序与取值与官方客户端 asar 的 pio 头集合一致（与 zcode2api/app/identity.py
  * 同源实测，非拷贝：同一上游契约）。
  */
 const crypto = require('crypto');

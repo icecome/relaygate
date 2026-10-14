@@ -28,7 +28,7 @@ function alreadyReloaded(): boolean {
   try {
     return sessionStorage.getItem(RELOAD_FLAG) === '1';
   } catch {
-    // 隐私模式下 sessionStorage 可能抛错；按「未刷新过」处理，允许一次恢复机会
+    // 隐私模式下 sessionStorage 可能抛错；按「未刷新过」处理，保留一次恢复机会
     return false;
   }
 }
@@ -98,8 +98,8 @@ export default class ErrorBoundary extends Component<Props, State> {
             <h1 className="text-block mb-2">面板渲染出错</h1>
             <p className="text-[13px] mb-4 leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
               {chunkFailure
-                ? '页面引用的某个模块文件已失效，通常是网关重新构建后当前页面仍是旧版本所致。已尝试自动刷新；若仍反复出现，请确认前后端版本一致后重新构建。'
-                : '页面组件抛出异常，界面已停止渲染。可以先重新加载；若反复出现，请把下面的错误摘要一并反馈。'}
+                ? '页面引用的某个模块文件已失效，通常是网关重新构建后当前页面仍为旧版本所致。已尝试自动刷新；若仍反复出现，需确认前端与后端版本一致后重新构建。'
+                : '页面组件抛出异常，界面已停止渲染。可先重新加载；若反复出现，需把下面的错误摘要一并反馈。'}
             </p>
             <pre
               className="rounded-md border p-3 mb-4 font-mono text-[12px] whitespace-pre-wrap break-all"

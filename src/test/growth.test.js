@@ -1,9 +1,7 @@
 'use strict';
-/**
- * test/growth.test.js — WorkBuddy 成长旅行（status/config/depart/claim）单元测试。
- * 运行：node src/test/growth.test.js
- * 依赖临时 WORKSPACE_DIR（不触碰真实账号库）。
- */
+// test/growth.test.js——WorkBuddy 成长旅行（status/config/depart/claim）单元测试。
+// 运行：node src/test/growth.test.js
+// 使用临时 WORKSPACE_DIR，不触碰真实账号库。
 const os = require('os');
 const path = require('path');
 process.env.WORKSPACE_DIR = path.join(os.tmpdir(), `growth-test-${Date.now()}`);
@@ -134,7 +132,7 @@ t('路由可加载并暴露全部端点', () => {
   }
 });
 
-// ---------- 新增能力契约（buddy/任务/连登/兑换/抽奖） ----------
+// 新增能力契约：buddy / 任务 / 连登 / 兑换 / 抽奖
 
 const { fetchBuddyQuota, openBuddyBox, fetchTasks, acceptTasks, claimTask, fetchStreak, useMakeupCard, fetchRedeemSummary, redeemTier, fetchLotteryChances, drawLottery } = require('../workbuddy/cat-trip');
 
@@ -205,7 +203,7 @@ t('streak / makeup 解析（余额兼容对象与数字）', async () => {
   const bad = await useMakeupCard({ token: 'x', uid: 'u', region: 'cn' }, '');
   assert.strictEqual(bad.ok, false);
 
-  // 日期实际已签（streak 与校验不一致）→ 业务常态 not_broken，不是失败
+  // 日期实际已签（streak 与校验不一致）：业务常态 not_broken，不是失败
   global.fetch = sig(400, 'date is not broken, no makeup needed', null);
   const nb = await useMakeupCard({ token: 'x', uid: 'u', region: 'cn' }, '2026-09-14');
   assert.strictEqual(nb.ok, false);

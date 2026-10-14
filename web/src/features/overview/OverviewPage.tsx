@@ -1,8 +1,7 @@
 /**
  * 总览页：今天的额度、账号健康与待处理事项。
- *
- * 约束（勿违背）：本页不复制凭据池的账号表格，也不复制运维页的运行状态——
- * 两者在各自页面都是完整版本。发现异常请链接过去处理。
+ * 约束：本页不复制凭据池的账号表格，也不复制运维页的运行状态——两者在各自页面
+ * 都是完整版本，发现异常请链接过去处理。
  */
 import { useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -36,8 +35,8 @@ export default function OverviewPage() {
     { enabled: !!key },
   );
 
-  // 页面可见时每 60 秒触发一次真实余额查询，刷新后重读汇总与消耗统计。
-  // reload 均为 useCallback 稳定引用，因此本回调只随它们变化。
+  // 页面可见时每 60 秒触发一次真实余额查询，重新拉取后重读汇总与消耗统计。
+  // reload 均为 useCallback 稳定引用，故本回调只随它们变化。
   const { reload: reloadCredits } = credits;
   const refreshAll = useCallback(() => {
     reload();
@@ -45,11 +44,11 @@ export default function OverviewPage() {
   }, [reload, reloadCredits]);
   useBalanceAutoRefresh(key, refreshAll);
 
-  // 派生值不落 state，随 summary 变化即时算出
+  // 派生值不写入 state，随 summary 变化即时算出
   const accounts = useMemo<Account[]>(() => summary?.accounts ?? [], [summary]);
   const credit = useMemo(() => creditTotals(accounts), [accounts]);
 
-  /** 需要主人处理的异常：需要重新登录、冷却中、已停用。 */
+  /** 需处理的异常：需重新登录、冷却中、已停用。 */
   const issues = useMemo(() => {
     let needLogin = 0;
     let cooling = 0;
@@ -69,7 +68,7 @@ export default function OverviewPage() {
     { key: '冷却中', value: formatNumber(summary?.cooling) },
     {
       // 后端 expiring3d/7d 是「即将到期的积分额度」，不是账号数
-      key: '3日内到期积分',
+      key: '3 日内到期积分',
       value: formatNumber(summary?.expiring3d),
       delta: `7 日内 ${formatNumber(summary?.expiring7d)}`,
     },

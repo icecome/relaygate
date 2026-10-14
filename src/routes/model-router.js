@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/model-router.js — 虚拟模型路由管理 API。
+ * routes/model-router.js —— 虚拟模型路由管理 API。
  * 挂载前缀：/v1/admin/model-router（管理鉴权）。
  */
 const { Router } = require('express');
@@ -19,7 +19,7 @@ router.get('/overview', admin, (req, res) => {
   ok(res, { object: 'model_router_overview', ...mr.snapshot(), generatedAt: new Date().toISOString() });
 });
 
-// ----- Providers -----
+// Provider 配置接口
 router.get('/providers', admin, (req, res) => {
   ok(res, { object: 'list', data: mr.store.listProviders() });
 });
@@ -41,7 +41,7 @@ router.delete('/providers/:id', admin, (req, res) => {
   ok(res, { object: 'deleted', id: req.params.id });
 });
 
-// ----- Virtual models -----
+// 虚拟模型接口
 router.get('/virtual', admin, (req, res) => {
   const data = mr.store.listVirtual().map((vm) => ({
     ...vm,
@@ -70,15 +70,14 @@ router.delete('/virtual/:id', admin, (req, res) => {
 });
 
 /**
- * 改单个候选的开关（enabled / pinned）。
- *
- * 与 PUT /virtual/:id 分开的原因：面板上的候选表是展开时读到的快照，
- * 整体回写会把其他候选的旧值一并覆盖（并发改动、后台同步都可能撞车）。
- * 这里按候选 id 定点改，只接受布尔开关，不接受模型名等结构性字段。
+ * 修改单个候选的开关（enabled / pinned）。
+ * 与 PUT /virtual/:id 分开：面板上的候选表是展开时读到的快照，整体回写会
+ * 覆盖其他候选的旧值（并发改动、后台同步都可能冲突）。此处按候选 id 定点
+ * 修改，只接受布尔开关，不接受模型名等结构性字段。
  *
  * candidateId 走查询参数而非路径段：候选 id 形如 `workbuddy/wb/hy3`，含斜杠。
  * 即使前端 encodeURIComponent 编成 %2F，Express 解码后仍按路径分隔符切分，
- * 路由匹配失败会落到转发面鉴权中间件，返回 401「Invalid access key」——
+ * 路由匹配失败会落到转发面鉴权中间件，返回 401「Invalid access key」，
  * 症状是面板误判为登录失效。查询参数不做路径切分，可彻底避开。
  */
 router.patch('/virtual/:id/candidate', admin, (req, res) => {
@@ -107,8 +106,8 @@ router.patch('/virtual/:id/candidate', admin, (req, res) => {
 });
 
 /**
- * 兜底：旧路径形态（候选 id 落在路径段）仍可能被旧版前端调用。
- * 未命中任何管理面路由时不该掉进转发面鉴权，故显式声明并返回可读错误。
+ * 旧路径形态（候选 id 落在路径段）仍可能被旧版前端调用。
+ * 未命中任何管理面路由时不应掉进转发面鉴权，故显式声明并返回可读错误。
  */
 router.all('/virtual/:id/candidates/*', admin, (req, res) => {
   res.status(404).json({
@@ -132,7 +131,7 @@ router.post('/reload', admin, (req, res) => {
   ok(res, { object: 'reloaded', ...mr.snapshot() });
 });
 
-/** 重新同步自动分层虚拟模型（拉取两平台目录 → 按窗口分层 → 倍率排序写回）。 */
+/** 重新同步自动分层虚拟模型（拉取两平台目录，按窗口分层，按倍率排序后写回）。 */
 router.post('/virtual/resync-auto', admin, async (req, res) => {
   try {
     const r = await mr.autotier.syncAutoTiers({ force: true });

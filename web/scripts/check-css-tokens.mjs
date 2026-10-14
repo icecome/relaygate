@@ -1,12 +1,12 @@
 /**
  * CSS 令牌引用校验。
  *
- * 防止出现「引用了不存在的 CSS 变量」这类静默失效：
- * 组件里写 var(--rg-foo) 而令牌层没定义 --rg-foo 时，浏览器静默回退，
- * 视觉上只是「没生效」，不会报错，人工也难发现。
+ * 防止「引用了不存在的 CSS 变量」这类静默失效：组件里写 var(--rg-foo) 而
+ * 令牌层未定义 --rg-foo 时，浏览器静默回退，视觉上只是「没生效」，不报错，
+ * 人工难以发现。
  *
- * 本脚本把 global.css 的 --rg-*: 定义与 src 下的 var(--rg-*) 引用做差集，
- * 差集非空即退出码 1。
+ * 本脚本将 global.css 的 --rg-*: 定义与 src 下的 var(--rg-*) 引用做差集，
+ * 差集非空即以退出码 1 结束。
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, dirname } from 'node:path';

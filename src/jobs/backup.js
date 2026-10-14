@@ -2,20 +2,13 @@
 /**
  * jobs/backup.js — 系统全量备份（可配存储路径 + 进度回调 + 完成通知 + 校验和）。
  *
- * 备份内容：
- *   - accounts 表全量（密文 token，AES-256-GCM，绝不含明文凭据）
- *   - api_keys 表（哈希 + 密文）
- *   - credit_history 表
- *   - 非敏感配置：.trae-api/scheduler-settings.json、notify-settings.json（渠道密钥仅密文? 否——
- *     notify-settings.json 含 webhook 密钥，按「敏感文件」处理，仅在有加密密钥时纳入备份）
- *   - model-config.json（只读配置，不含密钥）
- *   - 注：model-fallback.json 已移除（从未被业务代码消费，见 config.js 注释）。
- *     备份不再收集它；恢复旧备份时若含该字段，按「不写回」处理并在结果提示。
- * 加密：密钥由环境变量 TRAE_BACKUP_PASSPHRASE 或自动生成持久化密钥（.trae-api/backup.key）；
- *       生成 sha256 校验和附于 manifest。
- *
- * 备份为单文件 JSON（含加密桶），原子写入：先写 .tmp 再 rename。
- * 进度通过 onProgress 回调（阶段 + 计数），供面板展示；完成通过 notify('backup_done'/'backup_failed')。
+ * 内容：accounts 表全量（密文 token，AES-256-GCM，绝不含明文凭据）、api_keys 表（哈希 + 密文）、
+ * credit_history 表；scheduler-settings.json 与 model-config.json 为明文，notify-settings.json 含
+ * webhook 密钥故仅入加密桶；model-fallback.json 已移除（从未被业务代码消费，见 config.js 注释），
+ * 不再收集，恢复旧备份含该字段时按「不写回」处理并在结果提示。
+ * 密钥取自环境变量 TRAE_BACKUP_PASSPHRASE 或持久化的 .trae-api/backup.key，sha256 校验和附于
+ * manifest；单文件 JSON 原子写入（先写 .tmp 再 rename）；进度经 onProgress 回调（阶段 + 计数），
+ * 完成经 notify('backup_done'/'backup_failed')。
  */
 const fs = require('fs');
 const path = require('path');
@@ -83,7 +76,7 @@ function save(partial) {
   return getEffective();
 }
 
-/** 备份加密密钥：环境变量优先，否则读取/生成持久化 backup.key。 */
+/** 备份加密密钥：环境变量优先，否则读取或生成持久化 backup.key。 */
 function backupKey() {
   const fromEnv = process.env.TRAE_BACKUP_PASSPHRASE;
   if (fromEnv && String(fromEnv).length >= 16) return fromEnv;
@@ -297,7 +290,7 @@ function listBackups() {
         try {
           const j = JSON.parse(fs.readFileSync(full, 'utf-8'));
           meta = { sizeBytes: j.sizeBytes, checksum: j.checksum, createdAt: j.createdAt };
-        } catch { /* 读不到元数据仅显示文件级信息 */ }
+        } catch { /* 读不到元数据时仅显示文件级信息 */ }
         return { file: f, path: full, sizeBytes: fs.statSync(full).size, ...meta };
       })
       .sort((a, b) => String(b.createdAt || b.file).localeCompare(String(a.createdAt || a.file)));
@@ -347,7 +340,7 @@ function inspectBackup(filePath) {
   const full = resolveBackupPath(filePath);
   const manifest = JSON.parse(fs.readFileSync(full, 'utf-8'));
   // 先比对校验和：密文被篡改时 GCM 解密会先抛认证失败，
-  // 直接透出解密异常会掩盖「文件已损坏」这一真实结论。
+  // 直接暴露解密异常会掩盖「文件已损坏」这一真实结论。
   const verify = verifyBackup(full);
   let payload = null;
   let decryptError = null;
@@ -395,8 +388,8 @@ const CREDIT_COLUMNS = ['id', 'account_id', 'ts', 'remaining', 'used_total', 'so
 /**
  * 从备份文件恢复数据。
  *
- * 语义：按 id 覆盖同 id 的账号与密钥（备份是全量快照），
- * credit_history 按 id 覆盖，配置文件按备份内容覆盖。
+ * 语义：按 ID 覆盖同 ID 的账号与密钥（备份是全量快照），
+ * credit_history 按 ID 覆盖，配置文件按备份内容覆盖。
  * 默认先对当前状态做一次快照备份，便于回退。
  *
  * @param {string} filePath 备份文件路径（须位于备份目录内）
@@ -436,7 +429,7 @@ async function restoreBackup(filePath, opts = {}) {
     }
   };
 
-  /** 按 id 覆盖写入；columns 为可写列白名单。 */
+  /** 按 ID 覆盖写入；columns 为可写列白名单。 */
   const upsertById = (table, columns, rows) => {
     const updatable = columns.filter((c) => c !== 'id');
     const sql = `INSERT INTO ${table} (${columns.join(',')})

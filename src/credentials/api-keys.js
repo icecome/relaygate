@@ -8,8 +8,8 @@
  *   key_type: universal|dedicated
  *   scopes:   JSON 数组，如 ["models:invoke","models:read"]
  *   resources: JSON 数组，如 ["*","model:workbuddy/*","model:virtual:vm/x"]
- * 生命周期：创建 → 使用 → 轮换(双密钥窗口) → 暂停/撤销 → 过期
- * 落库：SHA-256 哈希（鉴权）+ AES 密文（供「复制」接口解密，界面不展示明文）。
+ * 生命周期：创建 → 使用 → 轮换（双密钥窗口）→ 暂停/撤销 → 过期
+ * 存储：SHA-256 哈希（鉴权）+ AES 密文（供复制接口解密，界面不展示明文）。
  */
 const nodeCrypto = require('crypto');
 const { db } = require('./db');
@@ -29,7 +29,7 @@ const SCOPES = new Set([
 ]);
 // K-3：平台密钥默认 scope 补齐 models:read —— /v1/models 双面端点对访问密钥
 // 强制 scope 校验后，存量平台密钥（只有 models:invoke）会在模型列表直接 403，
-// 因此新建与迁移口径统一包含 models:read。
+// 因此新建与迁移口径都包含 models:read。
 const DEFAULT_SCOPES = {
   all: ['models:read', 'models:invoke', 'router:read', 'router:invoke'],
   trae: ['models:read', 'models:invoke'],
@@ -114,7 +114,7 @@ function rowToKey(r) {
     lastUsedAt: r.last_used_at || null,
     // 明文掩码提示（不可逆推）
     hint: r.key_hash ? `sk-…${r.key_hash.slice(-4)}` : null,
-    // 便捷状态
+    // 派生状态
     status: r.revoked_at ? 'revoked' : (!r.enabled ? 'disabled' : (r.expires_at && Date.parse(r.expires_at) < Date.now() ? 'expired' : 'active')),
   };
 }
@@ -259,9 +259,9 @@ function rotateKey(id, { graceMs = 24 * 3600_000, label } = {}) {
     keyType: old.key_type || undefined,
     rotatedFrom: old.id,
   });
-  // 旧密钥宽限期：默认保留 enabled，到点后由 sweepExpired 处理；
-  // 这里写入 grace 截止到 expires_at 旁路字段——用 last_used 语义不合适，
-  // 约定：旧密钥 expires_at 未到则改为 min(now+grace, expires_at)
+  // 旧密钥宽限期：默认保留 enabled，到点后由 sweepExpired 处理。
+  // 这里把 grace 截止时间写入 expires_at：last_used 语义不合适，
+  // 约定为旧密钥 expires_at 未到则取 min(now+grace, expires_at)。
   const graceUntil = new Date(Date.now() + Math.max(0, graceMs)).toISOString();
   const newExp = old.expires_at && Date.parse(old.expires_at) < Date.parse(graceUntil)
     ? old.expires_at
@@ -305,7 +305,7 @@ function verifyAccessKey(plain) {
     resources: parseJsonArr(r.resources, DEFAULT_RESOURCES[r.platform] || []),
     expiresAt: r.expires_at || null,
     rpmLimit: r.rpm_limit != null ? Number(r.rpm_limit) : null,
-    // 通用密钥可跨平台/虚拟模型；平台密钥仅本平台
+    // 通用密钥可跨平台与虚拟模型；平台密钥仅本平台
     scope: r.platform === 'all' ? 'universal' : 'platform',
   };
 }
@@ -320,7 +320,7 @@ function verifyLoginKey(plain) {
   return { id: r.id, label: r.label || null, kind: 'login' };
 }
 
-/** 兼容旧名 */
+/** 兼容旧名。 */
 const verifyKey = verifyAccessKey;
 
 function touchLastUsed(id) {
@@ -329,7 +329,7 @@ function touchLastUsed(id) {
   } catch { /* best-effort */ }
 }
 
-/** 清理过期密钥状态（调用频繁可放缓；启动与定时任务可调）。 */
+/** 清理过期密钥状态（调用频繁，可放缓；启动与定时任务可调）。 */
 function sweepExpired() {
   const now = new Date().toISOString();
   const info = db().prepare(
@@ -345,13 +345,13 @@ function resetLoginKey({ label = 'login', plainKey = null } = {}) {
 }
 
 /**
- * K-3 存量密钥 scope 迁移：models:read 补齐。
+ * K-3 存量密钥 scope 迁移：补齐 models:read。
  *
  * 背景：/v1/models 对访问密钥实施 scope 强校验（requireKeyScope），而历史创建的
  * 平台密钥默认 scopes 只有 models:invoke，直接上线会导致存量客户端模型列表 403。
  * 迁移在启动时执行一次：为所有启用且缺 models:read 的 access 密钥补上，幂等；
  * 管理面模型列表是双面端点的基础可用性，因此显式收窄过 scope 的密钥同样补齐。
- * @returns {string[]} 补齐过的密钥 id 列表
+ * @returns {string[]} 补齐过的密钥 ID 列表
  */
 function ensureModelsReadScope() {
   const patched = [];

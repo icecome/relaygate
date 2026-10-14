@@ -5,8 +5,8 @@
  * 目的：把「静默降级」变成「明确失败」。此前的失败模式是：
  *   - DB 打不开 → 进程照常启动、端口照常监听，但每个请求 500；
  *   - encrypt.key 丢失 → 静默生成新 key，库里所有密文从此解不开（不可逆）；
- *   - 配置文件损坏 → 静默兜底成空对象，面板仍显示「一切正常」。
- * 这些都不是「运行中才暴露」的问题，而是启动时就已知的事实。
+ *   - 配置文件损坏 → 静默回退成空对象，面板仍显示「一切正常」。
+ * 这些并非「运行中才暴露」的问题，而是启动时就已知的事实。
  *
  * 每个检查返回 { name, ok, detail, fatal }：
  *   - fatal:true  → 调用方应拒绝启动（退出码 1）
@@ -34,7 +34,7 @@ function checkEncryptionKey(cryptoMod, getDb) {
   if (!generated) {
     return { name: 'encryptKey', ok: true, detail: '密钥来自配置或既有文件' };
   }
-  // 新生成的 key：只有库里确实有密文时才是灾难
+  // 新生成的 key：只有库里确实存有密文时才是灾难
   let cipherRows = 0;
   try {
     const db = getDb();

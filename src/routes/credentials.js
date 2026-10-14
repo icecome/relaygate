@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/credentials.js — 凭据管理端点。
+ * routes/credentials.js —— 凭据管理端点。
  * 挂载前缀：/v1/credentials（见 index.js）。管理鉴权按路由注入。
  */
 const { Router } = require('express');
@@ -34,8 +34,8 @@ function expiringFromSnapshot(snapshot) {
  * 把 entitlement_snapshot 摊平成面板直接可用的字段。
  *
  * 除 packs 等权益包字段外，账号凭据自身的生命周期字段也随 ...rest 一并透出：
- *   - expiredAt / refreshExpiredAt —— 登录 token 与 refreshToken 的到期时间（保活链路）
- *   - lastKeepaliveAt / lastKeepaliveResult —— 最近一次保活刷新的时刻与结果
+ *   - expiredAt / refreshExpiredAt：登录 token 与 refreshToken 的到期时间（保活流程）
+ *   - lastKeepaliveAt / lastKeepaliveResult：最近一次保活刷新的时刻与结果
  * 前端「账号到期」列据此渲染，与「权益到期」（packs）是两套不同口径。
  */
 function withExpiry(account) {
@@ -51,13 +51,16 @@ function withExpiry(account) {
     // 其它平台无此键，前端按 undefined 忽略。
     tokenRemaining: typeof snap.tokenRemaining === 'number' ? snap.tokenRemaining : undefined,
     tokenBuckets: Array.isArray(snap.tokenBuckets) && snap.tokenBuckets.length ? snap.tokenBuckets : undefined,
+    // Qoder 的两段额度（基础 userQuota + 赠送 addOnQuota）同为隔离口径，
+    // 单独透出，不与 packs/balance 混算（与 ZCode 的 tokenRemaining 同原则）。
+    quota: snap.quota && typeof snap.quota === 'object' ? snap.quota : undefined,
     entitlementSnapshotUpdatedAt: snap.updatedAt ? snap.updatedAt : null,
   };
 }
 
 /**
  * 启动初始化（m-38 根因修复）：此前 devices 回填在模块 require 期执行，
- * 带来两个问题——启动时序与 DB 就绪隐式耦合；单测加载本模块即触发写库。
+ * 启动时序与 DB 就绪隐式耦合，且单测加载本模块即触发写库。
  * 现改为显式 initCredentials()，由 index.js 启动流程调用。
  */
 function initCredentials() {
@@ -112,10 +115,10 @@ router.get('/summary', admin, (req, res) => {
   });
 });
 
-// 批量：全部启用账号串行签到（仅 Trae 系）
-// 手动触发不参与确定性错峰（用户点「立即签到」期望立刻执行），spreadMinutes=0
-// 注意：这是 Trae 专用端点。跨平台的「全部签到」用下面的 /checkin-all，
-// 前端按钮不得再指向这里，否则 WorkBuddy 账号会被静默跳过（m-39）。
+// 批量：全部启用账号串行签到（仅 Trae 系）。
+// 手动触发不参与确定性错峰（spreadMinutes=0），用户点「立即签到」期望立刻执行。
+// Trae 专用端点：跨平台「全部签到」用下方 /checkin-all；前端按钮若指向这里，
+// WorkBuddy 账号会被静默跳过（m-39）。
 router.post('/checkin', admin, async (req, res) => {
   try {
     const r = await checkinAllEnabled({ spreadMinutes: 0 });
@@ -128,13 +131,12 @@ router.post('/checkin', admin, async (req, res) => {
 /**
  * 跨平台「全部签到」：按 variant 能力位分发到各平台实现，并汇总明细。
  *
- * 背景（m-39）：此前前端「全部签到」指向 Trae 专用的 POST /checkin，
- * 该端点的过滤条件是 `variant.isTrae(a.edition)`，WorkBuddy 账号被静默跳过，
- * 但接口照常返回 200、前端照常提示「已触发全部签到」——按钮名承诺「全部」，
- * 实际只覆盖了一个平台，且失败无感知。
+ * 背景（m-39）：此前前端指向 Trae 专用的 POST /checkin，其过滤条件
+ * `variant.isTrae(a.edition)` 会静默跳过 WorkBuddy 账号，而接口仍返回 200，
+ * 按钮名承诺「全部」但只覆盖一个平台且失败无感知。
  *
- * 本端点以 capability.checkin 为准枚举平台，逐平台调用各自实现，
- * 返回分平台明细，调用方据此如实展示。单平台整体失败不影响其它平台。
+ * 本端点以 capability.checkin 为准枚举平台，逐平台调用各自实现，返回分平台明细。
+ * 单平台整体失败不影响其它平台。
  */
 router.post('/checkin-all', admin, async (req, res) => {
   try {
@@ -155,8 +157,8 @@ router.post('/checkin-all', admin, async (req, res) => {
 router.post('/:id/checkin', admin, async (req, res) => {
   try {
     const r = await checkinAccount(req.params.id);
-    // 手动单账号签到也要推送提醒（m-39）：此前只有调度器签到链会通知，
-    // 用户手动点了却收不到任何反馈，无法确认是否真的领到。
+    // 手动单账号签到也要推送提醒（m-39）：此前只有调度器签到会通知，
+    // 手动触发收不到反馈，无法确认是否真的领到。
     try {
       const { notify } = require('../notify');
       const label = r.label || req.params.id;
@@ -183,8 +185,8 @@ router.post('/:id/checkin', admin, async (req, res) => {
 /**
  * 批量刷新剩余积分（供面板定时轮询）。
  *
- * 与被删除的 POST /v1/admin/scheduler/balance、POST /v1/admin/balance-refresh/run
- * 的区别：那两个是语义重复的「手动触发」入口，已移除；这里保留给前端轮询使用，
+ * 已删除的 POST /v1/admin/scheduler/balance、POST /v1/admin/balance-refresh/run
+ * 与本端点语义重复（都是手动触发入口），前端从未调用。这里保留给前端轮询使用，
  * 命中 upstream/balance.js 的批量锁，与签到链、定时器互斥，不会并发打上游。
  */
 router.post('/balance', admin, async (req, res) => {
@@ -214,7 +216,7 @@ router.post('/:id/balance', admin, async (req, res) => {
   }
 });
 
-// ===== 分组 / 设备 / OAuth（需在 GET /:id 之前注册，避免被通配捕获） =====
+// 分组、设备指纹、OAuth（需在 GET /:id 之前注册，避免被通配捕获）
 
 // 分组汇总（分组名 → 账号数；name=null 表示未分组）
 router.get('/groups', admin, (req, res) => {
@@ -280,7 +282,7 @@ router.patch('/:id', admin, (req, res) => {
   res.json(updated);
 });
 
-// ===== 设备指纹管理 =====
+// 设备指纹管理
 
 // 重置单账号设备指纹（新随机种子，deviceGen +1）
 router.post('/:id/device/reset', admin, (req, res) => {
@@ -307,15 +309,15 @@ router.post('/device/reset-all', admin, (req, res) => {
   res.json({ ok, failed, total: targets.length });
 });
 
-// ===== OAuth 控制台一键完成（页面竞态 bug 的可靠替代路径） =====
-// 用户在 www.trae.cn 授权页的浏览器控制台运行仪表盘提供的代码片段：
+// OAuth 控制台一键完成（页面竞态 bug 的可靠替代路径）：
+// 用户在 www.trae.cn 授权页的浏览器控制台运行仪表盘提供的代码片段，
 // 片段在本机完成 GetRefreshToken + ExchangeToken（带 trae.cn cookie），并把结果 POST 到本端点。
 // 浏览器控制台无法携带管理密钥，故该端点免 admin、以 Origin 白名单限制来源。
 
 const OAUTH_COMPLETE_CORS = { 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 
 function oauthCompleteOriginAllowed(origin) {
-  if (!origin) return false; // 无 Origin（curl 等）一律拒绝：本端点无 admin 鉴权，仅靠 Origin 白名单兜底
+  if (!origin) return false; // 无 Origin（curl 等）一律拒绝：本端点无 admin 鉴权，仅靠 Origin 白名单作为最后手段
   try {
     const h = new URL(origin).hostname;
     return h === '127.0.0.1' || h === 'localhost' || /(^|\.)trae\.(cn|com|ai|com\.cn)$/.test(h);
@@ -333,7 +335,7 @@ router.options('/oauth/complete', (req, res) => {
 
 // 无鉴权端点的准入：管理密钥（显式携带时）或一次性 state 二者之一。
 // 调用方是授权页控制台里的脚本，拿不到管理密钥，因此以 /oauth/url 签发、
-// 只存在于本进程内存的 state 作为共享秘密；state 校验通过即作废。
+// 只存在于本进程内存的 state 作为共享秘密；state 校验通过后即作废。
 function oauthCompleteAllowed(req) {
   if (checkAdminToken(extractToken(req)).ok) return true;
   return oauth.verifyAndConsumeState((req.body || {}).state);
@@ -368,7 +370,7 @@ router.post('/oauth/complete', async (req, res) => {
   }
 });
 
-// 手动兜底：粘贴完整回调 URL（仅解析参数，不向该地址发起任何请求）
+// 手动补交回调：粘贴完整回调 URL（仅解析参数，不向该地址发起任何请求）
 router.post('/oauth/callback', admin, async (req, res) => {
   try {
     const callbackUrl = req.body && req.body.callbackUrl;

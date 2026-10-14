@@ -2,10 +2,10 @@
  * 写操作统一包装。
  *
  * 后端有一类接口是「HTTP 200 但业务未成功」（轮换、模型保存、签到、OAuth 等），
- * 必须与「请求异常」分开提示：前者要展示后端给的原因，后者是网络/鉴权问题。
+ * 必须与「请求异常」分开提示：前者展示后端给的原因，后者是网络或鉴权问题。
  *
- * 此前各页面各自手写这套判定（CredentialsPage 一份、GrowthPanel 一份、
- * OpsPage 直接写布尔），同一个语义三种写法，改一处漏两处。
+ * 此前各页面各自手写这套判定（CredentialsPage、GrowthPanel 各一份，
+ * OpsPage 直接写布尔），同一语义三种写法，改一处漏两处。
  * 这里收敛成唯一入口，页面只负责给文案与成功后的刷新动作。
  */
 import { ApiError, businessFailureReason, isBusinessFailure } from './http';
@@ -51,8 +51,7 @@ export async function runAction({
 
 /**
  * 汇总型结果（批量操作返回 ok/failed 计数或数组）的统一播报。
- * 后端返回的失败明细必须落到 UI，不能只报一个计数 —— 用户看到
- * 「失败 8」却不知道为什么，等于没有反馈。
+ * 后端失败明细必须呈现到 UI：只报计数（如「失败 8」）而无原因，等同没有反馈。
  */
 export function summarizeBatch(
   label: string,

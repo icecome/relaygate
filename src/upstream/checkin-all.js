@@ -2,15 +2,14 @@
 /**
  * upstream/checkin-all.js — 跨平台「全部签到」聚合（m-39）。
  *
- * 背景：前端「全部签到」此前指向 Trae 专用的 POST /v1/credentials/checkin，
- * 该端点内部按 `variant.isTrae(a.edition)` 过滤，WorkBuddy 账号被静默跳过；
- * 而 WorkBuddy 自己的批量端点 /v1/workbuddy/checkin-all 前端从未调用过。
- * 结果是按钮名承诺「全部」，实际只签 Trae，且跳过无任何提示。
+ * 此前前端「全部签到」指向 Trae 专用的 POST /v1/credentials/checkin，该端点
+ * 内部按 `variant.isTrae(a.edition)` 过滤，WorkBuddy 账号被静默跳过；而
+ * WorkBuddy 自己的批量端点 /v1/workbuddy/checkin-all 前端从未调用。按钮名
+ * 承诺「全部」，实际只签 Trae，且跳过无任何提示。
  *
  * 本模块是平台无关的聚合层：以 platform/variant 的 capability.checkin 为准
- * 枚举平台，逐平台调用各自实现，返回分平台明细。刻意不塞进
- * upstream/checkin.js —— 那是 Trae 签到的实现，混入 WorkBuddy 会让它同时
- * 依赖两个平台模块，职责与依赖方向都不干净。
+ * 枚举平台，逐平台调用各自实现，返回分平台明细。不放入 upstream/checkin.js
+ * ——那是 Trae 签到实现，混入 WorkBuddy 会让它同时依赖两个平台模块。
  */
 const store = require('../credentials/store');
 const variant = require('../platform/variant');
@@ -55,9 +54,9 @@ function summarize(platformId, batch, err) {
 }
 
 /**
- * 本轮实际参与签到的平台：由「启用账号的 edition」推导，而非硬编码平台名单。
- * 这样新增平台只要在 variant 里声明 capability.checkin 并有对应 runner，
- * 就会自动纳入「全部签到」；没有账号的平台也不会白跑一轮。
+ * 本轮实际参与签到的平台：由启用账号的 edition 推导，而非硬编码平台名单。
+ * 新增平台只要在 variant 里声明 capability.checkin 并有对应 runner，就会
+ * 自动纳入「全部签到」；没有账号的平台也不会白跑一轮。
  *
  * edition 归一：Trae 侧历史值（cn/sg/us/manual）必须归到 trae，否则 cn 账号
  * 会因查不到 runner 被丢弃（首次实测只跑了 workbuddy，正是漏了这步）。
@@ -95,7 +94,7 @@ async function checkinAllByPlatform(opts = {}) {
   const trigger = opts.trigger || 'manual';
   const notifyOnDone = opts.notifyOnDone !== false;
 
-  // 统计本轮实际会签到多少账号（含各平台），避免"点了但一个号都没有"的假成功
+  // 统计本轮实际会签到多少账号（含各平台），避免「点了但一个号都没有」的假成功
   const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'checkin'));
   const platforms = checkinPlatforms();
 
@@ -160,7 +159,7 @@ async function checkinAllByPlatform(opts = {}) {
   // 手动触发也要提醒（m-39：此前手动签到不推送，用户不知道结果）
   if (notifyOnDone && (total || failed)) {
     const { notify } = require('../notify');
-    // 「今日均已签到」时 claimed=0，如实说明而不是报"签到完成"
+    // 「今日均已签到」时 claimed=0，如实说明而不报「签到完成」
     const title = failed
       ? '签到部分失败'
       : (claimed ? `签到完成：${claimed} 个账号` : '今日均已签到');

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * models/catalog-sync.js — 远端模型目录同步（发现/增量/断点续传）。
+ * models/catalog-sync.js — 远端模型目录同步（发现、增量、断点续传）。
  * Adapter 约定：fetchItems({cursor}) → {items, nextCursor, etag, version, notModified?}
  */
 const catalog = require('./catalog');
@@ -123,7 +123,7 @@ function adapterFor(providerId) {
 }
 
 /**
- * 同步一个 Provider 的模型目录（幂等，支持断点）。
+ * 同步一个 Provider 的模型目录（幂等，支持断点续传）。
  * @param {string} providerId
  * @param {{force?:boolean}} opts
  */
@@ -135,7 +135,7 @@ async function syncProvider(providerId, opts = {}) {
   const state = meta.getSyncState(providerId) || {};
   meta.saveSyncState(providerId, { status: 'syncing', lastError: null });
   try {
-    // 断点续传：若有 nextCursor 检查点则续拉；当前 adapter 均为单页，预留 cursor 字段
+    // 断点续传：有 nextCursor 检查点则续拉；当前 adapter 均为单页，预留 cursor 字段
     const res = await ad.fn();
     if (res.notModified && !opts.force) {
       meta.saveSyncState(providerId, {

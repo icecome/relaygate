@@ -8,7 +8,7 @@ import { api } from './http';
 
 export { ApiError } from './http';
 
-/* ------------------------------------------------------------ 流量日志 */
+/* 流量日志 */
 
 export interface TrafficRow {
   seq?: number;
@@ -68,7 +68,7 @@ export function getTraffic(
   return api<TrafficResponse>(`/v1/admin/traffic${qs ? `?${qs}` : ''}`, { signal }, key);
 }
 
-/* ---------------------------------------------------------------- SSE */
+/* SSE */
 
 export interface SseDebugRow {
   ts?: string;
@@ -95,11 +95,11 @@ export function getSseDebug(
   );
 }
 
-/* ------------------------------------------------------------ 安全审计 */
+/* 安全审计 */
 
 /**
  * 审计事件行（GET /v1/admin/audit）。后端 audit_log 表的原始列，
- * 只读；敏感操作（密钥 reveal / 凭据导出 / 目录 lifecycle）都会落一行。
+ * 只读；敏感操作（密钥 reveal / 凭据导出 / 目录 lifecycle）都会写入一条记录。
  */
 export interface AuditRow {
   id?: number;
@@ -131,7 +131,7 @@ export const getAuditLog = (
   );
 };
 
-/* ------------------------------------------------------------ 测试请求 */
+/* 测试请求 */
 
 export function testChat(
   body: { model: string; message: string; stream?: boolean; max_tokens?: number },
@@ -149,7 +149,7 @@ export function testChat(
   }>('/v1/admin/test-chat', { method: 'POST', body }, key);
 }
 
-/* ------------------------------------------------------------ 运行状态 */
+/* 运行状态 */
 
 /** 账号池快照条目（对应 pool.snapshot().accounts[]）。 */
 export interface PoolAccountSnapshot {
@@ -276,7 +276,7 @@ export interface ClientConfig {
 export const getClientConfig = (key: string, signal?: AbortSignal) =>
   api<ClientConfig>('/v1/admin/client-config', { signal }, key);
 
-/* ---------------------------------------------------------------- 配置 */
+/* 配置 */
 
 export interface RuntimeConfig {
   object: string;
@@ -316,7 +316,7 @@ export const reloadConfig = (key: string) =>
     reloadedAt: string;
   }>('/v1/admin/config/reload', { method: 'POST' }, key);
 
-/* ---------------------------------------------------------- 定时任务 */
+/* 定时任务 */
 
 /**
  * 调度设置。字段与后端 jobs/scheduler-settings.js 的 SPECS 完全一致。
@@ -445,7 +445,7 @@ export const saveBalanceRefresh = (
     key,
   );
 
-/* ------------------------------------------------------------ 账号轮换 */
+/* 账号轮换 */
 
 /**
  * 轮换状态。字段与后端 routes/admin-jobs.js 的 /rotate/status 完全一致：
@@ -456,6 +456,8 @@ export const saveBalanceRefresh = (
 export interface RotateAccount {
   uid: string;
   label?: string;
+  /** 账号库按 userId=uid 关联到的 label（手机号/用户名）；账号库无此账号时为 null */
+  identity?: string | null;
   backup?: string;
 }
 
@@ -498,7 +500,7 @@ export interface RotateSettings {
   excludeUids?: string;
   /** 轮换结束后是否切回起始账号 */
   switchBack?: boolean;
-  /** 客户端 auth 目录，空= 默认探测 */
+  /** 客户端 auth 目录，留空表示默认探测 */
   authDir?: string;
   /** 已废弃，保留仅为兼容旧配置文件 */
   intervalMinutes?: number;
@@ -545,7 +547,7 @@ export const switchRotate = (uid: string, key: string) =>
     key,
   );
 
-/* ---------------------------------------------------------- 通知与备份 */
+/* 通知与备份 */
 
 /** 通知事件 id → 中文标签（与后端 notify/settings.js 的 EVENTS 一一对应）。 */
 export const NOTIFY_EVENT_LABELS: Record<string, string> = {
@@ -696,13 +698,13 @@ export const restoreBackup = (path: string, key: string, safetyBackup = true) =>
     list?: BackupRow[];
   }>('/v1/admin/backup/restore', { method: 'POST', body: { path, safetyBackup } }, key);
 
-/* ------------------------------------------------------------ 模型池 */
+/* 模型池 */
 
 /**
  * 模型池条目（GET /v1/models/status）。
  * 字段与后端 routes/models.js 的 listModels 完全一致：
  *   - status: usable | unavailable | unknown（后端 availability 模块判定）；
- *   - rate/rateText：积分倍率，x 开头；两平台接口均未提供峰谷价格，故peak 恒为 null；
+ *   - rate/rateText：积分倍率，x 开头；两平台接口均未提供峰谷价格，故 peak 恒为 null；
  *   - contextWindow 仅虚拟模型有值，上游模型目录不提供窗口；
  *   - candidates/usableCandidates 仅虚拟模型有值。
  */
@@ -753,7 +755,7 @@ export const refreshModels = (key: string) =>
     key,
   );
 
-/** 清除可用性标记。缺省model 时清全部。 */
+/** 清除可用性标记。缺省 model 时清全部。 */
 export const clearModelsStatus = (model: string | undefined, key: string) =>
   api<{ cleared: string }>(
     `/v1/models/status${model ? `?model=${encodeURIComponent(model)}` : ''}`,

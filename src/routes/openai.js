@@ -1,9 +1,8 @@
 'use strict';
 /**
- * routes/openai.js — OpenAI /v1/chat/completions（SSE + 非流式）。
- *
- * Agent 关键：有 tool_calls 时 finish_reason 必须是 tool_calls，
- * 否则客户端会在首段文本后把任务当成已完成而自动停止。
+ * routes/openai.js —— OpenAI /v1/chat/completions（SSE + 非流式）。
+ * Agent 场景要求：有 tool_calls 时 finish_reason 必须是 tool_calls，
+ * 否则客户端会在首段文本后认为任务已完成而自动停止。
  */
 const { Router } = require('express');
 const { llmUtilsChat, consumeStream } = require('../upstream/client');
@@ -55,8 +54,12 @@ function inLocalTraeModels(model) {
 }
 
 /**
- * 通用密钥（platform=all）按模型名分派到实际上游平台。
- * 虚拟模型在调用前已拦截到 model-router，此处只处理物理模型。
+ * 通用密钥（platform=all）按模型名分派到实际上游平台（trae 或 workbuddy）。
+ * 虚拟模型在调用前已被 model-router 拦截，此处只处理物理模型。
+ *
+ * Qoder 模型不在此分派：它有专属端点 /v1/qoder/chat/completions，
+ * 在这里被当成 Trae 模型只会拿到「模型不存在」而非「你走错端点了」。
+ * 拒绝由 canUseModel 的 isQoderOnlyModel 分支负责（见 middleware/model-access.js）。
  */
 function resolveKeyPlatform(keyPlatform, model) {
   if (keyPlatform === 'all') {
@@ -70,7 +73,7 @@ function resolveKeyPlatform(keyPlatform, model) {
 /**
  * 按 Key 绑定平台解析实际 model id：
  * - workbuddy：剥离可选 wb/ 前缀（客户端可能保留或剥离）
- * - trae：若误带 wb/ 前缀则报错（应换 WB Key / 通用 Key）
+ * - trae：若误带 wb/ 前缀则报错（应换 WB Key 或通用 Key）
  * @returns {{ok:true, platform:string, modelId:string}|{ok:false, message:string}}
  */
 function resolveModelForPlatform(platform, model) {
@@ -92,7 +95,7 @@ function resolveModelForPlatform(platform, model) {
   if (!raw) {
     return { ok: false, message: 'model is required' };
   }
-  // WB 独有且 Trae 未登记：明确报错，避免上游 4001 难排查
+  // WB 独有且 Trae 未登记：明确报错，避免上游 4001 难以排查
   const lower = raw.toLowerCase();
   if (!inLocalTraeModels(lower) && wbChat.WB_MODELS.includes(lower) && lower !== 'auto' && lower !== 'default') {
     return {
@@ -121,7 +124,7 @@ router.post('/v1/chat/completions', async (req, res) => {
   let toolCalls = 0;
   let requestError = null;
   let requestStatus = 200;
-  let lastUsage = null; // 上游 token_usage 事件（流式/非流式均捕获）
+  let lastUsage = null; // 上游 token_usage 事件（流式与非流式均捕获）
   let resolvedPlatformTag = null; // 命中的平台（'trae'|'workbuddy'），供费率标定选表
   // 计费模型名：直连路径下 model 就是物理模型；WB 路径会剥掉 wb/ 前缀后另存。
   // 必须与 model 分开——费率表/标定表按物理模型名建键，别名查不到条目。
@@ -136,7 +139,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       ...(continueCount > 0 ? { continues: continueCount } : {}),
     };
   };
-  // 末帧结束原因：上游截断信号优先，其次 tool_calls，最后兜底 stop
+  // 末帧结束原因：上游截断信号优先，其次 tool_calls，无信号时取 stop
   const finalFinish = (upstreamFinish) => {
     if (isTruncatedFinish(upstreamFinish)) return upstreamFinish;
     if (upstreamFinish === 'tool_calls') return 'tool_calls';
@@ -164,8 +167,8 @@ router.post('/v1/chat/completions', async (req, res) => {
     return res.status(400).json({ error: { message: 'messages is required', type: 'invalid_request_error' } });
   }
 
-  // 虚拟模型 ID：走 model-router 分发（限流自动切换 / 优先级权重）
-  // 权限：通用密钥（all）可调；平台密钥拒绝
+  // 虚拟模型 ID 走 model-router 分发（限流自动切换、优先级权重）。
+  // 权限：通用密钥（all）可调；平台密钥拒绝。
   if (modelRouter.hasVirtualModel(model)) {
     const vAccess = canUseModel(req.platform, model, req.authKey || null);
     if (!vAccess.ok) {
@@ -212,9 +215,9 @@ router.post('/v1/chat/completions', async (req, res) => {
     return;
   }
 
-  // ===== 密钥权限 + 平台路由 =====
+  // 密钥权限与平台路由
   // 通用密钥（all）：虚拟模型 / 按模型名自动分派 trae|workbuddy
-  // 平台密钥：仅本平台；虚拟模型与外平台模型拒绝
+  // 平台密钥：仅限本平台；虚拟模型与外平台模型一律拒绝
   const access = canUseModel(req.platform, model, req.authKey || null);
   if (!access.ok) {
     logRequest({
@@ -250,8 +253,8 @@ router.post('/v1/chat/completions', async (req, res) => {
     const wbStickyKey = sticky.stickyKeyFromRequest(req);
     const wbStickyAcct = sticky.lookup(wbStickyKey);
     const wbRunOpts = { stickyKey: wbStickyKey, stickyAccountId: wbStickyAcct, edition: 'workbuddy', model: wbModel };
-    // 直连 WB 路径的 usage：非流式取聚合结果，流式需从 SSE 中旁路提取。
-    // 原实现两条路径都不落日志，导致 WB 直连请求的 token 恒为 0。
+    // 直连 WB 路径的 usage：非流式取聚合结果，流式需从 SSE 旁路提取。
+    // 原实现两条路径都不写日志，导致 WB 直连请求的 token 恒为 0。
     let wbUsage = null;
     try {
       if (stream !== false) {
@@ -274,7 +277,7 @@ router.post('/v1/chat/completions', async (req, res) => {
             throw e;
           }
           if (wbStickyKey && accountId) sticky.bind(wbStickyKey, accountId);
-          // SSE 直通（上游即 OpenAI 格式）；旁路窥探 usage，不影响转发字节
+          // SSE 直通（上游即 OpenAI 格式）；旁路读取 usage，不影响转发的字节
           const reader = up.body.getReader();
           const dec = new TextDecoder();
           const feeder = createLineFeeder((line) => {
@@ -436,7 +439,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       feeder.flush();
       handler.flushToolAccum();
 
-      // B2：参数残缺的工具调用 => 按截断收尾（不续写工具轮，交由客户端处置）
+      // B2：参数残缺的工具调用按截断收尾（不续写工具轮，交由客户端处置）
       if (handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs()) {
         roundFinish = 'length';
         roundIncompleteTools = true;
@@ -448,7 +451,7 @@ router.post('/v1/chat/completions', async (req, res) => {
 
     try {
       await pool.run(async (accountId) => {
-        // 每次尝试独立的流解析状态；轮换重试时全部复位
+        // 每次尝试使用独立的流解析状态；轮换重试时全部复位
         finished = false;
         toolCallIndex = 0;
         toolCalls = 0;
@@ -532,7 +535,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     return;
   }
 
-  // ----- 非流式 -----
+  // 非流式分支
   try {
     const continueEnabled = config.autoContinue && config.maxContinues > 0;
     let up = null;

@@ -44,7 +44,7 @@ function toInfo(acct) {
 /**
  * 对单个 WorkBuddy 账号执行签到。
  * @param {string} accountId
- * @returns {Promise<object>} 与 Trae checkin 对齐的 result 字段
+ * @returns {Promise<object>} 与 Trae checkin 统一的 result 字段
  */
 async function wbCheckinAccount(accountId) {
   const stored = store.get(accountId);
@@ -127,8 +127,8 @@ async function wbCheckinAccount(accountId) {
 /**
  * 对所有 enabled 的 WorkBuddy 账号签到。
  *
- * 与 Trae 侧同口径：默认按 (本地日期, 账号id) 确定性错峰分散到时间窗内，
- * 避免多账号同时打上游签到接口。spreadMinutes=0 时退回立即顺序执行。
+ * 与 Trae 侧同口径：默认按（本地日期, 账号 id）确定性错峰分散到时间窗内，
+ * 避免多账号同时请求上游签到接口。spreadMinutes=0 时退回立即顺序执行。
  *
  * @param {{windowStartMs?:number, spreadMinutes?:number}} [opts]
  */

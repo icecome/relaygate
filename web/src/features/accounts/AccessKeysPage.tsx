@@ -1,9 +1,7 @@
 /**
  * 访问密钥页：创建、轮换、吊销、重置与一次性明文查看。
- *
- * 真实语义：明文 key 仅在创建、轮换、重置、reveal 时返回一次，
- * 列表接口只返回掩码。页面据此设计 —— 列表恒用掩码，
- * 明文只出现在「最近生成」区域，避免长期暴露在屏幕上。
+ * 后端语义：明文 key 仅在创建、轮换、重置、reveal 时返回一次，列表接口只返回掩码。
+ * 页面据此设计：列表恒用掩码，明文只出现在「最近生成」区域，避免长期暴露在屏幕上。
  */
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
@@ -52,7 +50,7 @@ const STATUS_LABEL: Record<string, string> = {
   expired: '已过期',
 };
 
-/** 未知 status 兜底，避免映射缺失导致渲染中断。 */
+/** 未知 status 的最后手段映射，避免映射缺失导致渲染中断。 */
 function statusLabel(status: string | undefined): string {
   return STATUS_LABEL[status ?? 'active'] ?? status ?? '生效中';
 }
@@ -71,7 +69,7 @@ export default function AccessKeysPage() {
   const list = useAsyncData((signal) => listAccessKeys(key, signal), [key], { enabled: !!key });
   // 登录密钥接口返回 { object, data }，是否已配置由列表长度判断
   const loginKeys = useAsyncData((signal) => listLoginKeys(key, signal), [key], { enabled: !!key });
-  // 拿到明文密钥后顺手展示接入配置，避免用户再去运维第 5 分段找
+  // 取得明文密钥后同时展示接入配置，省去用户到运维页第 5 分段查找
   const clientConfig = useAsyncData((signal) => getClientConfig(key, signal), [key], {
     enabled: !!key,
   });
@@ -233,13 +231,13 @@ export default function AccessKeysPage() {
       <Stack>
         {list.error && <ErrorState message={list.error} onRetry={list.reload} />}
 
-        <Panel title="访问密钥" flush>
+        <Panel title="密钥列表" flush>
           {list.loading && !list.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
             <EmptyState
               label="还没有访问密钥。"
-              hint="IDE 或脚本要调用本网关，需要一把 sk- 开头的访问密钥；管理面板登录用的是另一把登录密钥，两者互不通用。"
+              hint="IDE 或脚本要调用本网关，需要一把 sk- 开头的访问密钥；登录管理面板用的是另一把登录密钥，两者互不通用。"
               action={{ label: '创建第一把访问密钥', onClick: create }}
             />
           ) : (
@@ -327,7 +325,7 @@ export default function AccessKeysPage() {
           </Panel>
         )}
 
-        {/* 下一步：密钥本身不带服务地址，用户拿到明文后必须知道填什么。
+        {/* 密钥本身不带服务地址，用户拿到明文后必须知道填什么。
             此前这份接入指引只在「运维 → 网关配置」的最后一个分段里，
             与 mint 密钥、验证连通性两页之间没有任何链接，形成三页断裂。 */}
         {fresh && (

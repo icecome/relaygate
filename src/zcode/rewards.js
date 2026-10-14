@@ -2,16 +2,16 @@
 /**
  * zcode/rewards.js — ZCode 限时套餐（赠送额度）探测与领取。
  *
- * 链路（与官方客户端 billing 面同源，实证见 docs 与 zcode2api/app/claim.py）：
+ * 完整流程（与官方客户端 billing 面同源，实证见 docs 与 zcode2api/app/claim.py）：
  *   1. POST /api/v1/event/report  ×2（app_launch / app_daily_active）
  *      —— 官方客户端启动与日活上报。上游据此判定「活跃用户」，
- *         是活动套餐投放资格的疑似信号；不带上报时常出现「客户端可见活动、
- *         preview 却为空」。无 Authorization，失败不阻断后续步骤。
+ *         是活动套餐投放资格的疑似信号；不带上报时常出现客户端可见活动、
+ *         preview 却为空。无 Authorization，失败不阻断后续步骤。
  *   2. GET  /api/v1/zcode-plan/billing/preview?app_version=
- *      —— 返回当前账号「可领取」的套餐列表（plans[]）。已领取过则为空。
+ *      —— 返回当前账号可领取的套餐列表（plans[]）。已领取过则为空。
  *   3. POST /api/v1/zcode-plan/billing/claim  {plan_id}
  *      —— 领取。强制校验阿里云无感验证码（X-Aliyun-Captcha-Verify-Param
- *         + -Region），缺失/伪造一律 code 3007。
+ *         + -Region），缺失或伪造一律 code 3007。
  *
  * 业务码语义（上游实证，映射为用户文案）：
  *   1001 套餐不存在或已下架     1002 活动结束或暂不可领取
@@ -20,7 +20,7 @@
  *   3001 参数错误               3007 验证码校验失败（换码重试一次）
  *   3012 真风控 unusual activity（隔离账号）
  *
- * 职责边界：本模块只做「取数 + 领取 + 落库」，不含定时策略（jobs/zcode-rewards.js）
+ * 职责边界：本模块只做取数、领取与写入数据库，不含定时策略（jobs/zcode-rewards.js）
  * 与 HTTP 暴露（routes/zcode.js）。
  */
 const store = require('../credentials/store');
@@ -54,7 +54,7 @@ const CLAIM_RESULT = Object.freeze({
   RISK: 'risk',
 });
 
-/** 是否为 ZCode 账号（显式比较，不兜底）。 */
+/** 是否为 ZCode 账号（显式比较，不做默认推断）。 */
 function isZcode(acct) {
   return !!acct && variant.isEdition(acct.edition, variant.ZCODE);
 }
@@ -103,13 +103,13 @@ function parsePlan(raw) {
 
 /**
  * 上报激活事件（官方客户端启动/日活）。
- * 失败只记录，不阻断——它只是「疑似」资格信号，且日活键在上游按
+ * 失败只记录，不阻断——它只是疑似资格信号，且日活键在上游按
  * device_mid + 日期去重，重试无意义。
  * @returns {Promise<{ok:string[], failed:string[]}>}
  */
 async function reportActivation(acct) {
   const fp = fingerprint.profileFor(acct, (fresh) => {
-    try { store.update(acct.id, { fingerprint: fresh }); } catch { /* 落库失败不阻断 */ }
+    try { store.update(acct.id, { fingerprint: fresh }); } catch { /* 账号库写入失败不阻断 */ }
   });
   const userId = jwtUserId(acct.token);
   const result = { ok: [], failed: [] };
@@ -160,7 +160,7 @@ function buildActivationEvent(element, fp, userId) {
   };
 }
 
-/** 从 JWT 解出 user_id（sub 兜底）；不校验签名（只读取自己存的凭据）。 */
+/** 从 JWT 解出 user_id（缺失时回退 sub）；不校验签名（只读取自己存的凭据）。 */
 function jwtUserId(token) {
   const t = String(token || '').trim();
   if (!t) return null;
@@ -196,7 +196,7 @@ async function previewPlans(acct) {
 /** billing 面身份头（含账号指纹与 token）。 */
 function buildBillingHeaders(acct) {
   const fp = fingerprint.profileFor(acct, (fresh) => {
-    try { store.update(acct.id, { fingerprint: fresh }); } catch { /* 落库失败不阻断 */ }
+    try { store.update(acct.id, { fingerprint: fresh }); } catch { /* 账号库写入失败不阻断 */ }
   });
   return identity.identityHeaders(fp, { token: acct.token });
 }

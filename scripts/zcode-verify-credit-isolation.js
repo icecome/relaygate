@@ -1,6 +1,6 @@
 'use strict';
 /**
- * ZCode 口径修复后的回归验证（真实库）。
+ * ZCode 积分口径修复后的回归验证（真实库）。
  * 断言：积分口径的三处聚合不再包含 ZCode 账号的 token 数。
  */
 const store = require('../src/credentials/store');

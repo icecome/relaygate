@@ -1,10 +1,8 @@
 /**
  * HTTP 请求内核。
  *
- * 在原有 fetch 封装上补齐三件此前缺失的能力：
- *   1. 取消：调用方可传 AbortSignal，路由切换时中止在途请求，避免竞态覆盖；
- *   2. 超时：默认 30s，避免慢响应挂死页面；
- *   3. 去重：同一 GET 在飞行中的并发请求复用同一个 Promise。
+ * 在 fetch 封装上补齐三项能力：AbortSignal 取消（路由切换时中止在途请求，避免竞态覆盖）、
+ * 默认 30s 超时、同一 GET 在飞行中的并发请求复用同一个 Promise。
  *
  * 错误模型保留后端返回的 code / type / message / details，
  * 使调用方能区分「请求异常」与「业务层失败」两类问题。
@@ -33,7 +31,7 @@ export class ApiError extends Error {
 
 export class TimeoutError extends ApiError {
   constructor(ms: number) {
-    super(0, `请求超时（${Math.round(ms / 1000)}s）`);
+    super(0, `请求超时（${Math.round(ms / 1000)} 秒）`);
     this.name = 'TimeoutError';
   }
 }
@@ -68,9 +66,9 @@ const inflight = new Map<string, Promise<unknown>>();
  *
  * 只在响应确实是「登录密钥无效」时才退出登录。
  * 转发面用的是另一类密钥（access key），管理面路由未命中时会落到转发面
- * 鉴权并返回 `Invalid access key. 请使用管理面创建的访问密钥…`——
- * 那是路由/凭据类型问题，不是登录过期。若一律退出登录，用户会被反复踢出，
- * 且真实原因（路径写错、用了转发密钥访问管理面）被掩盖成「登录失效」。
+ * 鉴权并返回 `Invalid access key. 请使用管理面创建的访问密钥……`——
+ * 那是路由或凭据类型问题，不是登录过期。若一律退出登录，用户会被反复踢出，
+ * 且真实原因（路径写错、用转发密钥访问管理面）会被掩盖成「登录失效」。
  */
 function isLoginKeyRejection(status: number, type?: string, message?: string): boolean {
   if (status !== 401) return false;

@@ -1,7 +1,7 @@
 'use strict';
 /**
  * log/audit.js — 安全审计日志（append-only）。
- * 写入 SQLite audit_log + 可选 JSONL；主路径应不阻塞（同步小写可接受）。
+ * 写入 SQLite audit_log 与可选 JSONL；主路径不应阻塞（同步小写可接受）。
  */
 const fs = require('fs');
 const path = require('path');
@@ -55,7 +55,7 @@ function audit(ev) {
     const f = jsonlFile();
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.appendFileSync(f, JSON.stringify(row) + '\n', 'utf-8');
-  } catch { /* jsonl best-effort */ }
+  } catch { /* JSONL 写入失败不影响主流程 */ }
   return row;
 }
 

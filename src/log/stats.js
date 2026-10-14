@@ -10,7 +10,7 @@ const config = require('../config');
 const { estimateCost } = require('../models/rates');
 const { round2, round4 } = require('../lib/round');
 
-/** 读取最近 N 天的 traffic.jsonl 行（按日期从新到旧合并，便于分页场景优先命中近期数据）。 */
+/** 读取最近 N 天的 traffic.jsonl 行；按日期从新到旧合并，分页时优先命中近期数据。 */
 function readTrafficLines(days) {
   const rows = [];
   const base = path.join(config.ROOT, 'logs');
@@ -28,18 +28,17 @@ function readTrafficLines(days) {
         dayRows.push(r);
       } catch { /* skip bad line */ }
     }
-    // 单日内按时间倒序（jsonl 追加序即时间升序，反转后与跨日的新→旧一致）
+    // 单日内按时间倒序：jsonl 追加序即时间升序，反转后与跨日的新→旧顺序一致
     rows.push(...dayRows.reverse());
   }
   return rows;
 }
 
 /**
- * 该行是否带回上游 usage。Trae 平台多数请求带，WorkBuddy 平台目前全部不带。
- *
- * 必须是数值：2026-10-10 之前的日志里 token 字段被 sanitize 的 "token" 正则
+ * 该行是否带回上游 usage：Trae 平台多数请求带回，WorkBuddy 平台目前全部不带。
+ * 判定必须是数值：2026-10-10 之前的日志里 token 字段被 sanitize 的 "token" 正则
  * 误脱敏成 "***" 字符串（现已修复）。字符串不是计量值——若按 != null 判定，
- * 这批历史行会被记成「已计量但 0 token」，把覆盖率虚报成 100%。
+ * 这批历史行会被记成「已计量但 0 token」，使覆盖率虚高为 100%。
  */
 function isMetered(r) {
   return numTok(r.totalTokens) != null || numTok(r.promptTokens) != null || numTok(r.completionTokens) != null;
@@ -48,14 +47,14 @@ function isMetered(r) {
 /**
  * 计量值判定。
  *
- * 必须区分三种历史形态（2026-10-10 前的日志三种都存在）：
+ * 必须区分三种历史形态（2026-10-10 之前的日志三种都存在）：
  *   number  → 正常值
- *   "49569" → **数字字符串**，值可完整还原（旧版落盘格式），应当接受
- *   "***"   → 被 sanitize 的 "token" 正则误脱敏，原值从未落盘，不可还原
+ *   "49569" → 数字字符串，值可完整还原（旧版写入文件的格式），应当接受
+ *   "***"   → 被 sanitize 的 "token" 正则误脱敏，原值从未写入文件，不可还原
  *
- * 早先的实现一律拒绝字符串，把「可还原的数字字符串」也判成未计量，
- * 导致 2026-09 的 1053 行/日真实 token 被记作 0（覆盖率虚低、估算缺位）。
- * 而若一律接受字符串，`Number("***")` 为 NaN 又会让覆盖率虚高。
+ * 早先的实现一律拒绝字符串，把可还原的数字字符串也判成未计量，
+ * 导致 2026-09 的 1053 行/日真实 token 被记作 0（覆盖率虚低、估算缺位）；
+ * 而一律接受字符串时，`Number("***")` 为 NaN 又会让覆盖率虚高。
  * 故按「是否为纯数字」分流。
  */
 function numTok(v) {
@@ -71,13 +70,13 @@ function isMasked(v) {
 
 /**
  * 该行的 token 是补算值（上游未回传 usage，由 tiktoken 估算）。
- * 日志侧只在确实缺失 usage 时才写 tokensEstimated，故无需再判 metered。
+ * 日志侧只在确实缺失 usage 时才写 tokensEstimated，无需再判 metered。
  */
 function isEstimated(r) {
   return r.tokensEstimated === true;
 }
 
-/** 该行的 token 数。未计量记 0，同时由调用方单独累计 metered 计数以便区分。 */
+/** 该行的 token 数。未计量记 0；由调用方单独累计 metered 计数以作区分。 */
 function tokensOf(r) {
   return numTok(r.totalTokens) ?? ((numTok(r.promptTokens) || 0) + (numTok(r.completionTokens) || 0));
 }
@@ -86,15 +85,14 @@ function tokensOf(r) {
  * 该行的计费模型名。
  *
  * 必须优先取 pricedModel（日志侧按真实命中的上游模型写入）：
- * 虚拟模型 ID（vm/long-context）在费率表与标定表里都没有条目，
- * 用它查费率恒为 null。历史日志没有 pricedModel，退回解析 routedTo，
- * 最后才用 model。
+ * 虚拟模型 ID（vm/long-context）在费率表与标定表中都没有条目，用它查费率恒为 null。
+ * 历史日志没有 pricedModel 时退回解析 routedTo，最后才用 model。
  */
 function pricedModelOf(r) {
   if (typeof r.pricedModel === 'string' && r.pricedModel) return r.pricedModel;
   const rt = typeof r.routedTo === 'string' ? r.routedTo : '';
   if (rt) {
-    // routedTo 形如 "trae/qwen3.8-flash@max" / "workbuddy/wb/space-bunny"
+    // routedTo 形如 "trae/qwen3.8-flash@max" / "workbuddy/wb/space-bunny"，
     // 取最后一段作为模型名（provider 段可能自带斜杠）
     const seg = rt.split('/').filter(Boolean).pop();
     if (seg) return seg;
@@ -105,12 +103,12 @@ function pricedModelOf(r) {
 /**
  * 该行的积分估算。
  *
- * **一律按当前标定系数重算，不采信日志里固化的 estimatedCost。**
- * 原因：2026-10-10 之前落盘的值用的是 tier 倍率口径（tier=5 → rate=1，
- * 即「1 积分/千 token」），而账单实测约 0.0103 积分/千 token —— 量纲差约 97 倍。
- * 实测 2026-09-27 单日固化值合计 241,539 积分，而当日官方账单只有 1,976.61。
+ * 一律按当前标定系数重算，不采信日志里固化的 estimatedCost。
+ * 原因：2026-10-10 之前写入文件的值使用 tier 倍率口径（tier=5 → rate=1，
+ * 即「1 积分/千 token」），而账单实测约 0.0103 积分/千 token——量纲差约 97 倍，
+ * 实测 2026-09-27 单日固化值合计 241,539 积分，当日官方账单只有 1,976.61。
  *
- * 无 cacheRead 字段的历史行按「全部未缓存」计价，属**上界**（高估），
+ * 无 cacheRead 字段的历史行按「全部未缓存」计价，属于上界（高估），
  * 由返回值 upperBound 标记，界面据此提示估算偏保守。
  *
  * @returns {{cost:number, priced:boolean, upperBound:boolean}}
@@ -122,19 +120,19 @@ function costOf(r) {
     platform: r.platform,
   });
   if (c == null) return { cost: 0, priced: false, upperBound: false };
-  // 有 token 但没缓存读信息 → 按全未缓存算，是上界
+  // 有 token 但缺缓存读信息 → 按全未缓存算，是上界
   const upperBound = numTok(r.cacheReadTokens) == null && (numTok(r.promptTokens) || 0) > 0;
   return { cost: c, priced: true, upperBound };
 }
 
 /**
  * 该行 token 的来源分类。
- *   exact     上游回传的真实 usage —— 可当账单口径
- *   estimated tiktoken 补算 —— 数值但非账单口径，只作趋势
- *   none      完全没有 token（错误请求 / 上游不带 usage 且补算未开）
+ *   exact     上游回传的真实 usage，可当账单口径
+ *   estimated tiktoken 补算，数值但非账单口径，只作趋势
+ *   none      完全没有 token（错误请求，或上游不带 usage 且补算未开）
  *
  * 三者必须分开：metered（有数值）把 exact 与 estimated 混在一起，
- * 前端若把 unmetered 读作「补算数」就是错的——unmetered 实际是 none。
+ * 前端若把 unmetered 读作补算数就是错的——unmetered 实际是 none。
  */
 function tokenSource(r) {
   if (r.tokensEstimated === true) return 'estimated';
@@ -147,9 +145,9 @@ function tokenSource(r) {
  * tokens 只累加已计量请求；metered / unmetered 给出覆盖情况，
  * 避免把「未带回 usage」误读成「消耗 0 token」。
  *
- * 缓存读单列 cacheReadTokens：标定费率对「未缓存输入 / 缓存读」分别计价
- * （实测两者单价差 4~8 倍），界面需要它解释「为何 20 万 token 只花 0.7 积分」。
- * exact / estimated / none 三个来源分开计数，前端才能标出「多少 token 是真值」。
+ * 缓存读单列 cacheReadTokens：标定费率对未缓存输入与缓存读分别计价
+ * （实测两者单价差 4~8 倍），界面需要它解释为何 20 万 token 只花 0.7 积分。
+ * exact / estimated / none 三个来源分开计数，前端才能标出多少 token 是真值。
  */
 function dailyStats(lines) {
   const byDay = {};
@@ -166,8 +164,8 @@ function dailyStats(lines) {
     const src = tokenSource(r);
     d[src]++;
     if (src !== 'none') d.metered++;
-    // token 字段被脱敏成 "***"：历史脱敏缺陷的痕迹，原值从未落盘，不可还原。
-    // 注意数字字符串（"49569"）可完整还原，numTok 已接受，不算丢失。
+    // token 字段被脱敏成 "***"：历史脱敏缺陷的痕迹，原值从未写入文件，不可还原。
+    // 数字字符串（"49569"）可完整还原，numTok 已接受，不算丢失。
     if (isMasked(r.totalTokens) || isMasked(r.promptTokens)) d.tokensLost++;
     d.tokens += tokensOf(r);
     d.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
@@ -190,7 +188,7 @@ function dailyStats(lines) {
       tokens: round2(d.tokens),
       cacheReadTokens: round2(d.cacheReadTokens),
       estimatedCost: round4(d.estimatedCost),
-      // priced：能算出估算积分的行数。它 < 请求数时，估算总量是下界——
+      // priced：能算出估算积分的行数。它小于请求数时，估算总量是下界，
       // 界面据此标注，避免把「算不出」读成「没消耗」。
       priced: d.priced,
       // costUpper：缺 cacheRead 信息、按「全未缓存」计价的行数（估算偏高的上界）

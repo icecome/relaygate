@@ -2,16 +2,16 @@
 /**
  * jobs/scheduler-lock.js — 调度器的跨进程单实例锁。
  *
- * 为什么需要：进程在 CHECKIN_HOUR 前后重启，或用户手动 `node src/index.js`
- * 与 start.bat 同时跑，会出现两个调度器并行 —— start.bat 自己的注释承认过
- * 这种情况。签到是幂等的，但**备份与账号轮换不是**：重复执行有真实副作用。
+ * 为什么需要：进程在 CHECKIN_HOUR 前后重启，或手动 `node src/index.js` 与
+ * start.bat 同时运行，会出现两个调度器并行（start.bat 的注释承认过这种情况）。
+ * 签到是幂等的，但备份与账号轮换不是：重复执行有真实副作用。
  * scheduler.js 的 scheduleEpoch 只能解决进程内重排，跨进程要靠文件锁。
  *
- * 锁文件写 pid + 启动时刻。获取时若已有锁，用 process.kill(pid, 0) 探活：
+ * 锁文件记录 pid 与启动时刻。获取时若已有锁，用 process.kill(pid, 0) 探活：
  *   - 进程存活 → 拒绝获取（返回 { acquired:false, holderPid }）
  *   - 进程已死 → 视为陈旧锁，接管
- * 探活本身有误判空间（pid 复用），因此同时校验进程启动时间不可行（无跨平台
- * 稳定 API），采用「pid 存活 + 锁文件 mtime 新鲜度」双条件降低误判。
+ * 探活本身有误判空间（pid 复用），校验进程启动时间又缺少跨平台稳定 API，
+ * 因此采用「pid 存活 + 锁文件 mtime 新鲜度」双条件降低误判。
  */
 const fs = require('fs');
 const path = require('path');
@@ -22,7 +22,7 @@ function lockFile() {
   return path.join(config.workspaceDir, '.trae-api', 'scheduler.lock');
 }
 
-/** 锁被视为陈旧的最长时间：超过则不再信任其中记录的 pid。 */
+/** 锁被视为陈旧的最长时间：超过则不再信任其中记录的 PID。 */
 const STALE_MS = 12 * 60 * 60 * 1000; // 12h
 
 function readLock() {
@@ -35,7 +35,7 @@ function readLock() {
   }
 }
 
-/** pid 是否存活（不发送真实信号，仅做存在性探测）。 */
+/** PID 是否存活（不发送真实信号，仅做存在性探测）。 */
 function pidAlive(pid) {
   if (!pid || !Number.isFinite(Number(pid))) return false;
   try {
@@ -58,7 +58,7 @@ function acquire() {
     if (fresh && pidAlive(existing.pid)) {
       return { acquired: false, holderPid: Number(existing.pid), reason: 'held' };
     }
-    // 陈旧锁（进程已死或太久没更新）→ 接管
+    // 陈旧锁（进程已死或太久未更新）→ 接管
     try {
       fs.unlinkSync(lockFile());
     } catch {
@@ -78,7 +78,7 @@ function acquire() {
   }
 }
 
-/** 释放锁（仅当锁属于本进程时删除，避免误删他人刚拿到的锁）。 */
+/** 释放锁（仅当锁属于本进程时删除，避免误删其它进程刚拿到的锁）。 */
 function release() {
   const existing = readLock();
   if (existing && Number(existing.pid) !== process.pid) return false;

@@ -3,7 +3,7 @@
  * session/sticky.js — 会话粘性：同一 stickyKey 尽量绑定同一 accountId。
  * 内存 TTL 表，重启丢失可接受（个人网关）。
  */
-const TTL_MS = 60 * 60 * 1000; // 1h
+const TTL_MS = 60 * 60 * 1000; // 1 小时
 
 /** key -> { accountId, ts } */
 const map = new Map();
@@ -21,12 +21,28 @@ function bind(stickyKey, accountId) {
   map.set(String(stickyKey), { accountId: String(accountId), ts: Date.now() });
 }
 
+/**
+ * 仅在**未绑定**时写入（首次绑定）。
+ *
+ * 用途：权益让位后重新选号时，不能覆盖调用方原有的绑定——那会把
+ * 「这个会话本该用谁」的既有事实抹掉（让位是临时决策，不该改长期绑定）。
+ * @returns {boolean} 是否实际写入
+ */
+function bindIfAbsent(stickyKey, accountId) {
+  if (!stickyKey || !accountId) return false;
+  prune();
+  const k = String(stickyKey);
+  if (map.has(k)) return false;
+  map.set(k, { accountId: String(accountId), ts: Date.now() });
+  return true;
+}
+
 function lookup(stickyKey) {
   if (!stickyKey) return null;
   prune();
   const hit = map.get(String(stickyKey));
   if (!hit) return null;
-  hit.ts = Date.now(); // TTL 滚动
+  hit.ts = Date.now(); // 命中即刷新 TTL 起点
   return hit.accountId;
 }
 
@@ -36,7 +52,7 @@ function unbind(stickyKey) {
 
 /**
  * 从 OpenAI/Anthropic 请求推导 sticky key。
- * 优先 user 侧自定义头（扩展），否则取 messages 内稳定 hash 线索。
+ * 优先取 user 侧自定义头（扩展），否则取 messages 内的稳定 hash 线索。
  */
 function stickyKeyFromRequest(req) {
   const h = req.headers || {};
@@ -71,4 +87,4 @@ function listSafe() {
   }));
 }
 
-module.exports = { bind, lookup, unbind, stickyKeyFromRequest, size, listSafe, TTL_MS };
+module.exports = { bind, bindIfAbsent, lookup, unbind, stickyKeyFromRequest, size, listSafe, TTL_MS };

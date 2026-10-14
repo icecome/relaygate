@@ -2,7 +2,7 @@
  * 凭据领域接口（/v1/credentials）。
  *
  * URL、请求方法与请求体字段与后端完全一致，未做任何改写。
- * 相比原实现，getSummary 增加了 AbortSignal 支持以便取消在途请求。
+ * getSummary 支持 AbortSignal 以取消在途请求。
  */
 import { api } from './http';
 import type { Account, CheckinResult, BalanceResult, Summary } from './types';
@@ -97,7 +97,7 @@ export const resetAllDevices = (key: string) =>
     key,
   );
 
-/* ------------------------------------------------------------ Trae OAuth */
+/* Trae OAuth */
 
 /**
  * OAuth 登录：先取授权地址并打开，用户完成授权后前端轮询 status。
@@ -124,7 +124,7 @@ export interface OauthStatus {
 export const oauthStatus = (key: string, signal?: AbortSignal) =>
   api<{ result?: OauthStatus }>('/v1/credentials/oauth/status', { signal }, key);
 
-/** 手动兜底：粘贴完整回调 URL，仅解析参数，不向该地址发起请求。 */
+/** 手动最后手段：粘贴完整回调 URL，仅解析参数，不向该地址发起请求。 */
 export const oauthCallback = (url: string, key: string) =>
   api<{ ok: boolean; account?: Account; detail?: OauthStatus }>(
     '/v1/credentials/oauth/callback',

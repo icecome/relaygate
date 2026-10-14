@@ -1,19 +1,18 @@
 'use strict';
 /**
- * credentials/store.js — 多账号凭据存储（SQLite 版，面向"免本机登录"）。
+ * credentials/store.js — 多账号凭据存储（SQLite 版，面向「免本机登录」）。
  *
- * 需求：不依赖本机 Trae storage.json，通过导入凭据 / OAuth 连接账号。
- * 本模块：对 SQLite accounts 表做增删改查，敏感字段（token/refreshToken）落库前加密。
+ * 不依赖本机 Trae storage.json，通过导入凭据或 OAuth 连接账号。
+ * 对 SQLite accounts 表做增删改查，敏感字段（token/refreshToken）写入数据库前加密。
  * 数据源来自 credentials/db.js；此处只做 ORM 映射与加密解密封装。
- *
- * 说明：source 取值 'import'|'oauth'|'local'；local 表示本机登录回退（无持久化账号）。
+ * source 取值 'import'|'oauth'|'local'；local 表示本机登录回退（无持久化账号）。
  */
 const config = require('../config');
 const { db } = require('./db');
 const crypto = require('../lib/crypto.js');
 const nodeCrypto = require('crypto');
 
-/** 生成简短的账号 id（加密随机，避免 Math.random 可预测） */
+/** 生成简短的账号 ID（加密随机，避免 Math.random 可预测）。 */
 function genId() {
   return `acct_${Date.now().toString(36)}${nodeCrypto.randomBytes(4).toString('hex')}`;
 }
@@ -22,7 +21,7 @@ function enc(v) {
   return v == null ? null : crypto.encrypt(String(v));
 }
 
-/** SQLite 绑定安全：仅允许 string / number / null。对象/布尔等转字符串或 null。 */
+/** SQLite 绑定安全：仅允许 string / number / null。对象、布尔等转字符串或 null。 */
 function bindText(v) {
   if (v == null || v === '') return null;
   if (typeof v === 'string') return v;
@@ -53,7 +52,7 @@ function safeTok(v) {
 /**
  * patch 的驼峰键 → { 数据库列名, 取值函数 } 映射。
  *
- * update() 只写 patch 里真正出现的列（不再全列重写），这是修复「丢失更新」的前提：
+ * update() 只写 patch 里真正出现的列（不再全列重写），这是修复丢失更新的前提：
  * 全列重写时，另一写入方刚写入的字段会被当前这份陈旧快照覆盖回去。
  *
  * 列名必须显式声明：token→token_enc、group→group_name 这类不是简单驼峰转换。
@@ -101,6 +100,8 @@ const PATCH_COLUMNS = {
   },
   rateStreak: { col: 'rate_streak', val: (a) => bindInt(a.rateStreak, 0) },
   modelCoolStreak: { col: 'model_cool_streak', val: (a) => bindInt(a.modelCoolStreak, 0) },
+  // Qoder 区域（仅 qoder 账号）。导入时按扫到的客户端目录确定，之后不再变。
+  qoderRealm: { col: 'qoder_realm', val: (a) => bindText(a.qoderRealm) },
 };
 
 /** 写入冲突时的错误标记，供调用方与测试识别（不当作普通异常吞掉）。 */
@@ -136,6 +137,7 @@ function acctToRow(acct) {
     last_checkin_result: bindText(acct.lastCheckinResult),
     last_keepalive_at: bindText(acct.lastKeepaliveAt),
     last_keepalive_result: bindText(acct.lastKeepaliveResult),
+    qoder_realm: bindText(acct.qoderRealm),
     entitlement_snapshot: bindText(acct.entitlementSnapshot),
     priority: bindInt(acct.priority, 0),
     tags: acct.tags ? JSON.stringify(acct.tags) : null,
@@ -151,7 +153,7 @@ function acctToRow(acct) {
 }
 
 /**
- * 列表查询不做密文解密：list() 的返回值会被 safeTok 剥掉 token/refreshToken，
+ * 列表查询不解密：list() 的返回值会被 safeTok 剥掉 token/refreshToken，
  * 所有调用方都拿不到明文，解密纯属浪费（实测 1000 账号约 27ms/次）。
  * 需要明文的路径（get / update / 上游调用）单独走 get()。
  */
@@ -189,6 +191,7 @@ function rowToDecrypted(r, withSecrets = true) {
     lastCheckinResult: r.last_checkin_result,
     lastKeepaliveAt: r.last_keepalive_at,
     lastKeepaliveResult: r.last_keepalive_result,
+    qoderRealm: r.qoder_realm || null,
     entitlementSnapshot: parseSnapshotJson(r.entitlement_snapshot),
     priority: r.priority != null ? Number(r.priority) || 0 : 0,
     tags: parseTagsJson(r.tags),
@@ -249,15 +252,15 @@ function add(cred, source) {
       id, label, edition, token_enc, refresh_token_enc, api_key_enc, expired_at, refresh_expired_at,
       token_release_at, user_id, host, user_region, devices, fingerprint, mode, source, enabled,
       balance, error_count, cool_until, last_picked_at, last_checkin_at, last_checkin_result,
-      last_keepalive_at, last_keepalive_result,
+      last_keepalive_at, last_keepalive_result, qoder_realm,
       entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier,
       model_cooldowns, rate_streak, model_cool_streak
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
     r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result,
-    r.last_keepalive_at, r.last_keepalive_result, r.entitlement_snapshot,
+    r.last_keepalive_at, r.last_keepalive_result, r.qoder_realm, r.entitlement_snapshot,
     r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
     r.model_cooldowns, r.rate_streak, r.model_cool_streak);
   return safeTok(acct);
@@ -268,7 +271,7 @@ function add(cred, source) {
  *
  * 实现说明（P0-001 丢失更新修复）：
  *   旧实现是 get(id) 全列读 → merge → UPDATE 全部 34 列。单进程内因为
- *   node:sqlite 同步执行没有 await 窗口，但**跨进程**（第二个 node 进程、
+ *   node:sqlite 同步执行没有 await 窗口，但跨进程（第二个 node 进程、
  *   运维脚本）或多客户端同时写库时，另一写入方在「读」与「写」之间落的字段
  *   会被本次陈旧快照覆盖回去，且无任何报错。
  *
@@ -282,7 +285,7 @@ function update(id, patch) {
   // 只保留已知列，未知键直接忽略（此前全列重写会顺带写入未知键的 undefined）
   const keys = Object.keys(patch).filter((k) => Object.prototype.hasOwnProperty.call(PATCH_COLUMNS, k));
   if (keys.length === 0) {
-    // 没有任何可写列：仍要确认账号存在，保持「不存在返回 null」的契约
+    // 没有任何可写列：仍要确认账号存在，保持不存在返回 null 的契约
     const cur = get(id);
     return cur ? safeTok(cur) : null;
   }
@@ -297,7 +300,7 @@ function update(id, patch) {
     for (const k of keys) {
       const spec = PATCH_COLUMNS[k];
       setParts.push(`${spec.col} = ?`);
-      // 取值函数收到的是「当前行 + 本键新值」的合并视图，
+      // 取值函数收到「当前行 + 本键新值」的合并视图，
       // 因为部分列（如 source 的默认值、modelCooldowns 的空对象判定）依赖完整语义
       args.push(spec.val({ ...rowToDecrypted(row, false), [k]: patch[k] }));
     }
@@ -313,7 +316,7 @@ function update(id, patch) {
       return safeTok(get(id));
     }
     // changes === 0：期间被其它写入方改过（version 变了），重读重试。
-    // 账号被删也会落到这里（下一轮 rawRow 返回 null → return null）。
+    // 账号被删也会落到这里（下一轮 rawRow 返回 null，返回 null）。
   }
   const e = new Error(`账号 ${id} 并发写入冲突：连续 ${RETRY_MAX} 次 version 不匹配`);
   e.code = WRITE_CONFLICT;

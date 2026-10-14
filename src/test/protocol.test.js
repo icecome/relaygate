@@ -1,17 +1,12 @@
 'use strict';
 /**
- * test/protocol.test.js — 三个转发协议出口的行为基线。
- *
- * 为什么有这份测试：routes/openai.js、anthropic.js、responses.js 在此前
- * 全部测试中一个 require 都没有，而它们是产品对外契约。已知后果：
- * OpenAI 出口的流内错误被渲染成 delta.content 里的 [Error …] 文本
- * （HTTP 仍是 200，无 finish_reason、无 [DONE]）—— agent 客户端会把
- * 错误文案当作模型输出并入上下文。
- *
- * 本文件先锁定「协议出口长什么样」这一层事实，供后续修复与协议适配层重构守门。
- * 断言按「应该是什么样」写：与当前错误行为不符的用例会失败，这是有意的红灯。
- *
+ * test/protocol.test.js——三个转发协议出口的行为基线。
  * 运行：node src/test/protocol.test.js
+ *
+ * routes/openai.js、anthropic.js、responses.js 此前未被任何测试 require，而它们是产品对外契约。
+ * 已知后果：OpenAI 出口的流内错误被渲染成 delta.content 里的「[Error …]」文本
+ * （HTTP 仍是 200，无 finish_reason、无 [DONE]），agent 客户端会把错误文案并入上下文。
+ * 断言按「应该是什么样」写：与当前错误行为不符的用例会失败，这是有意的红灯。
  */
 const os = require('os');
 const path = require('path');
@@ -66,7 +61,7 @@ function dataLines(text) {
     });
 }
 
-// ============================================================ OpenAI 出口
+// OpenAI 出口
 
 console.log('emitters.exportOpenAI — 正常路径');
 
@@ -121,7 +116,7 @@ t('error 事件必须带可识别的错误信号（顶层 error 或 finish_reaso
   assert.ok(hasSignal, '必须给出 error 对象或明确的 finish_reason，否则客户端无从判断失败');
 });
 
-// ========================================================= Anthropic 出口
+// Anthropic 出口
 
 console.log('emitters.exportAnthropic — 正常路径');
 
@@ -164,7 +159,7 @@ t('error 事件不得写进 text_delta', () => {
   }
 });
 
-// ====================================================== 流式处理器基础行为
+// 流式处理器基础行为
 
 console.log('sse.createStreamHandler — 工具调用累积');
 
@@ -173,7 +168,7 @@ t('原生 tool_calls 分片能累积成完整 JSON', () => {
   const h = createStreamHandler((e) => {
     if (e.type === 'tool_call') calls.push(e.call);
   });
-  // 上游分片：首片带 id+name，后续片只追加 arguments 片段
+  // 上游分片：首片带 id 与 name，后续片只追加 arguments 片段
   h.ingest({ tool_calls: [{ index: 0, id: 't1', function: { name: 'fn', arguments: '{"a"' } }] });
   h.ingest({ tool_calls: [{ index: 0, function: { arguments: ':1}' } }] });
   h.flushToolAccum();
@@ -243,7 +238,7 @@ t('正常读完也会 cancel（幂等释放）', async () => {
   assert.ok(cancelled);
 });
 
-// ============================================================== 汇总
+// 汇总
 
 async function main() {
   await runAll();

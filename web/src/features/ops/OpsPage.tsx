@@ -1,8 +1,7 @@
 /**
  * 运维中心：运行状态、定时任务、账号轮换、通知备份与网关配置。
  *
- * 运维类能力在侧栏收敛为一个入口，用页内分段切换，
- * 避免侧栏出现过多平级项导致导航过长。
+ * 运维类能力在侧栏收敛为一个入口，用页内分段切换，避免侧栏平级项过多导致导航过长。
  * 关键语义：账号轮换接口可能返回业务层失败（HTTP 200 但结果未成功），
  * 需与请求异常区分展示。
  */
@@ -83,7 +82,7 @@ export default function OpsPage() {
   /** 任务日志分页状态；后端一次性返回，故分页在前端切片 */
   const [logPage, setLogPage] = useState(0);
   const [logTask, setLogTask] = useState<string>('');
-  /** 调度设置草稿：字段与后端 SPECS 一一对应，保存时只提交这一份 */
+  /** 调度设置草稿：字段与后端 SPECS 一一对应，保存时只提交这一份。 */
   const [schedulerDraft, setSchedulerDraft] = useState({
     checkinHour: 9,
     checkinMinute: 0,
@@ -115,7 +114,7 @@ export default function OpsPage() {
     [runtime.data, sticky.data],
   );
   const scheduler = useAsyncData((signal) => getSchedulerSettings(key, signal), [key], { enabled: !!key });
-  // 余额自动刷新是独立于签到链的定时器，开关此前无前端入口
+  // 余额自动刷新是独立于签到链的定时器
   const balanceRefresh = useAsyncData((signal) => getBalanceRefresh(key, signal), [key], {
     enabled: !!key,
   });
@@ -174,10 +173,10 @@ export default function OpsPage() {
   }, [scheduler.data, schedulerDirty]);
 
   /**
- * 账号列表：把「本机 auth 备份」与「成长活跃度」两个数据源按 uid 合并。
- * 后端 accounts[].uid 取自 auth 文件，heatmap[].uid 取自账号库 userId，同为上游 uid。
- * 只在 auth 目录里出现的账号也要展示，故以 accounts 为主表左连 heatmap。
- */
+   * 账号列表：按 uid 合并「本机 auth 备份」与「成长活跃度」两个数据源。
+   * accounts[].uid 取自 auth 文件，heatmap[].uid 取自账号库 userId，同为上游 uid；
+   * 只在 auth 目录出现的账号也要展示，故以 accounts 为主表左连 heatmap。
+   */
 const rotateRows = useMemo(() => {
   const accounts = rotateStatus.data?.accounts ?? [];
   const heat = new Map<string, RotateHeatmapRow>();
@@ -189,7 +188,8 @@ const rotateRows = useMemo(() => {
       const h = heat.get(String(a.uid));
       return {
         uid: a.uid,
-        label: a.label ?? h?.label ?? '',
+        // 优先展示账号库身份（手机号/用户名），auth 备份 label（昵称或 uid 截断）作后备
+        label: a.identity ?? a.label ?? h?.label ?? '',
         backup: a.backup,
         score: h?.score,
         level: h?.level,
@@ -211,8 +211,7 @@ const rotateRows = useMemo(() => {
 }, [rotateStatus.data]);
 
   /**
-   * 轮换配置草稿。自动轮换开关此前没有任何入口，
-   * 这里把开关与停留时长、排除列表、切回设置收在一处。
+   * 轮换配置草稿：自动轮换开关、停留时长、排除列表与切回设置集中在此。
    */
   const [rotateCfg, setRotateCfg] = useState({
     enabled: true,
@@ -278,8 +277,8 @@ const rotateRows = useMemo(() => {
     setBusy('rotate');
     try {
       const r = await runRotate(key);
-      // 业务层失败：请求成功但轮换未全部成功。失败明细尽量带出，
-      // 否则用户只知道「失败 N」却不知道该去查哪个账号。
+      // 业务层失败：请求成功但轮换未全部成功。失败明细经 summarizeBatch 带出，
+      // 避免只显示「失败 N」而无从定位账号。
       summarizeBatch('账号轮换', r, toast);
       rotateStatus.reload();
       taskLog.reload();
@@ -293,7 +292,7 @@ const rotateRows = useMemo(() => {
   async function doSeed() {
     setBusy('seed');
     try {
-      // 失败账号的原因原来被丢弃（只显示计数），现在统一走 summarizeBatch 带出前几条
+      // 失败账号的原因此前只显示计数，现统一经 summarizeBatch 带出前几条
       summarizeBatch('种子生成', await seedRotate(key), toast);
       rotateStatus.reload();
     } catch (e) {
@@ -318,7 +317,7 @@ const rotateRows = useMemo(() => {
     }
   }
 
-  /** 手动输入 uid 切换（保留原有入口）。 */
+  /** 手动输入 uid 切换（行内按钮之外的入口）。 */
   async function doSwitchPick() {
     const uid = await prompt({
       title: '切换到指定账号',
@@ -367,7 +366,7 @@ const rotateRows = useMemo(() => {
     setBusy(`job-${action}`);
     try {
       const r = await triggerScheduler(action, key);
-      // 三种动作的返回形状不同，统一给出可读摘要；失败明细不吞掉
+      // 三种动作返回形状不同，统一给出可读摘要，失败明细不吞掉
       const detail =
         typeof r.ok === 'number'
           ? `成功 ${r.ok}${r.failed ? `，失败 ${r.failed}` : ''}`
@@ -501,7 +500,7 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="调度预演"
-              description="不发真实请求，解释当前调度会选哪个账号"
+              description="不发真实请求，展示按当前策略会选中的账号"
               actions={
                 <Button size="sm" onClick={routeCheck.reload} disabled={routeCheck.loading}>
                   {routeCheck.loading ? '计算中…' : '重新计算'}
@@ -664,7 +663,7 @@ const rotateRows = useMemo(() => {
               actions={
                 <>
                   {/* 手动触发：后端 POST /v1/admin/scheduler/:action 早已实现，
-                      但 UI 一直没有入口 —— 排障时「不等定时器、现在跑一次」是刚需 */}
+                      UI 此前无入口；排障时需要不等定时器立即执行一次 */}
                   <Button
                     size="sm"
                     onClick={() => runSchedulerAction('checkin')}
@@ -975,7 +974,7 @@ const rotateRows = useMemo(() => {
                   </div>
 
                   <Note>
-                    错峰窗口按（日期, 账号）哈希把批量任务分散到窗口内，避免固定时刻集中打上游；填0 表示关闭错峰。
+                    错峰窗口按（日期，账号）哈希把批量任务分散到窗口内，避免固定时刻集中请求上游；填 0 表示关闭错峰。
                   </Note>
 
                   {/* 余额自动刷新：独立于签到链的定时器，开关与间隔都在这里 */}
@@ -1051,7 +1050,7 @@ const rotateRows = useMemo(() => {
                       <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {balanceRefresh.data?.timer?.nextRunAt
                           ? `下次运行：${balanceRefresh.data.timer.nextRunAt}`
-                          : '定时器未启动；每日签到链结束后也会刷新一次余额'}
+                          : '定时器未启动；每日签到流程结束后也会刷新一次余额'}
                       </div>
                     </div>
                   </div>
@@ -1132,8 +1131,8 @@ const rotateRows = useMemo(() => {
                       </thead>
                       <tbody>
                         {taskPageRows.map((t, i) => {
-                          // ok/failed 是计数而非布尔：按 failed 判定结果，
-                          // 此前误按布尔比较导致失败任务也显示「成功」
+                          // ok/failed 是计数而非布尔，按 failed 判定结果；
+                          // 曾误按布尔比较，导致失败任务也显示「成功」
                           const failed = t.failed ?? 0;
                           const okCount = t.ok ?? 0;
                           return (
@@ -1174,8 +1173,8 @@ const rotateRows = useMemo(() => {
                     style={{ borderTop: '1px solid var(--rg-border)' }}
                   >
                     <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                      第 {safeLogPage + 1} / {taskPages} 页 · 显示{' '}
-                      {safeLogPage * LOG_PAGE_SIZE + 1}-
+                      第 {safeLogPage + 1} / {taskPages} 页 · 显示第{' '}
+                      {safeLogPage * LOG_PAGE_SIZE + 1} 至{' '}
                       {Math.min((safeLogPage + 1) * LOG_PAGE_SIZE, taskRows.length)} 条
                     </span>
                     <div className="flex items-center gap-2">
@@ -1212,6 +1211,15 @@ const rotateRows = useMemo(() => {
                   {
                     title: '当前账号',
                     rows: [
+                      {
+                        k: '账号',
+                        v: (() => {
+                          const cur = rotateStatus.data?.accounts?.find(
+                            (a) => String(a.uid) === String(rotateStatus.data?.currentUid),
+                          );
+                          return cur?.identity || cur?.label || '—';
+                        })(),
+                      },
                       {
                         k: 'uid',
                         v: (
@@ -1433,8 +1441,8 @@ const rotateRows = useMemo(() => {
                       const busyThis = busy === `switch-${r.uid}`;
                       return (
                         <tr key={r.uid} className="row-hover">
-                          <td className="td font-mono text-[12px] break-all" data-label="账号">{r.label || '—'}</td>
-                          <td className="td font-mono text-[11px] break-all" data-label="uid">{r.uid}</td>
+                          <td className="td text-[13px]" data-label="账号">{r.label || '—'}</td>
+                          <td className="td font-mono text-[11px] break-all" style={{ color: 'var(--rg-text-tertiary)' }} data-label="uid">{r.uid}</td>
                           <td className="td" data-label="状态">
                             {isCurrent ? (
                               <Chip tone="brand" dot="dot-ok">

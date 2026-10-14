@@ -5,12 +5,12 @@
  * 存储：.trae-api/rotate-settings.json（文件值优先于 env）。
  * 字段：
  *   enabled             是否启用自动切换（每日 rotateHour:rotateMinute 定时执行）
- *   intervalMinutes     已废弃：间隔轮换链已移除，字段保留仅为兼容旧配置文件读取
- *   stayMs              每个账号停留时长（默认 60s，min 10s）—— 轮换单遍时账号停留
+ *   intervalMinutes     已废弃：间隔轮换已移除，字段保留仅为兼容旧配置文件读取
+ *   stayMs              每个账号停留时长（默认 60s，min 10s）：轮换单遍时账号停留
  *   authDir             客户端 auth 目录（空 = 默认 LOCALAPPDATA 探测）
  *   excludeUids         不参与轮换的 uid 列表（逗号分隔）
  *   switchBack          轮换结束后是否切回起始账号（默认 true）
- * 热重载：save() 写盘后返回生效配置；调度侧调用 restart()（stop→start）按新配置重排定时器。
+ * 热重载：save() 写入文件后返回生效配置；调度侧调用 restart()（stop→start）按新配置重排定时器。
  */
 const fs = require('fs');
 const path = require('path');

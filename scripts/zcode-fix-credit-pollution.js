@@ -2,17 +2,16 @@
 /**
  * 一次性修复：清除 ZCode 账号写入积分口径的历史污染。
  *
- * 背景：早期实现把 ZCode 的 token 额度写进了三处「积分」口径的位置，
- * 使总积分与今日消耗被抬高约 4 个数量级：
- *   1. accounts.balance                —— 积分列（MIN_BALANCE_TO_USE / least_balance 读它）
- *   2. entitlement_snapshot.packs      —— 前端 creditTotals / summarizeExpiry / FEFO 读它
- *   3. credit_history                  —— /v1/admin/credit-history 的 totalUsed 读它
+ * 背景：早期实现把 ZCode 的 token 额度写进了三处「积分」口径，使总积分与
+ * 今日消耗被抬高约 4 个数量级：
+ *   1. accounts.balance —— 积分列（MIN_BALANCE_TO_USE / least_balance 读取）
+ *   2. entitlement_snapshot.packs —— 前端 creditTotals / summarizeExpiry / FEFO 读取
+ *   3. credit_history —— /v1/admin/credit-history 的 totalUsed 读取
  *
- * 本脚本把 1 置 null、把 2 的 packs 换成 tokenBuckets、删除 3 中 source 为
- * zcode 的记录。幂等：可重复执行。
+ * 修复动作：1 置 null；2 的 packs 换成 tokenBuckets；删除 3 中 source 为
+ * zcode 的记录。幂等，可重复执行。
  *
- * 用法：node scripts/zcode-fix-credit-pollution.js [--apply]
- *   不带 --apply 只预览（dry-run）。
+ * 用法：node scripts/zcode-fix-credit-pollution.js [--apply]；不带 --apply 仅预览（dry-run）。
  */
 const store = require('../src/credentials/store');
 const { db } = require('../src/credentials/db');
@@ -45,7 +44,7 @@ function main() {
     console.log(`    snapshot.packs: ${packs.length} 项（剩余合计 ${tokenSum}）-> tokenBuckets`);
 
     if (APPLY) {
-      // packs 里的条目本就是 token 桶，改键名即可保留数据、脱离积分口径
+      // packs 里的条目本就是 token 桶，改键名即可保留数据并脱离积分口径
       const tokenBuckets = packs.map((p) => ({
         name: p.name,
         bucketId: p.packId || null,

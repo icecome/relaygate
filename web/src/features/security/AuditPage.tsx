@@ -1,9 +1,8 @@
 /**
  * 安全审计页（/audit）。
- *
  * 后端 GET /v1/admin/audit 早已实现（admin-security.js），但 UI 一直没有入口：
- * 密钥 reveal、凭据导出、目录 lifecycle 等敏感操作都会写审计，主人却看不到。
- * 本页补上只读视图 —— 审计的语义是「事后可追溯」，不做任何写操作。
+ * 密钥 reveal、凭据导出、目录 lifecycle 等敏感操作都会写审计，却无人可见。
+ * 本页补上只读视图——审计的语义是「事后可追溯」，不做任何写操作。
  */
 import { useMemo, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';

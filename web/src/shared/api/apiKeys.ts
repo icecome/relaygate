@@ -9,8 +9,8 @@
  *   - 启用态字段是 enabled，吊销时间是 revokedAt（不是 revoked 布尔）；
  *   - 明文 key 仅在创建、轮换、重置、reveal 时返回一次。
  *
- * 注意：GET /login-key 返回的是 { object, data: [...] } 列表，
- * 不是 { hasLoginKey } 形状，据此判断登录密钥是否已配置。
+ * GET /login-key 返回 { object, data: [...] } 列表，不是 { hasLoginKey } 形状，
+ * 据此判断登录密钥是否已配置。
  */
 import { api } from './http';
 
@@ -73,11 +73,11 @@ export const deleteAccessKey = (id: string, key: string) =>
 export const revealAccessKey = (id: string, key: string) =>
   api<{ object: string; id: string; key: string }>(`/v1/api-keys/${encodeURIComponent(id)}/reveal`, {}, key);
 
-/* ------------------------------------------------------------ 登录密钥 */
+/* 登录密钥 */
 
 /**
  * 登录密钥列表。返回形状是 { object, data }，
- * 因此是否已配置要由 data 长度判断，而不是读 hasLoginKey。
+ * 是否已配置由 data 长度判断，而不是读 hasLoginKey。
  */
 export const listLoginKeys = (key: string, signal?: AbortSignal) =>
   api<{ object: string; data: ApiKeyRow[] }>('/v1/api-keys/login-key', { signal }, key);
@@ -92,7 +92,7 @@ export function maskKey(raw: string | null | undefined): string {
   return `sk-…${raw.slice(-4)}`;
 }
 
-/* ------------------------------------------------------------ 首登引导 */
+/* 首登引导 */
 
 export interface SetupStatus {
   /** 后端权威字段：是否已存在登录密钥 */

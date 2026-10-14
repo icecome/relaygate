@@ -1,5 +1,5 @@
 'use strict';
-/* ZCode 运营面端到端演练（真实打上游）：额度查询 + 领取幂等验证。
+/* ZCode 运营面端到端演练（真实请求上游）：额度查询 + 领取幂等验证。
  * 使用项目正常配置解析（.env 的 WORKSPACE_DIR），读真实账号库。 */
 const rewards = require('../src/zcode/rewards');
 const store = require('../src/credentials/store');

@@ -1,10 +1,9 @@
 'use strict';
 /**
  * notify/index.js — 轻量事件通知（Webhook / Server酱 / PushPlus / Telegram）。
- *
- * 仅支持个人规模：进程内去重 + fire-and-forget，不引入队列。
+ * 仅支持个人规模：进程内去重加 fire-and-forget，不引入队列。
  * 事件：checkin_ok / checkin_fail / credits_expiring / balance_low / refresh_fail / pool_empty
- * （account_disabled / scheduler_error 仍可发，未列入默认开关表时视为开启）
+ * （account_disabled / scheduler_error 仍可发送，未列入默认开关表时视为开启）
  */
 const config = require('../config');
 const settings = require('./settings');
@@ -42,8 +41,8 @@ function enabled() {
 }
 
 /**
- * 通知事件合并（防重复轰炸）：
- * - 同 key（event:accountId）在 dedupe 窗口内重复触发 → 跳过正文发送，仅累计计数；
+ * 通知事件合并，防止重复轰炸：
+ * - 同一 key（event:accountId）在 dedupe 窗口内重复触发 → 跳过正文发送，仅累计计数；
  * - 合并窗口（notifyMergeMs，默认 10 分钟）结束时把「N 条同类事件」合并成一条补发。
  * 实现：shouldSend 返回 false 时记录进合并桶；定时器到点后把桶内事件合并补发。
  */
@@ -68,7 +67,7 @@ function shouldSend(key) {
     return false;
   }
   recent.set(key, now);
-  // 简单清理
+  // 简单清理：超过窗口的旧记录直接移除
   if (recent.size > 200) {
     for (const [k, v] of recent) {
       if (now - v > config.notifyDedupeMs) recent.delete(k);
@@ -94,7 +93,7 @@ async function flushMerged() {
   merged.clear();
   for (const [key, bucket] of items) {
     if (!bucket.event || bucket.count < 2) continue;
-    // 渠道内并发送一条「合并摘要」
+    // 各渠道并发发送同一条合并摘要
     const channels = activeChannels();
     if (!channels.length) continue;
     const s = settings.getEffective();
@@ -195,7 +194,7 @@ async function sendPushPlus(token, title, text) {
 }
 
 /**
- * 事件 → 人话标题模板（数字前置，一眼看懂价值）。
+ * 事件 → 人类可读标题模板（数字前置，便于快速理解）。
  */
 const EVENT_TITLES = {
   checkin_ok: '签到完成',

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/zcode.js — ZCode 运营面端点。
+ * routes/zcode.js —— ZCode 运营面端点。
  * 挂载前缀：/v1/zcode（见 index.js）。全部走管理鉴权。
  *
  * 能力边界：只做「凭据导入 / 探测 / 领取 / 额度查询 / 设置」。
@@ -43,7 +43,7 @@ function rewardSummary(acct) {
   };
 }
 
-// ── 状态 ────────────────────────────────────────────────────────────────────
+// 状态
 
 /** 平台能力 + 定时任务状态 + 求解器可用性。 */
 router.get('/status', admin, (req, res) => {
@@ -58,7 +58,7 @@ router.get('/status', admin, (req, res) => {
   });
 });
 
-// ── 账号 ────────────────────────────────────────────────────────────────────
+// 账号
 
 /** 列出 ZCode 账号（含奖励快照摘要）。 */
 router.get('/accounts', admin, (req, res) => {
@@ -91,7 +91,7 @@ router.post('/accounts/:id/fingerprint/rotate', admin, (req, res) => {
   res.json({ ok: true, fingerprint: fp, account: redact(updated) });
 });
 
-// ── 本机导入 ────────────────────────────────────────────────────────────────
+// 本机导入
 
 /** 预检本机客户端凭据（不解密全文，只看能不能读 + 有哪些字段）。 */
 router.get('/local/preview', admin, (req, res) => {
@@ -141,7 +141,7 @@ router.post('/local/import', admin, (req, res) => {
   }
 });
 
-// ── 奖励 ────────────────────────────────────────────────────────────────────
+// 奖励
 
 /** 探测单个账号可领套餐（不领取）。 */
 router.post('/accounts/:id/rewards/probe', admin, async (req, res) => {
@@ -152,7 +152,7 @@ router.post('/accounts/:id/rewards/probe', admin, async (req, res) => {
   }
   try {
     const r = await rewards.probe(acct, { activation: req.body.activation !== false });
-    // 快照落库（面板可见；不含敏感字段）
+    // 快照写入数据库（面板可见；不含敏感字段）
     try {
       store.update(acct.id, {
         entitlementSnapshot: {
@@ -220,7 +220,7 @@ router.post('/rewards/run', admin, async (req, res) => {
   }
 });
 
-// ── 额度 ────────────────────────────────────────────────────────────────────
+// 额度
 
 /** 查询单账号额度（billing/balance），并写入 entitlementSnapshot。 */
 router.post('/accounts/:id/balance', admin, async (req, res) => {
@@ -265,7 +265,7 @@ router.post('/accounts/:id/balance', admin, async (req, res) => {
   }
 });
 
-// ── 设置 ────────────────────────────────────────────────────────────────────
+// 设置
 
 router.get('/settings', admin, (req, res) => {
   res.json(zcodeJobs.snapshot());
@@ -280,7 +280,7 @@ router.post('/settings', admin, (req, res) => {
   }
 });
 
-// ── 诊断 ────────────────────────────────────────────────────────────────────
+// 诊断
 
 /** 验证码求解自检（真实求解一次，供排障）。 */
 router.post('/diagnose/captcha', admin, async (req, res) => {

@@ -1,9 +1,9 @@
 'use strict';
 /**
- * lib/atomic-write.js — 配置文件原子落盘。
+ * lib/atomic-write.js — 配置文件原子写入。
  *
  * 背景：全库 JSON 配置（scheduler-settings、rotate-settings、notify-settings、
- * model-status、model-router 等）此前一律 fs.writeFileSync 直接覆写。覆写过程
+ * model-status、model-router 等）此前一律用 fs.writeFileSync 直接覆写。覆写过程
  * 不是原子的——进程在 truncate 之后、write 完成之前被杀死（或磁盘写满），
  * 文件会停留在半截 JSON，下次启动解析失败即静默回退默认值，用户配置丢失。
  *
@@ -36,7 +36,7 @@ function writeFileAtomic(filePath, content, opts = {}) {
     fs.mkdirSync(dir, { recursive: true });
     fd = fs.openSync(tmp, 'w', opts.mode);
     fs.writeFileSync(fd, content, encoding);
-    // fsync 后再 rename：否则断电时可能留下「文件已改名但内容未落盘」的空壳
+    // fsync 后再 rename：否则断电时可能留下「文件已改名但内容未写入磁盘」的空壳
     fs.fsyncSync(fd);
     fs.closeSync(fd);
     fd = null;

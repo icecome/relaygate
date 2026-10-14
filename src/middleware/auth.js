@@ -13,14 +13,14 @@ function extractToken(req) {
   const auth = req.headers['authorization'];
   if (auth && auth.startsWith('Bearer ')) return auth.slice(7);
   if (req.headers['x-api-key']) return req.headers['x-api-key'];
-  // n-13：不再接受 ?key= 查询参数——URL 会进入反代/访问日志，密钥落日志面
-  // 过大。grep 确认前端与文档均未使用该形态，仅保留 Authorization / x-api-key。
+  // n-13：不再接受 ?key= 查询参数——URL 会进入反代与访问日志，密钥随之落到日志面。
+  // grep 确认前端与文档均未使用该形态，仅保留 Authorization / x-api-key。
   return null;
 }
 
 function isEnvLogin(token) {
-  // K-1 权限分离：管理面只认 ADMIN_KEY / DB 登录密钥。
-  // API_KEY 历史上可作管理面过渡登录，已移除——转发种子与管理凭据必须分值。
+  // K-1 权限分离：管理面只认 ADMIN_KEY 与 DB 登录密钥。
+  // API_KEY 历史上可作管理面过渡登录，已移除——转发种子密钥与管理凭据必须分值。
   const adminKey = process.env.ADMIN_KEY;
   if (adminKey && token === adminKey) return true;
   return false;
@@ -82,7 +82,7 @@ function checkAdminToken(token) {
   return { ok: isEnvLogin(token), keyId: null };
 }
 
-/** 可选公开：STATUS_PUBLIC=true 时放行，否则要求 Admin。 */
+/** 可选公开：STATUS_PUBLIC=true 时放行，否则要求管理面鉴权。 */
 function authenticateAdminOrPublic(req, res, next) {
   if (config.statusPublic) return next();
   return authenticateAdmin(req, res, next);
@@ -121,14 +121,14 @@ function authenticateAny(req, res, next) {
 
 /**
  * K-2 scope 关卡：要求访问密钥具备指定 scope（如 models:read）。
- * - 登录密钥 / env ADMIN_KEY（管理域）天然放行：scope 只约束转发域；
+ * - 登录密钥与 env ADMIN_KEY（管理域）天然放行：scope 只约束转发域；
  * - 访问密钥按 req.authKey.scopes 判定，缺失返回 403（401 会误导客户端重试凭据）。
  */
 function requireKeyScope(scope) {
   return (req, res, next) => {
     if (req.keyKind === 'login') return next();
     const rec = req.authKey;
-    if (!rec) return next(); // env 管理密钥等无记录路径
+    if (!rec) return next(); // env 管理密钥等无记录的路径
     const scopes = Array.isArray(rec.scopes) ? rec.scopes : [];
     if (scopes.includes(scope)) return next();
     return res.status(403).json({

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/admin-security.js — 目录同步 / 审计 / 模型画像（P0-P2）。
+ * routes/admin-security.js —— 目录同步 / 审计 / 模型画像（P0-P2）。
  * 挂载前缀：/v1/admin。
  */
 const { Router } = require('express');
@@ -13,7 +13,7 @@ const stats = require('../log/stats');
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
-// ===== Catalog 同步 =====
+// Catalog 同步
 
 router.get('/catalog/status', admin, (req, res) => {
   res.json({ object: 'catalog_status', data: catalogSync.providerStatus(), generatedAt: new Date().toISOString() });
@@ -54,7 +54,7 @@ router.patch('/catalog/models/:providerId/:modelId', admin, (req, res) => {
   res.json({ ok: true, providerId: req.params.providerId, modelId: req.params.modelId, lifecycle });
 });
 
-// ===== 审计 =====
+// 审计日志
 
 router.get('/audit', admin, (req, res) => {
   const rows = auditLog.query({
@@ -66,7 +66,7 @@ router.get('/audit', admin, (req, res) => {
   res.json({ object: 'list', data: rows, total: rows.length });
 });
 
-// ===== 模型画像（P2 聚合 traffic） =====
+// 模型画像（P2，聚合 traffic 日志）
 
 router.get('/models/stats', admin, (req, res) => {
   const days = Math.min(Math.max(parseInt(req.query.days || '1', 10) || 1, 1), 30);

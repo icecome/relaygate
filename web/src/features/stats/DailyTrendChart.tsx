@@ -1,6 +1,6 @@
 /**
- * 每日趋势图。纯 SVG 绘制，无第三方图表库。
- * 序列色仅取设计系统图表色，不引入彩虹配色。
+ * 每日趋势图。纯 SVG 绘制，不依赖第三方图表库。
+ * 序列色仅取设计系统的图表色，不使用彩虹配色。
  */
 import { useId } from 'react';
 import type { DailyStat } from '../../shared/api/stats';

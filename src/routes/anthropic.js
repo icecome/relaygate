@@ -1,8 +1,7 @@
 'use strict';
 /**
- * routes/anthropic.js — Anthropic /v1/messages（SSE 流式 + tool_use 输出）。
- *
- * Anthropic 消息格式：content 为 block 数组，assistant 输出 tool_use、user 可带 tool_result。
+ * routes/anthropic.js —— Anthropic /v1/messages（SSE 流式 + tool_use 输出）。
+ * Anthropic 的 content 为 block 数组（assistant 输出 tool_use，user 可带 tool_result）；
  * 此处转换为 OpenAI 风格 messages 供上传，再用 exportAnthropic 渲染回 Anthropic 流。
  */
 const { Router } = require('express');
@@ -15,13 +14,13 @@ const { exportAnthropic } = require('../transform/emitters');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
-// 模型 ACL 在模块加载期解析：包在请求路径的 try/catch 里会把 require 失败
-// 变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
+// 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
+// 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
 
 const router = Router();
 
-// Anthropic block → 文本
+// Anthropic block 转文本
 function blockToText(block) {
   if (typeof block === 'string') return block;
   if (block.type === 'text') return block.text || '';
@@ -124,10 +123,10 @@ router.post('/v1/messages', async (req, res) => {
   /**
    * 流式错误回灌账号池用的账号 id。
    *
-   * 必须是 ref 而不是普通变量：下面的 handler 回调是在 pool.run **内部**被调用的，
-   * 此刻 `pool.run(...)` 还没返回，外层 `let` 变量仍然是 null —— 用普通变量会让
-   * /v1/messages 的流内限流错误永远无法回灌账号池（openai.js 用闭包参数、responses.js
-   * 在 run 之后使用，两者都是对的，只有这里错）。
+   * 必须是 ref 而非普通变量：handler 回调在 `pool.run(...)` 内部被调用，
+   * 此刻 pool.run 尚未返回，外层 `let` 变量仍为 null —— 用普通变量会让
+   * /v1/messages 的流内限流错误永远无法回灌账号池（openai.js 用闭包参数、
+   * responses.js 在 run 之后使用，两者均正确，只有此处必须用 ref）。
    */
   const streamAccountIdRef = { current: null };
   const handler = createStreamHandler((evt) => {
@@ -152,7 +151,7 @@ router.post('/v1/messages', async (req, res) => {
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
       llmUtilsChat(built, model, true, { tools, max_tokens, accountId }), { model });
-    // 先记下账号再开始喂流：流内回调要靠它回灌限流计数
+    // 先记下账号再开始喂流：流内回调依赖它回灌限流计数
     streamAccountIdRef.current = accountId;
     const feeder = createLineFeeder((line) => handler.feedLine(line));
     await consumeStream(up.body, (text) => feeder.feed(text));

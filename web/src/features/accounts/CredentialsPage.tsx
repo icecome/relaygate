@@ -25,7 +25,6 @@ import {
   coolRemaining,
   formatDate,
   formatNumber,
-  formatQuota,
   formatTime,
   platformLabel,
   platformOf,
@@ -47,13 +46,14 @@ import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
 import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
+import { ImportQoderDialog } from './ImportQoderDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
 import { GrowthPanel } from './GrowthPanel';
-import { ExpiryChip, expirySummary, keepaliveOf, packsOf, worstExpiry } from './accountPacks';
+import { ExpiryChip, expirySummary, keepaliveOf, usablePacksOf, worstExpiry } from './accountPacks';
 import { PackDialog } from './PackDialog';
 
 type StateFilter = 'all' | 'ok' | 'cool' | 'off';
-type SourceFilter = 'all' | 'trae' | 'workbuddy';
+type SourceFilter = 'all' | 'trae' | 'workbuddy' | 'zcode' | 'qoder';
 
 export default function CredentialsPage() {
   const { key } = useAuth();
@@ -66,6 +66,7 @@ export default function CredentialsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showOauth, setShowOauth] = useState(false);
   const [showWbImport, setShowWbImport] = useState(false);
+  const [showQoderImport, setShowQoderImport] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [growthOpen, setGrowthOpen] = useState(false);
   /** 查看权益包的账号；null 表示弹窗关闭 */
@@ -79,8 +80,8 @@ export default function CredentialsPage() {
     { enabled: !!key },
   );
 
-  // 页面可见时每60 秒触发一次真实余额查询。
-  // 刷新后同时重读列表与全局汇总，使侧栏可用数与列表保持一致。
+  // 页面可见时每 60 秒触发一次真实余额查询；
+  // 重新拉取后同时重读列表与全局汇总，保持侧栏可用数与列表一致。
   const { reload: reloadList } = list;
   const { reload: reloadSummary } = useSummaryStore();
   const reloadAfterBalance = useCallback(() => {
@@ -89,7 +90,7 @@ export default function CredentialsPage() {
   }, [reloadList, reloadSummary]);
   useBalanceAutoRefresh(key, reloadAfterBalance);
 
-  // 过滤与排序都是派生值，不落state
+  // 过滤与排序均为派生值，不写入 state
   const rows = useMemo(() => {
     const all = list.data ?? [];
     const q = query.trim().toLowerCase();
@@ -97,10 +98,11 @@ export default function CredentialsPage() {
       const st = accountState(a);
       if (stateFilter !== 'all' && st !== stateFilter) return false;
       if (sourceFilter !== 'all') {
+        // 来源筛选按平台等值匹配。此前只特判 workbuddy（其余值一律显示
+        // 非 WorkBuddy 账号），导致选「ZCode」「Trae」时列表内容与「全部」相同；
+        // 现在四个来源都是等值比较。
         const platform = platformOf(a);
-        if (sourceFilter === 'workbuddy' ? platform !== 'workbuddy' : platform === 'workbuddy') {
-          return false;
-        }
+        if (platform !== sourceFilter) return false;
       }
       if (q) {
         const hay = `${a.label ?? ''} ${a.id}`.toLowerCase();
@@ -113,7 +115,7 @@ export default function CredentialsPage() {
   // 到期汇总只用于工具条提示，明细在行内展开，不占页面主体空间
   const expiry = useMemo(() => expirySummary(rows), [rows]);
 
-  /** 统一包装写操作：错误必须落到 UI，不能只 console。（实现见 shared/api/action） */
+  /** 统一包装写操作：错误必须展示到 UI，不能只写入 console。（实现见 shared/api/action） */
   async function run(
     id: string,
     label: string,
@@ -139,9 +141,9 @@ export default function CredentialsPage() {
   }
 
   async function checkin(a: Account) {
-    // 按平台分发：WorkBuddy 走它自己的签到端点（/v1/workbuddy/checkin），
-    // Trae 系走通用端点。此前统一打到 /v1/credentials/:id/checkin，
-    // 后端平台闸门对 WorkBuddy 直接抛「not a trae account」——按钮是坏的（m-39）。
+    // 按平台分发：WorkBuddy 走它自己的签到端点（/v1/workbuddy/checkin），Trae 系走通用端点。
+    // 此前统一打到 /v1/credentials/:id/checkin，后端平台闸门对 WorkBuddy 直接抛
+    // 「not a trae account」，按钮因此不可用（m-39）。
     if (platformOf(a) === 'workbuddy') {
       await run(a.id, '签到', () => wbCheckinOne({ accountId: a.id }, key), '签到完成');
     } else {
@@ -152,14 +154,14 @@ export default function CredentialsPage() {
   async function checkinEveryOne() {
     setBusyId('__all__');
     try {
-      // 跨平台聚合签到：同时覆盖 Trae + WorkBuddy（而非旧接口只签 Trae），
-      // toast 如实展示分平台明细，让「全部」名副其实（m-39）。
+      // 跨平台聚合签到：同时覆盖 Trae + WorkBuddy（旧接口只签 Trae），
+      // toast 如实展示分平台明细（m-39）。
       const r = await checkinAll(key);
       const claimed = r.claimed ?? 0;
       const already = r.already ?? 0;
       const failed = r.failed ?? 0;
       if (failed > 0) {
-        // 分平台结果里有逐账号的原因，取前几条展示，不能只报一个计数
+        // 分平台结果含逐账号原因，取前几条展示，不能只报计数
         const reasons = (r.platforms ?? [])
           .flatMap((p) => p.accounts.filter((x) => !x.result || /fail|error|未/i.test(x.result)))
           .slice(0, 3)
@@ -259,7 +261,7 @@ export default function CredentialsPage() {
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
-                placeholder="按账号标签或ID 筛选"
+                placeholder="按账号标签或 ID 筛选"
                 aria-label="按账号标签或 ID 筛选"
               />
             </div>
@@ -271,6 +273,8 @@ export default function CredentialsPage() {
                 { value: 'all', label: '全部来源' },
                 { value: 'trae', label: 'Trae' },
                 { value: 'workbuddy', label: 'WorkBuddy' },
+                { value: 'zcode', label: 'ZCode' },
+                { value: 'qoder', label: 'Qoder' },
               ]}
             />
             <Segmented
@@ -289,7 +293,7 @@ export default function CredentialsPage() {
             <Button size="sm" onClick={() => setGrowthOpen((v) => !v)}>
               {growthOpen ? '收起成长中心' : '成长中心'}
             </Button>
-            {/* 这两个 Chip 是**账号数**口径；总览页的「3日内到期积分」是**额度**
+            {/* 这两个 Chip 是「账号数」口径；总览页的「3日内到期积分」是「额度」
                 口径（后端 summary.expiring3d）。文案已写明「个账号」以示区分。 */}
             {expiry.expired > 0 ? (
               <Chip tone="danger" dot="dot-error">
@@ -316,6 +320,7 @@ export default function CredentialsPage() {
               Trae OAuth 登录
             </Button>
             <Button onClick={() => setShowWbImport(true)}>接入 WorkBuddy</Button>
+            <Button onClick={() => setShowQoderImport(true)}>接入 Qoder</Button>
             <Button
               onClick={() => setShowImport(true)}
               aria-label="导入凭据 JSON"
@@ -375,7 +380,7 @@ export default function CredentialsPage() {
                 {rows.map((a) => {
                   const st = accountState(a);
                   const cooling = coolRemaining(a.coolUntil);
-                  const rowPack = packsOf(a)[0] ?? null;
+                  const rowPacks = usablePacksOf(a);
                   const busy = busyId === a.id;
                   const expiryWorst = worstExpiry(a);
                   const keepalive = keepaliveOf(a);
@@ -391,7 +396,7 @@ export default function CredentialsPage() {
                             onClick={() => toggleEnabled(a)}
                             aria-label={a.enabled ? '停用该账号' : '启用该账号'}
                           >
-                            {a.enabled ? '开' : '关'}
+                            {a.enabled ? '停用' : '启用'}
                           </Button>
                         </td>
                         <td className="td" data-label="账号">
@@ -414,10 +419,25 @@ export default function CredentialsPage() {
                         {/* 平台而非 source：source 是「凭据怎么进来的」（import/oauth/local），
                             Trae 账号一律是 import，显示成 import 会被误读为平台 */}
                         <td className="td whitespace-nowrap" data-label="平台">{platform}</td>
-                        <td className="td font-mono text-[12px]" data-label="权益包">
-                          {/* 与 PackDialog 同源：取 packsOf 排序后的第一个可用包，
-                              而不是后端原序的 packs[0]（那只是「任意一个包」） */}
-                          {rowPack ? formatQuota(rowPack.unlimited, rowPack.remaining) : '—'}
+                        {/* 「权益包」只回答「这个账号有几个还能用的包」；
+                            额度总量在右侧「余额 / 额度」（= 可用包 remaining 之和），
+                            到期紧迫度在「权益到期」列。三列不重复。
+                            与 PackDialog 同源（usablePacksOf），无包时显示 —。 */}
+                        <td className="td whitespace-nowrap" data-label="权益包">
+                          {rowPacks.length > 0 ? (
+                            <button
+                              type="button"
+                              className="inline-flex items-center"
+                              onClick={() => setPackTarget(a)}
+                              aria-haspopup="dialog"
+                              aria-label={`查看 ${a.label || a.id} 的权益包明细`}
+                              title={`${rowPacks.length} 个可用权益包，明细见弹窗`}
+                            >
+                              {rowPacks.length} 个可用
+                            </button>
+                          ) : (
+                            '—'
+                          )}
                         </td>
                         <td className="td" data-label="权益到期">
                           <button
@@ -430,15 +450,15 @@ export default function CredentialsPage() {
                             <ExpiryChip item={expiryWorst} />
                           </button>
                         </td>
-                        {/* 账号到期 = 登录 token 有效期，与左侧「权益到期」是两套口径。
-                            hover 提示里带上 refreshToken 到期时间（它过期就无法再换新） */}
+                        {/* 账号到期 = 登录 token 的有效期，与左侧「权益到期」是两套口径。
+                            hover 提示带上 refreshToken 到期时间（它过期后无法再换新） */}
                         <td className="td" data-label="账号到期">
                           <span
                             className="font-mono text-[12px]"
                             title={
                               keepalive.expiresMs == null
                                 ? keepalive.label
-                                : `登录 token 到期：${formatTime(a.expiredAt)}${
+                                : `登录 Token 到期：${formatTime(a.expiredAt)}${
                                     keepalive.refreshExpiresMs == null
                                       ? ''
                                       : `；refreshToken 到期：${formatTime(a.refreshExpiredAt)}`
@@ -470,11 +490,20 @@ export default function CredentialsPage() {
                         <td className="td cell-num" data-label="余额 / 额度">
                           {typeof a.tokenRemaining === 'number' ? (
                             // ZCode：token 计量，与积分列分开标注单位（不并入积分口径）
-                            <span title="ZCode token 计量额度，不计入积分">
+                            <span title="ZCode Token 计量额度，不计入积分">
                               {formatNumber(a.tokenRemaining)} <span className="text-[11px]">tok</span>
                             </span>
+                          ) : a.quota ? (
+                            // Qoder：两段额度隔离展示（基础 userQuota + 赠送 addOnQuota），
+                            // 与 ZCode 同理不并入积分口径；合计仅供展示，不得累加进面板汇总
+                            <span title={`${a.quota.userType || ''} · 基础 ${a.quota.base?.remaining ?? '—'} + 赠送 ${a.quota.addOn?.remaining ?? '—'}（两段隔离，不计入积分汇总）`}>
+                              {formatNumber(a.quota.totalRemaining)} <span className="text-[11px]">cr</span>
+                            </span>
                           ) : (
-                            formatNumber(a.balance)
+                            // 后端口径：该账号全部可用权益包 remaining 之和（src/upstream/balance.js）
+                            <span title="该账号全部可用权益包的剩余积分之和">
+                              {formatNumber(a.balance)}
+                            </span>
                           )}
                         </td>
                         <td className="td font-mono text-[12px]" data-label="冷却至">
@@ -486,10 +515,9 @@ export default function CredentialsPage() {
                         </td>
                         <td className="td cell-act">
                           <div className="inline-flex items-center gap-1.5">
-                            {/* 「需重新登录」是 refreshToken 过期，账号自己恢复不了。
-                                此前这一行只有签到/查余额/删除——最需要修的时候没有入口，
-                                修复动作在表格上方另一个 Panel 里（已确认的死胡同）。
-                                这里给行内入口，直接打开该平台的重新登录流程。 */}
+                            {/* 「需重新登录」是 refreshToken 过期，账号无法自愈。
+                                此前这一行只有签到/查余额/删除，修复入口在表格上方另一个 Panel；
+                                现补上行内入口，直接打开该平台的重新登录流程。 */}
                             {keepaliveNeedsRelogin && (
                               <Button
                                 size="sm"
@@ -500,11 +528,11 @@ export default function CredentialsPage() {
                                 重新登录
                               </Button>
                             )}
-                            {/* 签到按钮按平台能力显示：ZCode 无签到能力（后端也会拒），
-                                故隐藏；其奖励走 /v1/zcode 的定时任务。
-                                Trae 与 WorkBuddy 都有签到能力，只是端点不同——
+                            {/* 签到按钮按平台能力显示：ZCode 与 Qoder 均无签到能力（后端也会拒绝），
+                                故隐藏，其奖励分别走 /v1/zcode 与 /v1/qoder 的定时任务；
+                                Trae 与 WorkBuddy 均有签到能力，仅端点不同，
                                 checkin() 内部按 platformOf 分发（m-39）。 */}
-                            {platformOf(a) !== 'zcode' && (
+                            {platformOf(a) !== 'zcode' && platformOf(a) !== 'qoder' && (
                               <Button size="sm" disabled={busy} onClick={() => checkin(a)}>
                                 签到
                               </Button>
@@ -573,6 +601,11 @@ export default function CredentialsPage() {
       <ImportWbDialog
         open={showWbImport}
         onClose={() => setShowWbImport(false)}
+        onImported={list.reload}
+      />
+      <ImportQoderDialog
+        open={showQoderImport}
+        onClose={() => setShowQoderImport(false)}
         onImported={list.reload}
       />
       <ImportTraeDialog

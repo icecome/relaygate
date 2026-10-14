@@ -1,12 +1,12 @@
 'use strict';
 /**
- * jobs/checkin-log.js — 签到链执行日志（Trae 签到 + WorkBuddy 签到 共用）。
+ * jobs/checkin-log.js — 签到流程执行日志（Trae 签到与 WorkBuddy 签到共用）。
  * 复用 task-log.jsonl，按 task='checkin' 记录每日签到批次结果，供面板「任务执行日志」查看。
  */
 const { appendTaskLog } = require('./task-log');
 
 /**
- * 汇总一次签到批次（Trae 与 WorkBuddy 合并或分别记录都适用）。
+ * 汇总一次签到批次（Trae 与 WorkBuddy 合并或分别记录均适用）。
  * @param {object} opts
  * @param {string} [opts.edition] 'trae' | 'workbuddy'（跨平台批次可省略）
  * @param {object} opts.batch 含 claimed/already/disabled/failed/ok/summary

@@ -2,10 +2,9 @@
 /**
  * models/catalog.js — 从 Trae 上游 get_detail_param 动态同步模型目录。
  *
- * 上游：POST {host}/api/ide/v1/get_detail_param（与 Trae 客户端拉模型配置同源）
- * 字段含义（实测）：
- * - config_source=1：平台官方配置
- * - config_source=3 且 is_custom_model=true：账号内用户自定义模型
+ * 上游：POST {host}/api/ide/v1/get_detail_param（与 Trae 客户端拉取模型配置同源）。
+ * 字段含义（实测）：config_source=1 为平台官方配置；config_source=3 且
+ * is_custom_model=true 为账号内用户自定义模型。
  *
  * 默认只暴露官方模型；includeCustom=true 时一并返回自定义。
  * 过滤 custom_model_* 占位、工具配置、invisible、关闭项。
@@ -104,7 +103,7 @@ function normalizeItem(item) {
 
   const rateInfo = parseContactRate(item.display_contact_config);
   const limits = extractLimits(item);
-  // 窗口口径：dev 档=context_window_tokens.dev；max 档优先 context_window_tokens.max，
+  // 窗口口径：dev 档 = context_window_tokens.dev；max 档优先 context_window_tokens.max，
   // 缺失时回退 dev（平台未下发双档时视为单档模型）。promptMaxTokens 为输入保护上限。
   const ctxDev = limits.ctx.dev;
   const ctxMax = limits.ctx.max != null ? limits.ctx.max : limits.ctx.dev;
@@ -123,7 +122,7 @@ function normalizeItem(item) {
     rate: rateInfo.rate,
     afterRate: rateInfo.afterRate,
     discounted: rateInfo.discounted,
-    // —— 上下文窗口/输出上限（按档）——
+    // 上下文窗口与输出上限（按档）
     contextWindow: ctxDev,
     contextWindowMax: tierMax || ctxMax != null ? ctxMax : null,
     promptMaxTokens: tierDev ? tierDev.promptMaxTokens : null,
@@ -141,7 +140,7 @@ function normalizeItem(item) {
 }
 
 /**
- * 提取可见模型（含官方+自定义，带 custom 标记）。
+ * 提取可见模型（含官方与自定义，带 custom 标记）。
  * 同名（忽略大小写）优先官方；官方内优先独立 display_name。
  */
 function pickFromList(list) {

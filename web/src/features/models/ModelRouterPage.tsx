@@ -1,5 +1,5 @@
 /**
- * 路由与虚拟模型页：上游 provider、虚拟模型映射与候选健康度。
+ * 路由与虚拟模型页：上游 Provider、虚拟模型映射与候选健康度。
  * 对应 /v1/admin/model-router/* 真实接口。
  */
 import { Fragment, useMemo, useState } from 'react';
@@ -20,6 +20,7 @@ import { formatDuration, formatNumber, percent } from '../../shared/lib/format';
 import {
   Button,
   Chip,
+  EmptyState,
   ErrorState,
   LoadingBlock,
   MetricGrid,
@@ -31,6 +32,7 @@ import {
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
+import { VirtualModelDialog } from './VirtualModelDialog';
 
 /**
  * 候选不可用原因的中文说明。
@@ -56,8 +58,10 @@ export default function ModelRouterPage() {
   const toast = useToast();
   const prompt = usePrompt();
   const [busy, setBusy] = useState<string | null>(null);
-  // 展开的虚拟模型 id 集合：聚合模型下分配了哪些上游模型，需逐个展开查看
+  // 展开的虚拟模型 ID 集合：聚合模型下分配了哪些上游模型，需逐个展开查看
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+  // 新增虚拟模型弹窗：此前面板只有停用/解冻/删除，创建只能手改 model-router.json
+  const [createOpen, setCreateOpen] = useState(false);
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
@@ -68,13 +72,13 @@ export default function ModelRouterPage() {
     });
   }
 
-  /** 轮转池大小（rotateTopN）：0 = 不轮转，固定取成本序首选。 */
+  /** 轮转池大小（rotateTopN）：0 表示不轮转，固定取成本序首选。 */
   async function setRotateTopN(id: string, current: number, next: number) {
     if (next === current || next < 0) return;
     setBusy(id);
     try {
       await upsertVirtual(id, { rotateTopN: next }, key);
-      toast(next === 0 ? '已关闭轮转，固定取成本首选' : `轮转池已调整为 ${next} 个`, 'ok');
+      toast(next === 0 ? '已关闭轮转，固定使用排序第一位的候选' : `轮转池已调整为 ${next} 个`, 'ok');
       overview.reload();
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '保存失败', 'err');
@@ -107,7 +111,7 @@ export default function ModelRouterPage() {
     const health = overview.data?.health ?? [];
     const cooling = health.filter((h) => h.cooling).length;
     return [
-      { key: '上游Provider', value: formatNumber(providers.length) },
+      { key: '上游 Provider', value: formatNumber(providers.length) },
       { key: '虚拟模型', value: formatNumber(virtuals.length), delta: `启用 ${enabledVirtuals}` },
       { key: '候选总数', value: formatNumber(virtuals.reduce((s, v) => s + v.candidates.length, 0)) },
       {
@@ -138,7 +142,7 @@ export default function ModelRouterPage() {
       if (r.ok) {
         toast(`自动分层已同步：${r.tiers?.length ?? 0} 个层级`, 'ok');
       } else {
-        // 业务层失败：展示后端原因，不当作网络错误
+        // 业务层失败：展示后端原因，不按网络错误处理
         toast(`同步未成功：${r.errors?.join('；') || '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
       }
       overview.reload();
@@ -153,10 +157,10 @@ export default function ModelRouterPage() {
     setBusy(id);
     try {
       await unfreezeVirtual(id, key);
-      toast('已解冻', 'ok');
+      toast('已解除冷却', 'ok');
       overview.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '解冻失败', 'err');
+      toast(e instanceof ApiError ? e.message : '解除冷却失败', 'err');
     } finally {
       setBusy(null);
     }
@@ -204,7 +208,7 @@ export default function ModelRouterPage() {
     try {
       await patchCandidate(virtualId, candidateId, patch, key);
       const label =
-        patch.enabled === false ? '已禁用该候选' : patch.enabled === true ? '已启用该候选'
+        patch.enabled === false ? '已停用该候选' : patch.enabled === true ? '已启用该候选'
           : patch.pinned ? '已置顶，强制参与轮转' : '已取消置顶';
       toast(label, 'ok');
       overview.reload();
@@ -218,7 +222,7 @@ export default function ModelRouterPage() {
   return (
     <PageShell
       title="路由与虚拟模型"
-      description="把对外暴露的模型名映射到多个上游候选，并展示各候选健康度"
+      description="将对外暴露的模型名映射到多个上游候选，并展示各候选健康度"
       actions={
         <>
           <Button onClick={resync} disabled={busy === 'resync'}>
@@ -240,7 +244,7 @@ export default function ModelRouterPage() {
             <LoadingBlock />
           ) : (overview.data?.providers ?? []).length === 0 ? (
             <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              尚未配置上游
+              尚未配置上游 Provider
             </div>
           ) : (
             <table className="w-full border-collapse text-[13px]">
@@ -268,17 +272,17 @@ export default function ModelRouterPage() {
                       {p.type === 'builtin' ? (
                         <Chip tone="brand">内置 · {p.builtin}</Chip>
                       ) : (
-                        <Chip tone="neutral">第三方 OpenAI 兼容</Chip>
+                        <Chip tone="neutral">第三方 OpenAI 兼容接口</Chip>
                       )}
                     </td>
                     <td className="td">
                       <Chip tone={p.enabled ? 'ok' : 'neutral'} dot={p.enabled ? 'dot-ok' : 'dot-off'}>
-                        {p.enabled ? '启用' : '停用'}
+                        {p.enabled ? '启用' : '已停用'}
                       </Chip>
                     </td>
                     <td className="td font-mono text-[12px]">
                       {p.type === 'builtin' ? (
-                        <span style={{ color: 'var(--rg-text-tertiary)' }}>使用账号池凭据</span>
+                        <span style={{ color: 'var(--rg-text-tertiary)' }}>使用凭据池账号</span>
                       ) : p.hasApiKey ? (
                         p.apiKeyEnv ?? '已配置'
                       ) : (
@@ -301,16 +305,23 @@ export default function ModelRouterPage() {
 
         <Panel
           title="虚拟模型"
-          description="对外暴露的模型名到候选序列的映射"
+          description="每个对外模型名对应的候选序列"
           flush
-          footer="保存可能返回业务层失败（请求成功但结果未成功），此时会在对应表单内展示后端返回的原因。"
+          actions={
+            <Button size="sm" variant="primary" onClick={() => setCreateOpen(true)}>
+              新增虚拟模型
+            </Button>
+          }
+          footer="保存可能返回业务层失败（请求成功但结果未成功），此时会在对应表单内显示后端返回的原因。"
         >
           {overview.loading && !overview.data ? (
             <LoadingBlock />
           ) : (overview.data?.virtualModels ?? []).length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              暂无虚拟模型
-            </div>
+            <EmptyState
+              label="尚未创建虚拟模型"
+              hint="创建一个对外模型名，并把它映射到若干上游候选，即可让客户端直接调用该名称。"
+              action={{ label: '新增虚拟模型', onClick: () => setCreateOpen(true) }}
+            />
           ) : (
             <table className="w-full border-collapse text-[13px]">
               <thead>
@@ -318,7 +329,7 @@ export default function ModelRouterPage() {
                   <th className="th">虚拟模型</th>
                   <th className="th">策略</th>
                   <th className="th">来源</th>
-                  <th className="th">声明窗口</th>
+                  <th className="th">声明上下文窗口</th>
                   <th className="th cell-num">候选</th>
                   <th className="th">健康度</th>
                   <th className="th cell-act">操作</th>
@@ -334,8 +345,8 @@ export default function ModelRouterPage() {
                   const isBusy = busy === v.id;
                   const open = expanded.has(v.id);
                   // 轮转池标记必须与后端 orderCandidates 一致：
-                  // 池 = 置顶候选 + 「已启用候选」按成本序的前 rotateTopN 名。
-                  // 已禁用的候选不占名额（后端会过滤后按可用列表切池）。
+                  // 池 = 置顶候选 + 已启用候选按成本序的前 rotateTopN 名；
+                  // 已禁用候选不占名额（后端会过滤后按可用列表切池）。
                   const enabledOnes = v.candidates.filter((c) => c.enabled !== false);
                   const costSorted = v.auto && v.sort
                     ? enabledOnes.slice().sort((a, b) => {
@@ -374,7 +385,7 @@ export default function ModelRouterPage() {
                           {v.auto && (
                             <div
                               className="mt-1 flex items-center gap-1"
-                              title="轮转池大小：取倍率升序（sort=rate）前 N 个候选做加权轮转。0 表示关闭轮转，固定用最便宜的那个。"
+                              title="轮转池大小：按排序取前 N 个候选做加权轮转（sort=rate 时为倍率升序）。0 表示关闭轮转，固定使用排序第一位的候选。"
                             >
                               <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
                                 轮转
@@ -391,13 +402,13 @@ export default function ModelRouterPage() {
                           )}
                           {!v.auto && poolIds.size > 0 && (
                             <div className="text-[11px] mt-1" style={{ color: 'var(--rg-text-tertiary)' }}>
-                              轮转 {poolIds.size} 个
+                              轮转 {poolIds.size} 个候选
                             </div>
                           )}
                         </td>
                         <td className="td">{v.auto ? '自动分层' : '手动'}</td>
                         <td className="td font-mono text-[12px]">
-                          {v.contextWindow ? formatNumber(v.contextWindow) : '不设守门'}
+                          {v.contextWindow ? formatNumber(v.contextWindow) : '未声明窗口'}
                         </td>
                         <td className="td cell-num">
                           <button
@@ -414,7 +425,7 @@ export default function ModelRouterPage() {
                         </td>
                         <td className="td">
                           {hs.length === 0 ? (
-                            <span style={{ color: 'var(--rg-text-tertiary)' }}>无记录</span>
+                            <span style={{ color: 'var(--rg-text-tertiary)' }}>无健康记录</span>
                           ) : (
                             <div className="min-w-[120px]">
                               <ProgressBar ratio={rate} tone={cooling ? 'warn' : 'brand'} />
@@ -430,7 +441,7 @@ export default function ModelRouterPage() {
                               {v.enabled ? '停用' : '启用'}
                             </Button>
                             <Button size="sm" disabled={isBusy || !cooling} onClick={() => unfreeze(v.id)}>
-                              解冻
+                              解除冷却
                             </Button>
                             <Button size="sm" variant="danger" disabled={isBusy} onClick={() => removeVirtual(v.id)}>
                               删除
@@ -459,8 +470,8 @@ export default function ModelRouterPage() {
                                   const inPool = poolIds.has(c.id);
                                   const coolingNow =
                                     typeof c.cooldownRemainingMs === 'number' && c.cooldownRemainingMs > 0;
-                                  // candidate_disabled 是候选自身的停用开关，已由「状态」列表达，
-                                  // 这里只在存在其他阻断原因时才提示，避免同一个事实显示两遍。
+                                  // candidate_disabled 是候选自身的停用开关，已由「状态」列表达；
+                                  // 仅在存在其他阻断原因时提示，避免同一事实显示两遍。
                                   const reasons = (c.reasons ?? []).filter(
                                     (x) => x !== 'candidate_disabled' || !c.enabled,
                                   );
@@ -519,7 +530,7 @@ export default function ModelRouterPage() {
                                               patchCandidateFlags(v.id, c.id, { enabled: !c.enabled })
                                             }
                                           >
-                                            {c.enabled ? '禁用' : '启用'}
+                                            {c.enabled ? '停用' : '启用'}
                                           </Button>
                                           <Button
                                             size="sm"
@@ -549,7 +560,7 @@ export default function ModelRouterPage() {
         </Panel>
 
         {(overview.data?.health ?? []).length > 0 && (
-          <Panel title="候选健康明细" description="按候选记录的成功率、延迟与最近错误" flush>
+          <Panel title="候选健康明细" description="按候选展示成功率、延迟与最近一次错误" flush>
             <table className="w-full border-collapse text-[13px]">
               <thead>
                 <tr>
@@ -594,10 +605,16 @@ export default function ModelRouterPage() {
         )}
 
         <Note>
-          自动分层的候选由网关按模型目录的上下文窗口生成，面板可逐个禁用或置顶；
+          自动分层的候选由网关按模型目录的上下文窗口生成，面板可逐个停用或置顶；
           这些手工调整会被后台的自动分层同步保留，不会被覆盖。
         </Note>
       </Stack>
+
+      <VirtualModelDialog
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        onSaved={overview.reload}
+      />
     </PageShell>
   );
 }

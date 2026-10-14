@@ -2,17 +2,17 @@
 /**
  * model-router/index.js — 虚拟模型请求管理入口。
  *
- * 能力对照需求：
+ * 能力范围：
  * 1. 自定义模型 ID（virtualModels）
- * 2. 远端模型集成（providers：builtin + openai 兼容）
+ * 2. 远端模型集成（providers：builtin 与 openai 兼容端点）
  * 3. 请求分发（按虚拟 ID 选候选）
- * 4. 启用控制（enabled 开关，配置/管理端双入口）
- * 5. 限流自动切换（健康度冷却 + failover.switchOn）
- * 6. 故障恢复重试（maxAttempts + 候选轮换）
- * 7. 状态监控（health.snapshot + traffic 日志）
- * 8. 优先级/权重/最大频率（priority / weight / maxRpm）
- * 9. 上下文窗口守门（contextWindow：粗估输入超窗口 75% 时显式 400，
- *    防止客户端按虚高窗口堆积历史后被上游静默截断 → 记忆错乱/幻觉）
+ * 4. 启用控制（enabled 开关，配置与管理端双入口）
+ * 5. 限流自动切换（健康度冷却与 failover.switchOn）
+ * 6. 故障恢复重试（maxAttempts 与候选轮换）
+ * 7. 状态监控（health.snapshot 与 traffic 日志）
+ * 8. 优先级、权重、最大频率（priority / weight / maxRpm）
+ * 9. 上下文窗口守门（contextWindow：粗估输入超窗口 75% 时显式返回 400，
+ *    防止客户端按虚高窗口堆积历史后被上游静默截断，进而出现记忆错乱与幻觉）
  */
 const store = require('./store');
 const health = require('./health');
@@ -23,9 +23,13 @@ const { estimateCost } = require('../models/rates');
 const { estimateTokensOfText } = require('../lib/token-precise');
 const config = require('../config');
 const { providerAllowedForKey } = require('../middleware/model-access');
-const { estimatePromptTokens } = require('../lib/token-estimate');
+const { estimateRequestTokens } = require('../lib/token-estimate');
 const autotier = require('./autotier');
+const windowCalib = require('./window-calibration');
 const { runWithContinuation } = require('../transform/continue');
+// 账号池只在这里被引用（惰性）以取「池级账号权益信号」：候选排序需要知道
+// trae 池与 workbuddy 池各自的临期/余额状态。require 放函数体内，
+// 避免 model-router ← pool 的静态循环依赖（pool 的 dispatch 反向引用 model-router）。
 
 const VIRTUAL_PREFIX = 'vm/';
 
@@ -59,14 +63,75 @@ function weightedShuffle(list) {
   return ordered;
 }
 
-/** 候选倍率：未知/非法倍率排到成本序末尾（Infinity）。 */
+/** 候选倍率：未知或非法倍率排到成本序末尾（Infinity）。 */
 function candRate(c) {
   return (Number.isFinite(Number(c.rate)) && Number(c.rate) >= 0 ? Number(c.rate) : Infinity);
 }
 
-/** 候选上下文窗口：未声明按 0 计（sort=window 时排后）。 */
+/** 候选上下文窗口：未声明按 0 计（sort=window 时排在后面）。 */
 function candWindow(c) {
   return (Number.isFinite(Number(c.contextWindow)) ? Number(c.contextWindow) : 0);
+}
+
+/**
+ * 跨平台账号级调度（POOL_ACCOUNT_PRIORITY，默认开）。
+ *
+ * 背景：账号池 FEFO（先到期先用）只在单个平台池内生效——同一候选模型被路由到
+ * trae 池还是 workbuddy 池，此前只由模型倍率决定，账号权益（临期/余额）完全
+ * 不参与跨池比较。结果是临期积分可能整池闲置，而余额低、到期远的池反而被
+ * 优先消耗。
+ *
+ * 分档规则（与 pool.poolSignals 的 tier 语义对齐）：
+ *   tier 1 = 池内存在 WINDOW_DAYS 内到期的未用尽包（临期/到期，作废是硬损失）
+ *            → 按最早到期时刻升序抢占；
+ *   tier 2 = 无临期包 → 按池内余额合计降序（余额多的池优先使用）；
+ *   信号缺失（null，如池空）→ 记为 tier 3 沉底，回落到纯成本序。
+ * 分档平局才回落到原有成本键（倍率/窗口 → priority）。
+ */
+const ACCOUNT_PRIORITY_TIER_BOTTOM = 3;
+
+/** 每候选的池级权益信号缓存：一次 orderCandidates 里候选排序会重复比较多次。 */
+const _sigMemo = new Map(); // providerId -> {tier, soonestMs, balance} | null
+
+function accountPriorityOf(candidate) {
+  if (!config.poolAccountPriority) return null;
+  const providerId = candidate.provider;
+  if (_sigMemo.has(providerId)) return _sigMemo.get(providerId);
+  let sig = null;
+  try {
+    const pool = require('../credentials/pool');
+    const provider = store.getProvider(providerId);
+    const edition = provider && provider.builtin;
+    if (edition === 'trae' || edition === 'workbuddy') {
+      const s = pool.poolSignals(edition);
+      // 池空（信号为 null）：该池拿不到账号，排到最后但仍保留在序列中作 failover
+      sig = s || { tier: ACCOUNT_PRIORITY_TIER_BOTTOM, soonestMs: null, balance: -1 };
+    }
+    // 非内置（openai 兼容）候选无账号池概念，不参与账号权益排序
+  } catch {
+    sig = null; // 信号不可得时不参与排序，保持纯成本序
+  }
+  _sigMemo.set(providerId, sig);
+  return sig;
+}
+
+function compareAccountPriority(a, b) {
+  const pa = accountPriorityOf(a);
+  const pb = accountPriorityOf(b);
+  if (!pa && !pb) return 0;
+  if (!pa) return 1;  // 无信号的候选沉底
+  if (!pb) return -1;
+  if (pa.tier !== pb.tier) return pa.tier - pb.tier;
+  if (pa.tier === 1) {
+    // 临期档：到期越早越优先
+    const sa = pa.soonestMs == null ? Infinity : pa.soonestMs;
+    const sb = pb.soonestMs == null ? Infinity : pb.soonestMs;
+    if (sa !== sb) return sa - sb;
+  } else {
+    // 非临期档：余额合计越多越优先
+    if (pa.balance !== pb.balance) return pb.balance - pa.balance;
+  }
+  return 0;
 }
 
 /**
@@ -77,6 +142,10 @@ function candWindow(c) {
  * 「轮转池」做加权轮转：既保留低成本优先的意图，又不会恒定命中同一个模型。
  * rotateTopN 未声明或池内只剩一个候选时退化为原有优先级语义。
  * 池外候选仍保留在序列尾部，失败重试（failover）时可继续向下切换。
+ *
+ * 跨池账号级调度：accountPriorityOf 在成本键之前先比较候选所属池的账号权益
+ * 分档（临期池抢占 → 余额池优先 → 回落成本序）。同池候选分档必然相同，
+ * 因此池内仍维持倍率/窗口成本序，不破坏既有轮转语义。
  *
  * @param {string} keyPlatform trae|workbuddy|all
  */
@@ -90,14 +159,25 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
     if (!health.allowRpm(virtualId, c.id, c.maxRpm)) return false;
     return true;
   });
+  // 每次调用清空候选级权益信号缓存：池信号依赖快照（分钟级刷新）与
+  // config.poolAccountPriority，跨请求复用会读到过期值。
+  _sigMemo.clear();
 
   // 自动分层 VM：sort=rate 按倍率升序（未知倍率排后），sort=window 按窗口大优先；
   // 平局回退 priority。手动 VM（sort=null）维持 priority 排序不变。
   if (vm.auto && vm.sort) {
-    // 成本序基于「当前可用」候选（已过滤禁用/停用/冷却/超限频）：
+    // 成本序基于「当前可用」候选（已过滤禁用、停用、冷却、超频候选）：
     // rotateTopN 表示「从可用模型里轮转 N 个」，已禁用的模型不占名额，
     // 应由其后的候选递补。否则用户禁用几个低价模型后，轮转池会缩水甚至空转。
+    //
+    // 跨池账号级调度：compareAccountPriority 先比较候选所属池的账号权益分档，
+    // 分档平局才回落到倍率/窗口成本键。同池候选分档必然相同，池内成本序不变。
+    // 注意：权益档位会随快照刷新改变（如某账号领了新包），因此排出的
+    // 「轮转池成员」也应随之变化——这正是本排序放在成本序之前的含义。
     const ranked = list.slice().sort((a, b) => {
+      // 1) 跨池账号权益分档：临期池抢占、余额池次之、同档回落成本键
+      const dp = compareAccountPriority(a, b);
+      if (dp) return dp;
       if (vm.sort === 'window') {
         const dw = candWindow(b) - candWindow(a);
         if (dw) return dw;
@@ -120,7 +200,7 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
     if (poolSize === 0 && pinned.length === 0) return ranked;
     const poolKeyed = new Set(pool.map((c) => c.id));
     const rest = ranked.filter((c) => !poolKeyed.has(c.id));
-    // 池内 ≥2 个才需要轮转；仅 1 个时固定用它，池外仍作 failover 兜底
+    // 池内 ≥2 个才需要轮转；仅 1 个时固定用它，池外仍作 failover 的最后手段
     if (pool.length >= 2) return weightedShuffle(pool).concat(rest);
     return pool.concat(rest);
   }
@@ -132,7 +212,7 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
   return list.slice().sort((a, b) => (a.priority - b.priority) || String(a.id).localeCompare(String(b.id)));
 }
 
-/** 被冷却/禁用/平台不允许的候选说明（诊断用）。 */
+/** 被冷却、禁用或平台不允许的候选说明（诊断用）。 */
 function explainCandidates(virtualId, keyPlatform = 'all') {
   const vm = store.getVirtual(virtualId);
   if (!vm) return [];
@@ -156,6 +236,9 @@ function explainCandidates(virtualId, keyPlatform = 'all') {
 }
 
 function shouldSwitch(kind, vm) {
+  // 上下文超限属终端错误：换候选/冷却账号都解决不了窗口问题，绝不切换
+  // （否则会把每个候选都撞一遍同一天花板，并错误冷却健康的低窗口模型）。
+  if (kind === 'context_length') return false;
   const set = new Set((vm.failover && vm.failover.switchOn) || ['rate_limit', 'model', '5xx', 'network', 'other']);
   return set.has(kind);
 }
@@ -164,13 +247,42 @@ function shouldSwitch(kind, vm) {
 const CONTEXT_INPUT_HEADROOM_RATIO = 0.75;
 
 /**
- * 声明了 contextWindow 的虚拟模型：分发前粗估输入 token，
- * 超过窗口 75% 显式 400，让客户端走自己的压缩逻辑。
- * 不拦截则上游会静默截断头部，system 与早期记忆丢失 → 幻觉。
+ * 候选未声明 contextWindow 时的兜底窗口（平台级安全地板）。
+ *
+ * 背景：候选窗口为 null 时，候选级守门会整体失效（hasCandidateWindows=false），
+ * 超长输入直接飞向上游，只在收到 11115 后才失败——用户看到的是「某些请求
+ * 突然全 400」，而网关本可以提前把它路由给窗口更大的候选。
+ *
+ * 取值依据：WorkBuddy 侧 hy3 与 space-bunny 的真实硬上限实测均为 100000
+ * （上游 11115 报文 "prompt is too long: 100001 tokens > 100000 maximum"），
+ * 取实测最小天花板作地板；未知平台取更保守的 100000 之外的 128000 无益，
+ * 一律 100000。声明了真实窗口的候选不受影响。
  */
-function checkContextLimit(vm, messages) {
+const NULL_WINDOW_FLOOR = 100000;
+
+/**
+ * 候选参与窗口守门的有效窗口：实测校准值 > 配置声明值 > 平台安全地板。
+ * 目的是杜绝「全部候选都没声明窗口 → 候选级守门整体关闭」这一漏放路径，
+ * 同时让 hy3 这类「目录值虚高」的候选按真实上限守门（见 window-calibration.js）。
+ */
+function effectiveCandidateWindow(c) {
+  const cal = windowCalib.calibratedWindow(c);
+  if (cal != null) return cal;
+  return NULL_WINDOW_FLOOR;
+}
+
+/**
+ * 声明了 contextWindow 的虚拟模型：分发前粗估输入 token，
+ * 超过窗口 75% 时显式返回 400，让客户端走自己的压缩逻辑。
+ * 不拦截则上游会静默截断头部，system 与早期记忆丢失，导致幻觉。
+ *
+ * 估算口径含 tools 声明：上游把工具 JSON schema 一并计入输入（实测
+ * 27 个工具的请求在 messages 远未到上限时被 11115 拒绝），只算 messages
+ * 会让守门在边界失效。
+ */
+function checkContextLimit(vm, messages, tools) {
   if (!vm || !vm.contextWindow) return null;
-  const estimated = estimatePromptTokens(messages);
+  const estimated = estimateRequestTokens(messages, tools);
   const limit = Math.floor(vm.contextWindow * CONTEXT_INPUT_HEADROOM_RATIO);
   if (estimated <= limit) return null;
   const e = new Error(
@@ -201,13 +313,16 @@ async function handleChat(req, res, ctx) {
 
   // 窗口守门：声明了 contextWindow 且输入超限时直接拒绝，不做候选切换
   // （换候选解决不了超限——超限是输入与窗口的关系，不是候选健康度问题）。
-  // 日志不在此处记：handleChat 唯一调用点 openai.js 的 catch 统一落 traffic 日志。
-  const tooLong = checkContextLimit(vm, ctx.messages);
+  // 日志不在此处记：handleChat 唯一调用点 openai.js 的 catch 统一写入 traffic 日志。
+  const tooLong = checkContextLimit(vm, ctx.messages, ctx.tools);
   if (tooLong) throw tooLong;
-  // 候选级窗口守门（autotier）：候选声明了 contextWindow 且输入超该候选 75% → 跳过该候选，
-  // 让请求落到窗口更大的候选上；全部候选装不下时在循环内显式 400。
-  const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, ctx.messages);
-  const hasCandidateWindows = (vm.candidates || []).some((c) => Number(c.contextWindow) > 0);
+  // 候选级窗口守门（autotier）：候选声明了 contextWindow 且输入超该候选 75% 时跳过该候选，
+  // 让请求落到窗口更大的候选上；全部候选装不下时在循环内显式返回 400。
+  // 未声明窗口的候选按平台安全地板（effectiveCandidateWindow）参与守门，
+  // 不再整体豁免——否则超长输入会绕过本地守门直接撞上游 11115。
+  // 估算口径含 tools：上游把工具 schema 计入输入（见 lib/token-estimate.js）。
+  const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, ctx.messages, ctx.tools);
+  const hasCandidateWindows = (vm.candidates || []).some((c) => effectiveCandidateWindow(c) > 0);
 
   const startedAt = ctx.startedAt || Date.now();
   const keyPlatform = ctx.keyPlatform || 'all';
@@ -253,17 +368,24 @@ async function handleChat(req, res, ctx) {
       };
       let result;
       let rawUsageForLog = null; // 裁剪前的原始 usage（含缓存读细节），仅用于计费日志
+      // 真实命中的池账号 ID：dispatch 在 pool.run 拿到租约后回调上报。
+      // 旧实现只把候选模型 ID 写进日志（如 workbuddy/wb/space-bunny），
+      // 账号级消耗无法从 traffic 日志对账，只能靠余额快照差分反推。
+      let usedAccountId = null;
+      const onAccount = (id) => { if (id) usedAccountId = id; };
       if (ctx.stream !== false) {
         result = await dispatch.dispatchStream(provider, cand.model, body, res, {
           startedAt: t0,
           stickyKey: ctx.stickyKey,
           stickyAccountId: ctx.stickyAccountId,
           echoModel: virtualId,
+          onAccount,
         });
       } else {
         result = await dispatch.dispatchNonStream(provider, cand.model, body, {
           stickyKey: ctx.stickyKey,
           stickyAccountId: ctx.stickyAccountId,
+          onAccount,
         });
         // 计费日志用原始 usage（含缓存读细节）；回写客户端前再裁到官方三字段
         if (result && typeof result === 'object' && result.usage) rawUsageForLog = result.usage;
@@ -275,13 +397,13 @@ async function handleChat(req, res, ctx) {
         if (!res.writableEnded) res.json(result);
       }
       health.markOk(virtualId, cand.id, Date.now() - t0);
-      // 结束原因可观测性：truncated=true 表示上游截断（客户端会走续写/提示超长）
+      // 结束原因可观测性：truncated=true 表示上游截断（客户端会走续写或提示超长）
       const fr = (result && result.finishReason)
         || (result && result.choices && result.choices[0] && result.choices[0].finish_reason)
         || null;
       // usage 提取：流式来自 dispatch 返回值（末帧合并前已捕获），
       // 非流式优先用裁剪前的原始 usage（保留缓存读细节，标定费率需要它）。
-      // 无 usage 时不写字段，统计层据此区分「未计量」与「消耗 0」。
+      // 无 usage 时不写字段，统计层据此区分「未计量」与「消耗为 0」。
       let usageFields = usageToLogFields(rawUsageForLog || (result && result.usage));
       // 上游未回传 usage 时用真实分词器补算（结果仍属估算，日志标 tokensEstimated）。
       // 补算口径见 lib/token-precise.js：分词器与上游不完全一致，只作趋势参考。
@@ -311,7 +433,9 @@ async function handleChat(req, res, ctx) {
         endpoint: '/v1/chat/completions',
         method: 'POST',
         model: virtualId,
-        account: cand.id,
+        // 账号归属用真实池账号 ID（acct_…）；拿不到时回落到候选 ID（保持旧行为）。
+        account: usedAccountId || cand.id,
+        accountId: usedAccountId || null,
         status: 200,
         toolCalls: 0,
         toolsIn: ctx.tools ? ctx.tools.length : 0,
@@ -322,7 +446,13 @@ async function handleChat(req, res, ctx) {
         routedTo: `${cand.provider}/${cand.model}`,
         ...usageFields,
         ...(tokensEstimated ? { tokensEstimated: true } : {}),
-        // 计费模型：统计层按它查费率/标定表；model 是虚拟 ID，查不到任何费率
+        // 守门估算 vs 上游真实 promptTokens：长期累积可看出启发式估算在哪些
+        // 内容形态（代码/英文/工具 schema）上系统性偏低，据此调校估算系数与
+        // 各候选 contextWindow，避免守门在窗口边界失效。
+        ...(estTokens > 0 && usageFields.promptTokens
+          ? { tokenEstimate: estTokens, tokenEstimateDelta: usageFields.promptTokens - estTokens }
+          : {}),
+        // 计费模型：统计层按它查费率与标定表；model 是虚拟 ID，查不到任何费率
         ...(cand.model ? { pricedModel: cand.model } : {}),
         ...(estCost != null ? { estimatedCost: estCost } : {}),
         ...(fr ? { finishReason: fr, truncated: dispatch.isTruncatedFinish(fr) } : {}),
@@ -353,7 +483,7 @@ async function handleChat(req, res, ctx) {
     }
   }
 
-  // 全部失败：统一错误出口（流已开始则尽量补错误帧，否则 JSON）
+  // 全部失败：统一错误出口（流已开始则尽量补错误帧，否则返回 JSON）
   const err = lastErr || new Error(`virtual model "${virtualId}": all candidates failed`);
   if (res.writableEnded) return { ok: false, error: err.message, attempts };
   if (res.headersSent) {

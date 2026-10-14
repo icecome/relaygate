@@ -1,12 +1,9 @@
 /**
- * WorkBuddy 接入弹窗。
- *
- * 两种导入方式（对应后端两种凭据来源）：
+ * WorkBuddy 接入弹窗，两种导入方式（对应后端两种凭据来源）：
  *   方式一：抓取本机桌面客户端登录态（默认，后端会在线验证）；
  *   方式二：粘贴 .info 文件内容跨机导入（后端不做在线验证，导入后需补验）。
- *
- * 导入的账号默认停用。弹窗在导入成功后不自动关闭，而是就地给出「立即启用」，
- * 避免用户以为导入即可用、又找不到该去列表哪里启用。
+ * 导入的账号默认停用。弹窗在导入成功后不自动关闭，就地提供「立即启用」，
+ * 避免用户以为导入即可用却找不到该去列表何处启用。
  */
 import { useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
@@ -19,7 +16,7 @@ import { useToast } from '../../shared/ui/Toast';
 
 type Mode = 'local' | 'paste';
 
-/** 导入成功后保留的结果，用于就地启用；null 表示还在导入表单态。 */
+/** 导入成功后保留的结果，用于就地启用；null 表示仍在导入表单态。 */
 interface Imported {
   id?: string;
   label?: string;
@@ -61,7 +58,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
     }
   }
 
-  /** 就地启用刚导入的账号，避免用户回到长列表里自己找。 */
+  /** 就地启用刚导入的账号，省去用户回到长列表自行查找。 */
   async function enableImported() {
     if (!imported?.id) return;
     setBusy(true);
@@ -110,7 +107,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
           ? { infoJsonText: infoText.trim(), label: label.trim() || undefined }
           : { label: label.trim() || undefined };
       const r = await wbImport(body, key);
-      // 不关闭弹窗：把结果留在原地，让用户就地决定启用 / 验证
+      // 不关闭弹窗：结果留在原地，用户可就地决定启用或验证
       setImported({
         id: r.id,
         label: r.label,

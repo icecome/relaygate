@@ -93,8 +93,8 @@ export const deleteVirtual = (id: string, key: string) =>
   api<unknown>(`/v1/admin/model-router/virtual/${encodeURIComponent(id)}`, { method: 'DELETE' }, key);
 
 /**
- * 定点修改单个候选的开关，不整体回写候选列表。
- * 面板上的候选表是展开时的快照，整体 PUT 会用旧值覆盖并发改动。
+ * 定点修改单个候选的开关，不整体回写候选列表：面板上的候选表是展开时的快照，
+ * 整体 PUT 会用旧值覆盖并发改动。
  *
  * candidateId 走查询参数：候选 id 形如 `workbuddy/wb/hy3` 含斜杠，
  * 放进路径段即便 encodeURIComponent 也会被 Express 解码后重新切分，
@@ -124,3 +124,14 @@ export const resyncAutoTiers = (key: string) =>
 
 export const reloadRouter = (key: string) =>
   api<{ ok: boolean; message?: string }>('/v1/admin/model-router/reload', { method: 'POST' }, key);
+
+/**
+ * 各 Provider 可选模型目录（新增/编辑虚拟模型时填充候选下拉）。
+ * 返回 providerId -> 模型列表；openai 兼容 Provider 可能为空数组（允许手填）。
+ */
+export const getAvailableModels = (key: string, signal?: AbortSignal) =>
+  api<{ data: Record<string, { id: string; label: string }[]> }>(
+    '/v1/admin/model-router/available-models',
+    { signal },
+    key,
+  );

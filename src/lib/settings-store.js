@@ -3,13 +3,13 @@
  * lib/settings-store.js — 本机 JSON 设置文件的统一读写。
  *
  * 五处设置模块（jobs/scheduler-settings、jobs/rotate-settings、notify/settings、
- * jobs/balance-refresh、jobs/backup）此前各自实现同一套骨架：
- * readStored（读 JSON，失败回 {}）→ getEffective（文件 > env > 默认，逐字段夹紧）
- * → save（白名单取值 + 夹紧 + writeJsonAtomic）。差异只在字段表，故收敛到此处。
+ * jobs/balance-refresh、jobs/backup）此前各自实现同一套骨架：readStored（读 JSON，
+ * 失败回 {}）→ getEffective（文件 > env > 默认，逐字段夹紧）→ save（白名单取值
+ * + 夹紧 + writeJsonAtomic）。差异只在字段表，故收敛到此处。
  *
  * 字段描述符：
  *   type      'int' | 'bool' | 'string'；缺省时按是否给出 min/max 推断为 int
- *   env       对应的环境变量名；缺省表示该字段没有 env 兜底
+ *   env       对应的环境变量名；缺省表示该字段没有 env 缺省值
  *   default   默认值，可以是值或返回值的函数
  *   min/max   int 字段的夹紧区间
  *   keepEmpty string 字段：文件里的空串视为有效值（不再回落到 env）
@@ -45,7 +45,7 @@ function typeOf(spec) {
  * @param {object} spec
  * @param {*} v 原始值
  * @param {boolean} fromEnv 是否来自环境变量
- * @param {boolean} forSave 是否用于写入（写入不做 transform，保持落盘值为用户输入）
+ * @param {boolean} forSave 是否用于写入（写入不做 transform，写入文件的值保持用户输入）
  * @returns {*} 无效时返回 null，由调用方决定回落
  */
 function coerce(spec, v, fromEnv, forSave) {
@@ -60,7 +60,7 @@ function coerce(spec, v, fromEnv, forSave) {
   return clampInt(v, spec.min, spec.max);
 }
 
-/** 写入专用：布尔只接受真布尔值，避免字符串 'yes' 被当成 true 落盘。 */
+/** 写入专用：布尔只接受真布尔值，避免字符串 'yes' 被当成 true 写入文件。 */
 function coerceForSave(spec, v) {
   if (typeOf(spec) === 'bool') return typeof v === 'boolean' ? v : null;
   if (typeOf(spec) === 'string' && spec.saveEmpty === false) {

@@ -1,6 +1,6 @@
 'use strict';
 /**
- * routes/admin-notify.js — 通知渠道与自定义事件端点。
+ * routes/admin-notify.js —— 通知渠道与自定义事件端点。
  * 挂载前缀：/v1/admin（见 index.js）。
  */
 const { Router } = require('express');
@@ -10,7 +10,7 @@ const { notifyDetail } = require('../notify');
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
-/** 通知渠道配置（读写本机 notify-settings.json；env 作兜底）。 */
+/** 通知渠道配置（读写本机 notify-settings.json；env 作为回退来源）。 */
 router.get('/notify/settings', admin, (req, res) => {
   const notify = require('../notify');
   const settings = require('../notify/settings');

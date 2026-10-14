@@ -1,21 +1,18 @@
 /**
  * 权益包到期与可用性：由 /v1/credentials/summary 派生，无独立接口。
- *
- * 关键口径（对齐后端 src/credentials/credits.js 与 src/upstream/balance.js）：
- *   - expireTime 是**秒级**时间戳（后端 `Math.floor(expireMs / 1000)`），
- *     转毫秒需乘1000；直接当毫秒用会落在 1970 年；
- *   - remaining 为 0 表示已用尽；unlimited 为true 时 remaining 为 null；
+ * 关键口径（统一后端 src/credentials/credits.js 与 src/upstream/balance.js）：
+ *   - expireTime 是秒级时间戳（后端 `Math.floor(expireMs / 1000)`），转毫秒需乘 1000，
+ *     直接当毫秒用会落在 1970 年；
+ *   - remaining 为 0 表示已用尽；unlimited 为 true 时 remaining 为 null；
  *   - limit 为 -1 表示不限量，后端归一化为 unlimited + remaining=null。
  *
- * **单位边界（务必遵守）**：本模块的 packs / remaining / creditTotals 全部是
- * 「积分」口径（单位 credit，量级 1e3）。ZCode 的额度是 token 计量（量级 1e8），
- * 后端刻意把它存在 Account.tokenBuckets（非 packs），因此本模块天然不会读到它。
- * 若将来要展示 ZCode 额度，必须走独立通道，**绝不能**并入 packs 或 creditTotals。
+ * 单位边界（务必遵守）：本模块的 packs / remaining / creditTotals 全部是积分口径
+ * （单位 credit，量级 1e3）；ZCode 额度是 token 计量（量级 1e8），后端刻意把它存在
+ * Account.tokenBuckets（非 packs），故本模块不会读到它。若将来要展示 ZCode 额度，
+ * 必须走独立通道，绝不能并入 packs 或 creditTotals。
  *
- * 三个用途：
- *   1. ExpiryChip —— 账号表单元格内显示最紧迫项；
- *   2. PackDialog —— 点击后弹窗展示该账号全部权益包，可用者在上、失效者置底置灰；
- *   3. expirySummary —— 工具条汇总提示。
+ * 三个用途：ExpiryChip（账号表单元格内显示最紧迫项）、PackDialog（弹窗展示该账号全部
+ * 权益包，可用者在上、失效者置底置灰）、expirySummary（工具条汇总提示）。
  */
 import { useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
@@ -97,14 +94,26 @@ export function packsOf(account: Account, now = Date.now()): PackView[] {
   });
 
   // 展示排序：可用项在前、失效置底，组内按到期时间升序。
-  // 注意：这只是阅读顺序，不代表后端的消耗顺序 —— 后端调度（pool.js）有自己的
-  // FEFO 决策。此处刻意不宣称「这些包会优先被消耗」，避免 UI 排序与后端算法漂移。
+  // 这只是阅读顺序，不代表后端的消耗顺序——后端调度（pool.js）有自己的 FEFO 决策；
+  // 此处不宣称「这些包会优先被消耗」，以免 UI 排序与后端算法漂移。
   return list.sort((a, b) => {
     if (a.usable !== b.usable) return a.usable ? -1 : 1;
     const av = a.expireMs ?? Number.POSITIVE_INFINITY;
     const bv = b.expireMs ?? Number.POSITIVE_INFINITY;
     return av - bv;
   });
+}
+
+/**
+ * 账号表中「权益包」列用：仅仍可使用的包（未用尽、未过期）。
+ *
+ * 为什么不再取 packsOf()[0]：那只是「最早到期的一个包」，会让该列
+ * 既不反映账号的真实额度（其余可用包被隐去），又与右侧「余额/额度」
+ * （可用包 remaining 之和）和「权益到期」（最紧迫包的到期状态）重复。
+ * 列内改为展示可用包数量，额度总量归「余额/额度」，明细在 PackDialog 内查看。
+ */
+export function usablePacksOf(account: Account, now = Date.now()): PackView[] {
+  return packsOf(account, now).filter((p) => p.usable);
 }
 
 /** 账号表单元格用：最紧迫的一项（已到期优先，其次 3 日内、7 日内）。 */
@@ -118,11 +127,9 @@ export function worstExpiry(account: Account, now = Date.now()): PackView | null
 }
 
 /**
- * 全库汇总（按**账号数**口径），供凭据池工具条提示。
- *
- * 命名注意：后端 /summary 的 expiring3d/7d 是**积分额度**（amount），
- * 本函数返回的是**账号数**（count）—— 同名不同义。为避免读数打架，
- * 调用方文案必须写明「N 个账号」，不得与 summary.expiring3d 直接对比。
+ * 全库汇总（按账号数口径），供凭据池工具条提示。
+ * 命名注意：后端 /summary 的 expiring3d/7d 是积分额度（amount），本函数返回的是账号数
+ * （count）—— 同名不同义。调用方文案必须写明「N 个账号」，不得与 summary.expiring3d 直接对比。
  */
 export function expirySummary(
   accounts: Account[],
@@ -140,7 +147,7 @@ export function expirySummary(
 }
 
 /**
- * 全库积分额度汇总，口径与 packsOf 一致（已用尽/ 已过期都不计入）：
+ * 全库积分额度汇总，口径与 packsOf 一致（已用尽与已过期都不计入）：
  *   - total：所有可用包的 remaining 之和；unlimited 包不计入金额，只计数量
  *   - expiring：7 日内到期的可用额度
  *   - unlimited：带不限量包的账号数
@@ -200,27 +207,25 @@ export function ExpiryChip({ item }: { item: PackView | null }) {
   );
 }
 
-/* ---------------------------------------------------------------- 保活状态 */
+/* 保活状态 */
 
 /**
- * 账号凭据保活状态（登录 token 的有效期与刷新链路）。
- *
- * 口径说明（避免与「到期」列混淆——那是**权益包**积分的到期）：
- *   - expiredAt 是登录 token（JWT）的过期时间，由上游 ExchangeToken /
- *     WorkBuddy refresh 写回；保活定时任务（scheduler 的 keepalive）在到期前
- *     用 refreshToken 换新。ZCode 账号 JWT 无 exp，恒为 null —— 不是异常，
- *     而是「长期有效」。
- *   - refreshExpiredAt 是 refreshToken 本身的有效期。它一旦过期就无法再换新，
- *     账号只能重新导入/OAuth 登录，是保活链路的最终期限。
+ * 账号凭据保活状态（登录 token 的有效期与刷新流程）。
+ * 口径说明（避免与「到期」列混淆——那是权益包积分的到期）：
+ *   - expiredAt 是登录 token（JWT）的过期时间，由上游 ExchangeToken / WorkBuddy refresh
+ *     写回；保活定时任务（scheduler 的 keepalive）在到期前用 refreshToken 换新。
+ *     ZCode 账号的 JWT 无 exp，恒为 null —— 属「长期有效」，不是异常；
+ *   - refreshExpiredAt 是 refreshToken 本身的有效期，一旦过期就无法再换新，
+ *     账号只能重新导入或 OAuth 登录，是保活流程的最终期限。
  */
 export interface KeepaliveView {
-  /** 登录 token 到期毫秒；null = 无记录或长期有效（ZCode） */
+  /** 登录 token 到期毫秒；null 表示无记录或长期有效（ZCode） */
   expiresMs: number | null;
-  /** refreshToken 到期毫秒；null = 无记录 */
+  /** refreshToken 到期毫秒；null 表示无记录 */
   refreshExpiresMs: number | null;
   /** token 相对 now 的剩余天数（向上取整）；expiresMs 为 null 时为 null */
   days: number | null;
-  /** 保活链路状态文案 */
+  /** 保活流程状态文案 */
   label: string;
   tone: 'neutral' | 'ok' | 'warn' | 'danger';
 }
@@ -237,7 +242,7 @@ export function keepaliveOf(account: Account, now = Date.now()): KeepaliveView {
   const expiresMs = toMs(account.expiredAt);
   const refreshExpiresMs = toMs(account.refreshExpiredAt);
 
-  // refreshToken 已过期：无法再换新，链路终断
+  // refreshToken 已过期：无法再换新，保活流程终止
   if (refreshExpiresMs != null && refreshExpiresMs <= now) {
     return { expiresMs, refreshExpiresMs, days: null, label: '需重新登录', tone: 'danger' };
   }
@@ -327,7 +332,7 @@ export function PackTable({ account }: { account: Account }) {
         </tbody>
       </table>
       <p className="mt-2 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-        已用尽或已过期的权益包不参与调度，置底显示；带「N 日内」标记的包会优先被消耗。
+        已用尽或已过期的权益包不参与调度，置底显示；「N 日内」标记表示距到期时间，不代表消耗顺序。
       </p>
     </>
   );

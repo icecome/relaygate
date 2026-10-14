@@ -1,17 +1,15 @@
 'use strict';
 /**
  * log/stats-cache.js — 流量统计增量物化缓存（P2）。
+ * admin-extras 的 /stats/* 每次请求都全量读 logs/<date>/traffic.jsonl，文件较大时
+ * 逐日 readFileSync 成为面板卡顿点。这里把每日原始行聚合成桶（按模型与按账号的
+ * 计数、token 与费用汇总，加日级总量），缓存到 .trae-api/stats-cache/<date>.json：
+ * 命中则直接按桶重建，未命中才全量读一次并回填；写日志时 invalidateDay() 使当日缓存失效。
+ * 明细（traffic 原始行）不缓存，那是按日 jsonl，体量小；缓存只覆盖聚合维度。
  *
- * 背景：admin-extras 的 /stats/* 每次请求全量读 logs/<date>/traffic.jsonl，
- * 文件大时逐日 readFileSync 成为面板卡顿点。
- * 方案：把每日原始行**聚合成桶**（按模型/按账号的计数与 token/费用汇总，+ 日级总量），
- * 缓存到 .trae-api/stats-cache/<date>.json；面板 /stats/* 请求时命中则直接按桶重建，
- * 未命中才全量读一次并回填缓存。写日志时 invalidateDay() 使当日缓存失效（增量一致）。
- * 明细（traffic 原始行）不缓存——那是按日 jsonl，体量小；缓存只覆盖聚合维度。
- *
- * 提供与 log/stats.js 同签名的三个聚合函数（可直接替换）
- *   cachedDailyStats / cachedModelStats / cachedAccountStats
- * 产物结构对齐 stats.js 的 dailyStats/modelStats/accountStats，以便 admin-extras 零改动接入。
+ * 提供与 log/stats.js 同签名的三个聚合函数，可直接替换：
+ * cachedDailyStats / cachedModelStats / cachedAccountStats。
+ * 产物结构统一到 stats.js 的 dailyStats/modelStats/accountStats，admin-extras 可零改动接入。
  */
 const fs = require('fs');
 const path = require('path');
@@ -21,7 +19,7 @@ const { writeJsonAtomic } = require('../lib/atomic-write');
 const { stateDir, legacyStateDir } = require('../lib/paths');
 const { round2, round4 } = require('../lib/round');
 
-// 读优先新位置，旧位置兜底（缓存本身可重建，不做逐文件迁移）
+// 读优先新位置，旧位置作为最后手段（缓存本身可重建，不做逐文件迁移）
 const CACHE_DIR = () => {
   const fresh = path.join(stateDir(), 'stats-cache');
   if (fs.existsSync(fresh)) return fresh;
@@ -32,10 +30,10 @@ const CACHE_DIR = () => {
 const WRITE_DIR = () => path.join(stateDir(), 'stats-cache');
 const CACHE_TTL_MS = 60 * 60 * 1000;
 /**
- * 缓存桶版本。递增历史（每次改动解析口径都要 +1，否则旧桶继续被读）：
+ * 缓存桶版本。每次改动解析口径都要递增，否则旧桶继续被读：
  *   3 补 cacheReadTokens；4 补 token 来源三分类；
  *   5 补 tokensLost；6 estimatedCost 改为按当前标定重算；
- *   7 numTok 接受数字字符串（旧版落盘格式），tokensLost 仅计真脱敏行；
+ *   7 numTok 接受数字字符串（旧版写入文件的格式），tokensLost 仅计真脱敏行；
  *   8 补 costUpper（缺 cacheRead、按上界计价的行数）。
  */
 const BUCKET_VERSION = 8;
@@ -79,7 +77,7 @@ function writeCache(dateKey, buckets) {
 /**
  * 从原始行构建一日桶。
  * bucket = { date, requests, errors, tokens, metered, estimatedCost, durationSumMs, durationCount, toolCalls, byModel:{m:{requests,tokens,metered,cost}}, byAccount:{a:{requests,errors,tokens,metered,cost}} }
- * tokens 仅累加已计量请求；metered 记录带回 usage 的请求数，两者分开才能得出真实覆盖率。
+ * tokens 仅累加已计量请求；metered 记录带回 usage 的请求数。两者分开才能得出真实覆盖率。
  */
 function buildDayBucket(rows, dateKey) {
   const b = {
@@ -103,8 +101,8 @@ function buildDayBucket(rows, dateKey) {
     const tok = numTok(r.totalTokens) || (pt + ct);
     b.tokens += tok;
     b.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
-    // 一律按当前标定重算，不采信落盘 estimatedCost（历史为错误的 tier 口径，
-    // 量纲差约 97 倍，详见 log/stats.js#costOf）
+    // 一律按当前标定重算，不采信写入文件的 estimatedCost（历史为错误的 tier 口径，
+    // 量纲差约 97 倍，详见 log/stats.js#costOf）。
     const c = costOf(r);
     if (c.priced) b.priced++;
     if (c.upperBound) b.costUpper++;
@@ -125,7 +123,7 @@ function buildDayBucket(rows, dateKey) {
   return b;
 }
 
-/** 取最近 days 天的桶（命中缓存取缓存，未命中则读日志构建并回填）。 */
+/** 取最近 days 天的桶：命中缓存取缓存，未命中则读日志构建并回填。 */
 function getBuckets(days) {
   const out = [];
   for (const day of recentDays(days)) {
@@ -150,7 +148,7 @@ function getBuckets(days) {
   return out.filter(Boolean);
 }
 
-/** 按日聚合（对齐 stats.dailyStats 输出结构）。 */
+/** 按日聚合（输出结构统一到 stats.dailyStats）。 */
 function cachedDailyStats(days) {
   return getBuckets(days)
     .sort((a, b) => b.date.localeCompare(a.date))
@@ -183,14 +181,14 @@ function cachedDailyStats(days) {
     }));
 }
 
-/** 按模型聚合（对齐 stats.modelStats 输出结构）。 */
+/** 按模型聚合（输出结构统一到 stats.modelStats）。 */
 function cachedModelStats(days) {
   const byModel = {};
   for (const b of getBuckets(days)) {
     for (const [m, v] of Object.entries(b.byModel)) {
       const acc = byModel[m] || (byModel[m] = { model: m, requests: 0, errors: 0, tokens: 0, metered: 0, promptTokens: 0, completionTokens: 0, cacheReadTokens: 0, estimatedCost: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0 });
       acc.requests += v.requests;
-      // 误差率按该模型实际请求/误差在桶里没有分模型 error 计数——用整体近似：
+      // 误差率：桶内没有分模型 error 计数，无法按该模型实际请求/误差计算——用整体近似：
       // 桶级无 per-model errors，标记 errors 为 0（模型级 error 主要在 traffic 明细里，属可接受近似）
       acc.tokens += v.tokens;
       acc.metered += v.metered || 0;
@@ -219,7 +217,7 @@ function cachedModelStats(days) {
     .sort((a, b) => b.requests - a.requests);
 }
 
-/** 按账号聚合（对齐 stats.accountStats 输出结构）。 */
+/** 按账号聚合（输出结构统一到 stats.accountStats）。 */
 function cachedAccountStats(days) {
   const byAccount = {};
   let tokensAll = 0;
@@ -246,18 +244,18 @@ function cachedAccountStats(days) {
     .sort((a, b) => b.tokens - a.tokens);
 }
 
-/** 写日志时使当日缓存失效（增量一致）。@param {string} [dateKey] 缺省为今天。 */
+/** 写日志时使当日缓存失效。@param {string} [dateKey] 缺省为今天。 */
 function invalidateDay(dateKey) {
   try {
     const file = cacheFile(dateKey || todayKey());
     if (fs.existsSync(file)) fs.unlinkSync(file);
-  } catch { /* 失效失败不影响 */ }
+  } catch { /* 失效失败不影响主流程 */ }
 }
 
 /** 清空全部统计缓存。 */
 function clearCache() {
   try {
-    // 两处都清，避免旧目录残留继续被读取
+    // 新旧两处都清，避免旧目录残留继续被读取
     fs.rmSync(WRITE_DIR(), { recursive: true, force: true });
     fs.rmSync(path.join(legacyStateDir(), 'stats-cache'), { recursive: true, force: true });
     return true;
