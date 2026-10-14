@@ -142,6 +142,25 @@ router.get('/stats/daily', admin, async (req, res) => {
       turnsFailed: s.turnsFailed + (d.turnsFailed || 0),
       recoveredTurns: s.recoveredTurns + (d.recoveredTurns || 0),
     }), { turns: 0, turnsFailed: 0, recoveredTurns: 0 });
+    // 工具输出压缩（RTK）节省：窗口内**一行都没跑过压缩**时不返回该字段，
+    // 让前端能区分「压缩没效果」与「当时还没这个能力」。
+    const rtkDays = data.filter((d) => d.rtkCalls > 0);
+    const savings = rtkDays.length ? rtkDays.reduce((s, d) => ({
+      calls: s.calls + (d.rtkCalls || 0),
+      bytesBefore: s.bytesBefore + (d.rtkBytesBefore || 0),
+      bytesAfter: s.bytesAfter + (d.rtkBytesAfter || 0),
+      savedBytes: s.savedBytes + (d.rtkSavedBytes || 0),
+      blocks: s.blocks + (d.rtkBlocks || 0),
+      // 任一天是下界 → 窗口合计也是下界
+      partial: s.partial || d.rtkPartial === true,
+    }), { calls: 0, bytesBefore: 0, bytesAfter: 0, savedBytes: 0, blocks: 0, partial: false }) : null;
+    if (savings) {
+      savings.percent = savings.bytesBefore > 0
+        ? Math.round((savings.savedBytes / savings.bytesBefore) * 10000) / 100
+        : 0;
+      // 覆盖天数：`savings` 只在有压缩的日期上聚合，凭空看不出来
+      savings.days = rtkDays.length;
+    }
 
     // 官方账单按日积分（读本地缓存，不打上游）
     let official = null;
@@ -166,7 +185,7 @@ router.get('/stats/daily', admin, async (req, res) => {
       }
     } catch { /* 账单聚合失败不影响网关口径 */ }
 
-    res.json({ object: 'list', days, totalRequests, turns, data, official, cached: statsCacheEnabled() });
+    res.json({ object: 'list', days, totalRequests, turns, savings, data, official, cached: statsCacheEnabled() });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }

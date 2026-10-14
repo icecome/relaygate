@@ -181,6 +181,11 @@ const config = {
   // 留相对路径意味着「从哪个目录启动，就用哪个库」——换个 cwd 启动会静默打开
   // 另一个 trae-relay.db，用户看到的是「账号全丢了」。相对路径按项目根解析，
   // 与 .env 本身的解析基准（ENV_FILE 固定在 ROOT）一致。
+  // 工具输出压缩（RTK）：请求发出前就地重写工具结果的文本，直接减少输入 token。
+  // 默认开——输入 token 是本项目成本的绝对主体（实测输出仅占 0.3%），
+  // 而 RTK 只压「工具输出」且小于 500 字节的块一律不动、错误轨迹一律跳过。
+  // 置 RTK_ENABLED=false 可整体关闭（改动模型所见内容，留一个总闸）。
+  rtkEnabled: process.env.RTK_ENABLED !== 'false',
   workspaceDir: path.resolve(ROOT, process.env.WORKSPACE_DIR || 'output'),
   logLevel: process.env.LOG_LEVEL || 'info',
   // 是否写旧格式逐请求 JSON 文件（默认关；默认写 traffic.jsonl + 控制台一行）

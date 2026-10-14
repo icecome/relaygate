@@ -55,6 +55,20 @@ export interface DailyStat {
   turns?: number;
   turnsFailed?: number;
   recoveredTurns?: number;
+  /**
+   * 工具输出压缩（RTK）节省，仅在该日**确实跑过压缩**时存在。
+   * 单位是 UTF-8 字节；rtkPartial 为真表示该日有行缺字段或不满足
+   * 不变量（before - after === saved），节省值是下界。
+   */
+  rtkCalls?: number;
+  rtkBytesBefore?: number;
+  rtkBytesAfter?: number;
+  rtkSavedBytes?: number;
+  rtkBlocks?: number;
+  /** 服务端算好的节省比例（百分数）。
+   *  注意：这是**字节**比例，不是 Token 比例——分词后不一定等比例，界面不要混用。 */
+  rtkPercent?: number;
+  rtkPartial?: boolean;
 }
 
 export interface ModelStat {
@@ -92,6 +106,23 @@ export const getStatsDaily = (days: number, key: string, signal?: AbortSignal) =
     totalRequests: number;
     /** 窗口内逻辑回合汇总（与 totalRequests 不同口径：后者按上游请求行计）。 */
     turns?: { turns: number; turnsFailed: number; recoveredTurns: number };
+    /**
+     * 窗口内工具输出压缩节省汇总；窗口内**一行都没跑过压缩**时为 null
+     * （与「压缩了但省了 0 字节」区分开）。
+     */
+    savings?: {
+      calls: number;
+      bytesBefore: number;
+      bytesAfter: number;
+      savedBytes: number;
+      blocks: number;
+      /** 节省比例（百分数，字节口径） */
+      percent: number;
+      /** 有压缩数据的日期数 */
+      days: number;
+      /** 任一天数据不完整/不自洽 → 节省值为下界 */
+      partial: boolean;
+    } | null;
     data: DailyStat[];
   }>(`/v1/admin/stats/daily?days=${days}`, { signal }, key);
 

@@ -1,5 +1,23 @@
 /** 格式化与纯函数工具。集中口径，避免各页面各写一套。 */
 
+/**
+ * 字节数转人话（1024 进制，1 位小数）。
+ *
+ * 口径注意：工具输出压缩（RTK）的节省量是 **UTF-8 字节**，不是字符数也不是
+ * Token 数。中文下一个字符占 3 字节，用字符数报会小看三倍；而分词后字节与
+ * Token 也不成比例，故界面上必须写明单位是字节。
+ */
+export function formatBytes(n: number | null | undefined): string {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return '0 B';
+  if (v < 1024) return `${v} B`;
+  const kb = v / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} KB`;
+  const mb = kb / 1024;
+  if (mb < 1024) return `${mb.toFixed(1)} MB`;
+  return `${(mb / 1024).toFixed(2)} GB`;
+}
+
 /** 账号三态：仅这三种，源于 accountState() 的判定规则。 */
 export type AccountState = 'off' | 'cool' | 'ok';
 

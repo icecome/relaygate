@@ -18,8 +18,9 @@ const store = require('./store');
 const health = require('./health');
 const dispatch = require('./dispatch');
 const { createStreamGate } = require('./stream-gate');
+const { compressMessages } = require('../lib/rtk');
 const { classifyError } = require('../upstream/errors');
-const { logRequest, usageToLogFields } = require('../log/traffic');
+const { logRequest, usageToLogFields, rtkLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
 const { estimateTokensOfText } = require('../lib/token-precise');
 const config = require('../config');
@@ -297,8 +298,7 @@ function checkContextLimit(vm, messages, tools) {
  * 处理虚拟模型 chat 请求（在 openai 路由最前调用）。
  * 成功则直接写响应；失败耗尽候选时抛出/写出最后错误。
  */
-async function handleChat(req, res, ctx) {
-  const virtualId = ctx.model;
+async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
   const vm = store.getVirtual(virtualId);
   if (!vm) {
     const e = new Error(`unknown virtual model: ${virtualId}`);
@@ -311,21 +311,28 @@ async function handleChat(req, res, ctx) {
     throw e;
   }
 
+  // 工具输出压缩（RTK）：整个 handleChat **只压一次**——循环里的降级换候选与
+  // 账号重试共用这份结果，否则同一次客户端请求会被重复计数、节省量虚高。
+  // 守门与模态判定都按**压缩后**的 messages 算：那才是真正上路的字节。
+  // 记账口径见 log/stats.js（rtk 字段只在真跑过压缩时写入）。
+  const rtk = compressMessages(ctx.messages, { enabled: config.rtkEnabled });
+  const messages = rtk.messages;
+
   // 窗口守门：声明了 contextWindow 且输入超限时直接拒绝，不做候选切换
   // （换候选解决不了超限——超限是输入与窗口的关系，不是候选健康度问题）。
   // 日志不在此处记：handleChat 唯一调用点 openai.js 的 catch 统一写入 traffic 日志。
-  const tooLong = checkContextLimit(vm, ctx.messages, ctx.tools);
+  const tooLong = checkContextLimit(vm, messages, ctx.tools);
   if (tooLong) throw tooLong;
   // 候选级窗口守门（autotier）：候选声明了 contextWindow 且输入超该候选 75% 时跳过该候选，
   // 让请求落到窗口更大的候选上；全部候选装不下时在循环内显式返回 400。
   // 未声明窗口的候选按平台安全地板（effectiveCandidateWindow）参与守门，
   // 不再整体豁免——否则超长输入会绕过本地守门直接撞上游 11115。
   // 估算口径含 tools：上游把工具 schema 计入输入（见 lib/token-estimate.js）。
-  const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, ctx.messages, ctx.tools);
+  const { estimated: estTokens, list: fittingAll } = autotier.filterCandidatesByInput(vm, messages, ctx.tools);
   const hasCandidateWindows = (vm.candidates || []).some((c) => effectiveCandidateWindow(c) > 0);
   // 模态过滤：发图请求只保留「未明确声明不支持」的候选（未知一律放行）。
   // 与窗口过滤同构——请求时过滤，纯文本请求仍可用全部候选。
-  const modality = autotier.filterCandidatesByModality(vm, ctx.messages);
+  const modality = autotier.filterCandidatesByModality(vm, messages);
 
   const startedAt = ctx.startedAt || Date.now();
   const keyPlatform = ctx.keyPlatform || 'all';
@@ -381,7 +388,7 @@ async function handleChat(req, res, ctx) {
     try {
       const body = {
         model: cand.model,
-        messages: ctx.messages,
+        messages,
         temperature: ctx.temperature,
         top_p: ctx.top_p,
         max_tokens: autotier.clampMaxTokens(cand, ctx.max_tokens),
@@ -463,6 +470,7 @@ async function handleChat(req, res, ctx) {
         status: 200,
         toolCalls: 0,
         toolsIn: ctx.tools ? ctx.tools.length : 0,
+        ...rtkLogFields(rtk.stats),
         durationMs: Date.now() - startedAt,
         error: null,
         platform: platformTag,
@@ -492,6 +500,13 @@ async function handleChat(req, res, ctx) {
       lastErr = err;
       const kind = classifyError(err);
       const cooled = health.markFail(virtualId, cand.id, kind, err, vm.failover.cooldownMs);
+      // 可切换判据：答案（content/tool_call 的完整帧）是否已交付客户端。
+      // 不能用 res.headersSent：dispatchTraeStream 在上游第一个增量（可能只是
+      // reasoning）就会 flushHeaders，用它当判据会让「只思考过、随后上游失败」
+      // 的场景永远无法降级——而那正是最该降级的情形。
+      // 非流式路径没有闸门，维持原行为（响应体还没写出去，随时可换）。
+      const canSwitch = shouldSwitch(kind, vm) && i < maxAttempts - 1
+        && (gate ? !gate.answerCommitted : !res.headersSent);
       logRequest({
         endpoint: '/v1/chat/completions',
         method: 'POST',
@@ -502,19 +517,15 @@ async function handleChat(req, res, ctx) {
         attempt: attempts.length,
         toolCalls: 0,
         toolsIn: ctx.tools ? ctx.tools.length : 0,
+        // RTK 节省只记在**代表本回合结局**的那一行：压缩是每次客户端请求做一次，
+        // 若每个失败尝试都记一遍，日聚合按行相加会把节省量按尝试次数放大。
+        ...(canSwitch ? {} : rtkLogFields(rtk.stats)),
         durationMs: Date.now() - t0,
         error: err.message,
         platform: provider.type === 'openai' ? `openai:${cand.provider}` : provider.builtin,
         virtualModel: virtualId,
         routedTo: `${cand.provider}/${cand.model}`,
       });
-      // 可切换判据：答案（content/tool_call 的完整帧）是否已交付客户端。
-      // 不能用 res.headersSent：dispatchTraeStream 在上游第一个增量（可能只是
-      // reasoning）就会 flushHeaders，用它当判据会让「只思考过、随后上游失败」
-      // 的场景永远无法降级——而那正是最该降级的情形。
-      // 非流式路径没有闸门，维持原行为（响应体还没写出去，随时可换）。
-      const canSwitch = shouldSwitch(kind, vm) && i < maxAttempts - 1
-        && (gate ? !gate.answerCommitted : !res.headersSent);
       if (!canSwitch) break;
       if (gate) {
         // 丢弃未成行的残片：绝不能让上一个候选的半行拼进下一个候选的流里。

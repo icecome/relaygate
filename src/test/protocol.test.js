@@ -488,6 +488,103 @@ t('D5：工具结果带 is_error 时，流量日志记录 toolErrors（is_error 
   assert.strictEqual(logged[0].toolErrors, undefined, '无失败工具结果时不写该字段');
 });
 
+t('思考强度折算：thinking.budget_tokens 被翻译成 max_tokens 下发（上游忽略 thinking 字段）', async () => {
+  upstreamStub.calls.length = 0;
+  upstreamStub.data = {
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  };
+  await post('/v1/messages', msgBody({
+    stream: false,
+    thinking: { type: 'enabled', budget_tokens: 12000 },
+  }));
+  assert.strictEqual(upstreamStub.calls[0].opts.max_tokens, 12000 + 2048,
+    '预算 + 正文余量必须作为 max_tokens 下发，否则客户端的意图被静默丢弃');
+});
+
+t('思考强度折算：客户端显式 max_tokens 优先，两者都没传时不设上限（零行为变化）', async () => {
+  upstreamStub.calls.length = 0;
+  await post('/v1/messages', msgBody({ stream: false, max_tokens: 777, thinking: { type: 'enabled', budget_tokens: 12000 } }));
+  assert.strictEqual(upstreamStub.calls[0].opts.max_tokens, 777, '显式 max_tokens 不得被档位改写');
+  upstreamStub.calls.length = 0;
+  await post('/v1/messages', msgBody({ stream: false }));
+  assert.strictEqual(upstreamStub.calls[0].opts.max_tokens, undefined,
+    '客户端没表达意图时必须与改动前一致（不下发 max_tokens）');
+});
+
+t('RTK：工具输出被压缩后上行，节省字节按 UTF-8 计入流量日志（不变量成立）', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  upstreamStub.data = {
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  };
+  // 一份真实感的 git diff（超过 MIN_COMPRESS_SIZE=500 字节）
+  const bigDiff = 'diff --git a/src/a.js b/src/a.js\nindex 1111111..2222222 100644\n'
+    + '--- a/src/a.js\n+++ b/src/a.js\n@@ -1,400 +1,400 @@\n'
+    + Array.from({ length: 400 }, (_, i) => `+  console.log(${i});`).join('\n');
+  await post('/v1/messages', {
+    model: 'glm-5',
+    stream: false,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: '看下这个 diff' }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: bigDiff }] },
+    ],
+  });
+
+  const sent = upstreamStub.calls[0].messages;
+  const toolMsg = sent.find((m) => m.role === 'tool');
+  assert.ok(toolMsg, '归一化后应有一条 tool 消息');
+  const sentText = toolMsg.content[0].text;
+  assert.ok(sentText.length < bigDiff.length / 2,
+    `上行的工具输出必须被压缩（原始 ${bigDiff.length} → 上行 ${sentText.length}）`);
+  // 紧凑格式是「文件路径 + hunk」：`diff --git` 头被换成文件名，这是 RTK git-diff
+  // 过滤器既定的输出形状（已与源实现做 384 组逐字节比对），不是头部被误删。
+  assert.ok(sentText.includes('src/a.js'), '压缩后应保留文件路径');
+  assert.ok(sentText.includes('@@ -1,400 +1,400 @@'), '应保留 hunk 头');
+  assert.ok(/lines truncated/.test(sentText), '应带截断标记（模型据此知道内容被裁剪过）');
+
+  assert.strictEqual(logged.length, 1, '一次客户端请求记一条流量');
+  const row = logged[0];
+  assert.ok(row.rtkSavedBytes > 0, '流量日志必须记录节省字节');
+  assert.strictEqual(row.rtkBytesBefore - row.rtkBytesAfter, row.rtkSavedBytes, '不变量必须成立');
+  assert.ok(row.rtkCalls >= 1, 'calls 是检查过的 blob 数（含未命中）');
+  assert.ok(Array.isArray(row.rtkFilters ? row.rtkFilters.split(',') : []), 'filters 以逗号串记录');
+  // 键名不得含 token：sanitize 会把这类键的字符串值掩码成 ***，统计层会判成不可还原
+  assert.ok(!Object.keys(row).some((k) => k.startsWith('rtk') && /token/i.test(k)),
+    'rtk 字段名不得含 token');
+});
+
+t('RTK：检查过工具输出但没省下字节时，字段仍在（这是「测量到 0」不是「没测量」）', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  await post('/v1/messages', {
+    model: 'glm-5',
+    stream: false,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'ok' }] },
+    ],
+  });
+  assert.strictEqual(logged.length, 1);
+  assert.strictEqual(logged[0].rtkCalls, 1, '小 blob 也计进 calls——否则「压缩有效率」的分母会失真');
+  assert.strictEqual(logged[0].rtkSavedBytes, 0, '没省下字节就如实记 0');
+  assert.strictEqual(logged[0].rtkBytesBefore - logged[0].rtkBytesAfter, logged[0].rtkSavedBytes);
+});
+
+t('RTK：没有任何工具输出时整个字段缺席（与「测量到 0」区分开）', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  await post('/v1/messages', {
+    model: 'glm-5',
+    stream: false,
+    messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
+  });
+  assert.strictEqual(logged.length, 1);
+  assert.strictEqual(logged[0].rtkSavedBytes, undefined, '根本没有工具输出时字段应缺席');
+  assert.strictEqual(logged[0].rtkCalls, undefined);
+});
+
 // 汇总
 
 async function main() {

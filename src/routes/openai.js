@@ -8,6 +8,7 @@ const { Router } = require('express');
 const { llmUtilsChat, consumeStream } = require('../upstream/client');
 const { isRateLimitCode, isModelConfigError } = require('../upstream/errors');
 const { sniffHead } = require('../lib/sse-sniff');
+const { resolveMaxTokens } = require('../lib/effort');
 const wbChat = require('../workbuddy/chat');
 const auth = require('../auth');
 const { normalizeTraeMessages } = require('../transform/request');
@@ -119,8 +120,15 @@ router.post('/v1/chat/completions', async (req, res) => {
     seed,
     stop,
     tool_choice,
+    reasoning_effort,
+    thinking,
   } = body;
   const tools = extractTools(body);
+  // 思考强度折算（见 lib/effort.js）：客户端没传 max_tokens、但表达了思考预算时，
+  // 把它翻译成上游**唯一真正生效**的参数 max_tokens；两者都没给则 undefined
+  // （不设上限，与改动前完全一致）。已传 max_tokens 时原样尊重客户端。
+  const effort = resolveMaxTokens({ requested: max_tokens, reasoningEffort: reasoning_effort, thinking });
+  const effMaxTokens = effort.maxTokens;
   const startedAt = Date.now();
   let toolCalls = 0;
   let requestError = null;
@@ -190,7 +198,7 @@ router.post('/v1/chat/completions', async (req, res) => {
         stream,
         temperature,
         top_p,
-        max_tokens,
+        max_tokens: effMaxTokens,
         stop,
         tools: tools || undefined,
         tool_choice,
@@ -247,7 +255,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     const wbBody = {
       model: wbModel,
       messages,
-      temperature, top_p, max_tokens, stop,
+      temperature, top_p, max_tokens: effMaxTokens, stop,
       tools: tools || undefined,
       tool_choice,
     };
@@ -363,7 +371,7 @@ router.post('/v1/chat/completions', async (req, res) => {
     userText,
     temperature: typeof temperature === 'number' ? temperature : undefined,
     top_p: typeof top_p === 'number' ? top_p : undefined,
-    max_tokens: typeof max_tokens === 'number' ? max_tokens : undefined,
+    max_tokens: effMaxTokens,
     seed: typeof seed === 'number' ? seed : undefined,
     stop: Array.isArray(stop) ? stop : undefined,
   };

@@ -38,9 +38,10 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
  *   9 按日键改为**本地日期**（原为 UTC，东八区 00:00-08:00 的请求落到前一天），
  *     同时按模型补 errors / promptTokens / completionTokens；
  *   10 补逻辑回合三计数 turns / turnsFailed / recoveredTurns（降级换候选会让
- *      同一次客户端请求产生多行 traffic，只按行数算成功率会系统性偏低）。
+ *      同一次客户端请求产生多行 traffic，只按行数算成功率会系统性偏低）；
+ *   11 补工具输出压缩节省 rtk*（只有跑过压缩的行才有，故以嵌套对象存在）。
  */
-const BUCKET_VERSION = 10;
+const BUCKET_VERSION = 11;
 
 function todayKey() {
   return localDateKey();
@@ -90,8 +91,22 @@ function buildDayBucket(rows, dateKey) {
   // 留在桶里——桶要覆盖历史每一天，逐回合存会让体积膨胀十倍以上。
   const turns = turnBuckets();
   let noTurnN = 0;
+  // 工具输出压缩（RTK）节省：只有确实跑过压缩的行才计入；缺字段或不满足
+  // 不变量（before - after === saved）都记 partial，供界面标注「下界」。
+  const rtk = { calls: 0, before: 0, after: 0, saved: 0, blocks: 0, partial: false };
   for (const r of rows) {
     addTurn(turns, r, `#noturn${noTurnN++}`);
+    const rtkBefore = numTok(r.rtkBytesBefore);
+    if (rtkBefore != null) {
+      const after = numTok(r.rtkBytesAfter);
+      const saved = numTok(r.rtkSavedBytes);
+      rtk.calls += 1;
+      rtk.before += rtkBefore;
+      rtk.after += after || 0;
+      rtk.saved += saved || 0;
+      rtk.blocks += numTok(r.rtkBlocks) || 0;
+      if (after == null || saved == null || rtkBefore - after !== saved) rtk.partial = true;
+    }
     b.requests++;
     if (r.error || (r.status && r.status >= 400)) b.errors++;
     const src = tokenSource(r);
@@ -126,7 +141,7 @@ function buildDayBucket(rows, dateKey) {
     if (src !== 'none') ba.metered++;
     ba.tokens += tok; ba.cost += cost;
   }
-  return { ...b, ...turnCounters(turns) };
+  return { ...b, ...turnCounters(turns), ...(rtk.calls > 0 ? { rtk } : {}) };
 }
 
 /** 取最近 days 天的桶：命中缓存取缓存，未命中则读日志构建并回填。 */
@@ -177,6 +192,17 @@ function cachedDailyStats(days) {
       turns: b.turns || 0,
       turnsFailed: b.turnsFailed || 0,
       recoveredTurns: b.recoveredTurns || 0,
+      // 工具输出压缩节省：该日一行都没跑过压缩时**不输出这些字段**（而不是输出 0），
+      // 前端据此区分「压缩没效果」与「当时还没这个能力」。
+      ...(b.rtk && b.rtk.calls > 0 ? {
+        rtkCalls: b.rtk.calls,
+        rtkBytesBefore: b.rtk.before,
+        rtkBytesAfter: b.rtk.after,
+        rtkSavedBytes: b.rtk.saved,
+        rtkBlocks: b.rtk.blocks,
+        rtkPercent: b.rtk.before > 0 ? round2((b.rtk.saved / b.rtk.before) * 100) : 0,
+        ...(b.rtk.partial ? { rtkPartial: true } : {}),
+      } : {}),
       byModel: Object.fromEntries(Object.entries(b.byModel).map(([k, v]) => [
         k,
         {

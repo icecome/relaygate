@@ -17,12 +17,14 @@ const { createStreamHandler } = require('../transform/sse');
 const { isTruncatedFinish } = require('../transform/finish');
 const config = require('../config');
 const { exportAnthropic } = require('../transform/emitters');
-const { logRequest } = require('../log/traffic');
+const { logRequest, rtkLogFields } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
 const { estimateRequestTokens } = require('../lib/token-estimate');
 const { sniffHead } = require('../lib/sse-sniff');
 const { countToolErrors } = require('../transform/request');
+const { resolveMaxTokens } = require('../lib/effort');
+const { compressMessages } = require('../lib/rtk');
 // 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
 // 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
@@ -114,7 +116,7 @@ function normalizeRequest(req, res) {
     });
     return null;
   }
-  const { model = 'glm-5', messages, system, max_tokens, tools, stream = true } = req.body || {};
+  const { model = 'glm-5', messages, system, max_tokens, tools, stream = true, thinking } = req.body || {};
   const acc = canUseModel(req.platform, model, req.authKey || null);
   if (!acc.ok || isVirtualModel(model) || String(model).startsWith('wb/')) {
     res.status(403).json({
@@ -132,7 +134,7 @@ function normalizeRequest(req, res) {
     res.status(400).json({ error: { type: 'invalid_request_error', message: 'messages is required' } });
     return null;
   }
-  return { model, messages, system, max_tokens, tools, stream };
+  return { model, messages, system, max_tokens, tools, stream, thinking };
 }
 
 /** 解析工具调用的 arguments（上游给的可能是 JSON 字符串或已是对象）。 */
@@ -232,7 +234,7 @@ router.post('/v1/messages/count_tokens', (req, res) => {
 router.post('/v1/messages', async (req, res) => {
   const norm = normalizeRequest(req, res);
   if (!norm) return;
-  const { model, messages, system, max_tokens, tools, stream } = norm;
+  const { model, messages, system, max_tokens, tools, stream, thinking } = norm;
 
   const startedAt = Date.now();
   const msgId = `msg_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -250,6 +252,16 @@ router.post('/v1/messages', async (req, res) => {
   // 只有 Anthropic 入口能表达它——OpenAI 协议的 tool 消息没有这个字段，
   // 故不要在 openai.js 那边也记一份「恒为 0」的口径。
   const toolErrors = countToolErrors(messages);
+  // 思考强度折算（见 lib/effort.js）：Anthropic 客户端用 `thinking.budget_tokens`
+  // 表达思考预算，而上游忽略该字段——翻译成唯一生效的 max_tokens。
+  // 客户端已传 max_tokens 或没表达意图时，本模块不介入（零行为变化）。
+  const effort = resolveMaxTokens({ requested: max_tokens, thinking });
+  const effMaxTokens = effort.maxTokens;
+  // 工具输出压缩（RTK）：在派发前就地重写工具结果的文本。
+  // **只压一次**——pool.run 的账号重试与流式/非流式两条分支共用这份结果，
+  // 否则同一次客户端请求会被重复计数，节省量虚高（记账口径见 log/stats.js）。
+  const rtk = compressMessages(built, { enabled: config.rtkEnabled });
+  const upstreamMessages = rtk.messages;
 
   /** 两个分支共用的一条流量日志（字段口径必须一致，否则同端点出现两种统计口径）。 */
   const emitLog = () => {
@@ -264,6 +276,11 @@ router.post('/v1/messages', async (req, res) => {
       // 工具失败率（is_error 为内部信号，不上行；见 transform/request.js#countToolErrors）。
       // Anthropic 入口是工具最密集的客户端（Claude Code），这项最有参考价值。
       ...(toolErrors > 0 ? { toolErrors } : {}),
+      // 思考强度折算是否介入（介入时记档位名，便于长期观察客户端都在要什么档）
+      ...(effort.level ? { effortLevel: effort.level, maxTokensApplied: effMaxTokens } : {}),
+      // 工具输出压缩节省（单位 UTF-8 字节；键名避开 token 以免被 sanitize 掩码）。
+      // 字段拼装收口在 log/traffic.js#rtkLogFields，避免两处各写一套。
+      ...rtkLogFields(rtk.stats),
       durationMs: Date.now() - startedAt,
       error: requestError,
       stream: stream !== false,
@@ -284,7 +301,7 @@ router.post('/v1/messages', async (req, res) => {
   if (stream === false) {
     try {
       const { result: up, accountId } = await pool.run(async (accountId) =>
-        llmUtilsChat(built, model, false, { tools, max_tokens, accountId }), { model });
+        llmUtilsChat(upstreamMessages, model, false, { tools, max_tokens: effMaxTokens, accountId }), { model });
       logAccountId = accountId;
       const folded = completionToAnthropic(up.data || {}, { id: msgId, model });
       lastUsage = (up.data && up.data.usage) || null;
@@ -355,7 +372,7 @@ router.post('/v1/messages', async (req, res) => {
 
   try {
     const { result: up, accountId } = await pool.run(async (accountId) =>
-      llmUtilsChat(built, model, true, { tools, max_tokens, accountId }), { model });
+      llmUtilsChat(upstreamMessages, model, true, { tools, max_tokens: effMaxTokens, accountId }), { model });
     // 先记下账号再开始喂流：流内回调依赖它回灌限流计数
     streamAccountIdRef.current = accountId;
     logAccountId = accountId;

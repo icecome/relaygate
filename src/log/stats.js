@@ -183,6 +183,7 @@ function turnCounters(buckets) {
 function dailyStats(lines) {
   const byDay = {};
   const turnsByDay = {};
+  const rtkByDay = {};
   // 无 turnId 的历史行用它兜底成「一行一回合」；只需在单日内唯一
   let noTurnN = 0;
   for (const r of lines) {
@@ -194,9 +195,27 @@ function dailyStats(lines) {
         estimatedCost: 0, cacheReadTokens: 0, byModel: {},
       };
       turnsByDay[day] = turnBuckets();
+      rtkByDay[day] = { calls: 0, before: 0, after: 0, saved: 0, blocks: 0 };
     }
     const d = byDay[day];
     addTurn(turnsByDay[day], r, `#noturn${noTurnN++}`);
+    // 工具输出压缩（RTK）节省：只有**确实跑过压缩**的行才计入。
+    // 用 `numTok(...) != null` 判定而不是 `?? 0` 兜底——「历史没测量」与
+    // 「历史省了 0 字节」是两件事，后者会被读成「压缩没效果」。
+    const rtkBefore = numTok(r.rtkBytesBefore);
+    if (rtkBefore != null) {
+      const acc = rtkByDay[day];
+      const after = numTok(r.rtkBytesAfter);
+      const saved = numTok(r.rtkSavedBytes);
+      acc.calls += 1;
+      acc.before += rtkBefore;
+      acc.after += after || 0;
+      acc.saved += saved || 0;
+      acc.blocks += numTok(r.rtkBlocks) || 0;
+      // 缺字段或**不满足不变量**（before - after === saved）都记为 partial：
+      // 该日节省是下界。不做静默兜底，否则界面会把坏数据当有效节省显示。
+      if (after == null || saved == null || rtkBefore - after !== saved) acc.partial = true;
+    }
     d.requests++;
     if (r.error || (r.status && r.status >= 400)) d.errors++;
     const src = tokenSource(r);
@@ -220,23 +239,39 @@ function dailyStats(lines) {
   }
   return Object.values(byDay)
     .sort((a, b) => b.date.localeCompare(a.date))
-    .map((d) => ({
-      ...d,
-      ...turnCounters(turnsByDay[d.date] || turnBuckets()),
-      unmetered: d.none,
-      tokens: round2(d.tokens),
-      cacheReadTokens: round2(d.cacheReadTokens),
-      estimatedCost: round4(d.estimatedCost),
-      // priced：能算出估算积分的行数。它小于请求数时，估算总量是下界，
-      // 界面据此标注，避免把「算不出」读成「没消耗」。
-      priced: d.priced,
-      // costUpper：缺 cacheRead 信息、按「全未缓存」计价的行数（估算偏高的上界）
-      costUpper: d.costUpper,
-      byModel: Object.fromEntries(Object.entries(d.byModel).map(([k, v]) => [
-        k,
-        { requests: v.requests, tokens: round2(v.tokens), metered: v.metered, unmetered: v.requests - v.metered, estimatedCost: round4(v.estimatedCost) },
-      ])),
-    }));
+    .map((d) => {
+      const rtk = rtkByDay[d.date];
+      return {
+        ...d,
+        ...turnCounters(turnsByDay[d.date] || turnBuckets()),
+        // RTK 节省：该日一行都没跑过压缩时**不输出这些字段**（而不是输出 0），
+        // 前端据此区分「压缩没效果」与「当时还没这个能力」。
+        ...(rtk && rtk.calls > 0 ? {
+          rtkCalls: rtk.calls,
+          rtkBytesBefore: rtk.before,
+          rtkBytesAfter: rtk.after,
+          rtkSavedBytes: rtk.saved,
+          rtkBlocks: rtk.blocks,
+          // 比例在服务端算，避免各页面自行相除导致口径漂移（照参照项目的做法）
+          rtkPercent: rtk.before > 0 ? round2((rtk.saved / rtk.before) * 100) : 0,
+          // 部分行缺 after/saved 字段：该日节省是下界，界面据此提示
+          ...(rtk.partial ? { rtkPartial: true } : {}),
+        } : {}),
+        unmetered: d.none,
+        tokens: round2(d.tokens),
+        cacheReadTokens: round2(d.cacheReadTokens),
+        estimatedCost: round4(d.estimatedCost),
+        // priced：能算出估算积分的行数。它小于请求数时，估算总量是下界，
+        // 界面据此标注，避免把「算不出」读成「没消耗」。
+        priced: d.priced,
+        // costUpper：缺 cacheRead 信息、按「全未缓存」计价的行数（估算偏高的上界）
+        costUpper: d.costUpper,
+        byModel: Object.fromEntries(Object.entries(d.byModel).map(([k, v]) => [
+          k,
+          { requests: v.requests, tokens: round2(v.tokens), metered: v.metered, unmetered: v.requests - v.metered, estimatedCost: round4(v.estimatedCost) },
+        ])),
+      };
+    });
 }
 
 /**

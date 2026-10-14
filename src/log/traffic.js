@@ -163,4 +163,34 @@ function cacheReadOf(u) {
   return Number.isFinite(flat) && flat > 0 ? flat : 0;
 }
 
-module.exports = { logRequest, sanitize, usageToLogFields, cacheReadOf };
+/**
+ * 工具输出压缩（RTK）节省的日志字段。
+ *
+ * 两条硬约束，都是被这个项目的既有实现教训逼出来的：
+ *   1. **单位是 UTF-8 字节，不是 token**：中文下一个字符占 3 字节，用字符数报会
+ *      小看三倍；而分词后字节与 token 也不成比例。日志字段名与界面都要写明。
+ *   2. **键名必须避开 `token`**：`sanitize` 会把键名匹配 `authorization|token|
+ *      password|secret|api[_-]?key` 的**字符串值**掩码成 `***`，统计层会把
+ *      `***` 判成不可还原。这里的值都是数字（数字不脱敏），名字也刻意不含 token。
+ *
+ * `calls` 是**检查过的 blob 数（含未命中）**——不这么记的话「压缩有效率」的分母
+ * 会失真。全部为 0 时返回空对象：宁可整个字段缺席，也不写一个会被读成
+ * 「压缩没效果」的 0。
+ *
+ * @param {{calls?:number, bytesBefore?:number, bytesAfter?:number, saved?:number,
+ *          blocks?:number, filters?:string[]}} stats
+ */
+function rtkLogFields(stats) {
+  if (!stats || !(Number(stats.calls) > 0)) return {};
+  return {
+    rtkCalls: Number(stats.calls) || 0,
+    rtkBytesBefore: Number(stats.bytesBefore) || 0,
+    rtkBytesAfter: Number(stats.bytesAfter) || 0,
+    rtkSavedBytes: Number(stats.saved) || 0,
+    rtkBlocks: Number(stats.blocks) || 0,
+    ...(Array.isArray(stats.filters) && stats.filters.length
+      ? { rtkFilters: stats.filters.join(',') } : {}),
+  };
+}
+
+module.exports = { logRequest, sanitize, usageToLogFields, cacheReadOf, rtkLogFields };

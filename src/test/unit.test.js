@@ -4305,4 +4305,119 @@ t('anthropicToOpenAI：tool_result 的 is_error 被带到归一化消息上（�
   assert.ok(/countToolErrors\(messages\)/.test(src), 'anthropic 路由必须统计 toolErrors');
 });
 
+console.log('log/stats RTK 节省记账（只计跑过压缩的行）');
+
+t('dailyStats：RTK 节省只累加「确实跑过压缩」的行，缺数据的日子不输出该字段', () => {
+  const { dailyStats } = require('../log/stats');
+  const day = '2026-10-12';
+  const rows = [
+    { _day: day, model: 'vm/x', status: 200, rtkBytesBefore: 4000, rtkBytesAfter: 800, rtkSavedBytes: 3200, rtkBlocks: 2 },
+    { _day: day, model: 'vm/x', status: 200 }, // 未跑过压缩：不得按 0 计入
+    { _day: day, model: 'vm/x', status: 200, rtkBytesBefore: 1000, rtkBytesAfter: 400, rtkSavedBytes: 600, rtkBlocks: 1 },
+  ];
+  const [d] = dailyStats(rows);
+  assert.strictEqual(d.rtkCalls, 2, '只数跑过压缩的两行');
+  assert.strictEqual(d.rtkBytesBefore, 5000);
+  assert.strictEqual(d.rtkBytesAfter, 1200);
+  assert.strictEqual(d.rtkSavedBytes, 3800);
+  assert.strictEqual(d.rtkBlocks, 3);
+  assert.strictEqual(d.rtkPercent, 76, '比例在服务端算（3800/5000）');
+  assert.ok(!d.rtkPartial, '数据自洽时不得标下界');
+  assert.strictEqual(d.rtkBytesBefore - d.rtkBytesAfter, d.rtkSavedBytes, '不变量必须成立');
+  // 内部中间结构不得泄漏到输出
+  assert.strictEqual(d.rtk, undefined);
+
+  const [none] = dailyStats([{ _day: '2026-10-11', model: 'm', status: 200 }]);
+  assert.strictEqual(none.rtkSavedBytes, undefined, '没测量 ≠ 省了 0 字节');
+  assert.strictEqual(none.rtkCalls, undefined);
+});
+
+t('dailyStats：缺字段或不满足不变量的行把该日标为 partial（节省是下界）', () => {
+  const { dailyStats } = require('../log/stats');
+  const day = '2026-10-12';
+  // 缺 after/saved
+  const [a] = dailyStats([{ _day: day, model: 'm', status: 200, rtkBytesBefore: 1000 }]);
+  assert.strictEqual(a.rtkPartial, true, '缺字段必须标下界，不能静默按 0 兜底');
+  // 数字不自洽：before - after !== saved
+  const [b] = dailyStats([{ _day: day, model: 'm', status: 200, rtkBytesBefore: 1000, rtkBytesAfter: 400, rtkSavedBytes: 999 }]);
+  assert.strictEqual(b.rtkPartial, true, '不满足 before-after===saved 必须标下界');
+});
+
+t('stats-cache：RTK 节省与逐日口径一致，且桶版本已递增', () => {
+  const fs = require('fs');
+  const { localDateKey } = require('../lib/util');
+  const { logsDir } = require('../lib/paths');
+  const sc = require('../log/stats-cache');
+  assert.ok(sc.BUCKET_VERSION >= 11, '桶版本必须递增，否则旧桶（无 rtk 字段）会继续被读');
+  const day = localDateKey();
+  const dir = path.join(logsDir(), day);
+  fs.mkdirSync(dir, { recursive: true });
+  const rows = [
+    { ts: `${day}T02:00:00.000Z`, model: 'vm/x', account: 'a1', status: 200, rtkBytesBefore: 2000, rtkBytesAfter: 500, rtkSavedBytes: 1500, rtkBlocks: 1 },
+    { ts: `${day}T02:00:01.000Z`, model: 'vm/x', account: 'a1', status: 200 },
+  ];
+  fs.writeFileSync(path.join(dir, 'traffic.jsonl'), rows.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+  sc.clearCache();
+  const got = sc.cachedDailyStats(1).find((d) => d.date === day);
+  assert.ok(got, '应能从桶里取到当天');
+  assert.strictEqual(got.rtkCalls, 1);
+  assert.strictEqual(got.rtkSavedBytes, 1500);
+  assert.strictEqual(got.rtkPercent, 75);
+  assert.strictEqual(got.rtkBytesBefore - got.rtkBytesAfter, got.rtkSavedBytes);
+  fs.rmSync(dir, { recursive: true, force: true });
+  sc.clearCache();
+});
+
+console.log('lib/effort 思考强度折算（客户端意图 → max_tokens）');
+
+t('effort：客户端已传 max_tokens 时本模块完全不介入（IDE 客户端更清楚要多长）', () => {
+  const { resolveMaxTokens } = require('../lib/effort');
+  const r = resolveMaxTokens({ requested: 1234, reasoningEffort: 'low', thinking: { type: 'enabled', budget_tokens: 9000 } });
+  assert.strictEqual(r.maxTokens, 1234, '显式 max_tokens 优先，且不被档位改写');
+  assert.strictEqual(r.level, null, 'level=null 表示没介入');
+  assert.strictEqual(r.reason, 'client_max_tokens');
+});
+
+t('effort：客户端没表达意图时不设上限（默认零行为变化）', () => {
+  const { resolveMaxTokens } = require('../lib/effort');
+  assert.strictEqual(resolveMaxTokens({}).maxTokens, undefined);
+  assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'garbage' }).maxTokens, undefined, '无效档位不得当作 low');
+  assert.strictEqual(resolveMaxTokens({ thinking: { type: 'enabled' } }).maxTokens, undefined, '缺 budget_tokens 不介入');
+  assert.strictEqual(resolveMaxTokens({ thinking: {} }).maxTokens, undefined);
+  assert.strictEqual(resolveMaxTokens({ thinking: { budget_tokens: -5 } }).maxTokens, undefined);
+});
+
+t('effort：reasoning_effort 档位归一化（含 x-high / extra_high / 大小写）', () => {
+  const { normalizeEffort, EFFORT_BUDGET } = require('../lib/effort');
+  assert.strictEqual(normalizeEffort('LOW'), 'low');
+  assert.strictEqual(normalizeEffort(' x-high '), 'xhigh');
+  assert.strictEqual(normalizeEffort('extra_high'), 'xhigh');
+  assert.strictEqual(normalizeEffort('Medium'), 'medium');
+  assert.strictEqual(normalizeEffort(''), null);
+  assert.strictEqual(normalizeEffort(null), null);
+  assert.strictEqual(normalizeEffort('unknown-level'), null);
+  assert.ok(EFFORT_BUDGET.low > EFFORT_BUDGET.minimal, 'low 比 minimal 宽松');
+});
+
+t('effort：thinking.budget_tokens 折算成「预算 + 正文余量」，并由候选上限钳制', () => {
+  const { resolveMaxTokens, ANSWER_RESERVE } = require('../lib/effort');
+  const r = resolveMaxTokens({ thinking: { type: 'enabled', budget_tokens: 20000 } });
+  assert.strictEqual(r.maxTokens, 20000 + ANSWER_RESERVE, 'Anthropic 要求 max_tokens > budget，故留正文余量');
+  assert.strictEqual(r.level, 'budget');
+  // 候选上限是硬约束
+  const c = resolveMaxTokens({ thinking: { type: 'enabled', budget_tokens: 20000 }, candidateMaxOutput: 16000 });
+  assert.strictEqual(c.maxTokens, 16000, '不得超过候选 maxOutputTokens');
+  // 明确不要思考 → 小预算
+  const off = resolveMaxTokens({ thinking: { type: 'disabled' } });
+  assert.ok(off.maxTokens > 0 && off.maxTokens <= 2048, `disabled 应给极小预算，实际 ${off.maxTokens}`);
+});
+
+t('effort：reasoning_effort 命中档位表，high/xhigh 也按表上限而非不设限', () => {
+  const { resolveMaxTokens, EFFORT_BUDGET } = require('../lib/effort');
+  assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'minimal' }).maxTokens, EFFORT_BUDGET.minimal);
+  assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'medium' }).maxTokens, EFFORT_BUDGET.medium);
+  assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'high' }).maxTokens, EFFORT_BUDGET.high);
+  assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'high' }).level, 'high');
+});
+
 main();

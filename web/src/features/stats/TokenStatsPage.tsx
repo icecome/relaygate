@@ -21,7 +21,7 @@ import {
 } from '../../shared/api/stats';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
-import { formatCost, formatNumber } from '../../shared/lib/format';
+import { formatBytes, formatCost, formatNumber } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -174,6 +174,10 @@ export default function TokenStatsPage() {
     );
   }, [daily.data]);
 
+  // 工具输出压缩（RTK）节省：窗口内一行都没跑过压缩时后端返回 null，
+  // 界面显示「没有压缩记录」而不是 0——「没测量」与「省了 0 字节」是两件事。
+  const savings = daily.data?.savings ?? null;
+
   // 官方账单（积分主口径）：Trae 逐会话、WB 逐请求，都是上游精确值
   const officialTotals = useMemo(() => {
     const list = official.data?.accounts ?? [];
@@ -268,7 +272,7 @@ export default function TokenStatsPage() {
 
         {/* 口径卡片区：花了多少积分（成本）+ 用了多少 token（用量）。
             成本两张卡并列（官方=主读数，估算=对照），用量与换算各一张，四卡一行。 */}
-        <div className="grid gap-4 grid-cols-2 xl:grid-cols-4">
+        <div className="grid gap-4 grid-cols-2 xl:grid-cols-5">
           {/* 成本主读数：官方账单 */}
           <CaliberCard
             label="官方账单积分"
@@ -377,6 +381,35 @@ export default function TokenStatsPage() {
                 v={calibCount > 0 ? `账单标定 · ${calibCount} 模型` : '内置费率表推算'}
                 tone="muted"
               />
+            </div>
+          </CaliberCard>
+
+          {/* 工具输出压缩（RTK）节省。口径是 **UTF-8 字节**，不是 Token：
+              分词后两者不成比例，故单位必须写明，不能与上方 Token 卡并读。
+              caliber 用 metered——这是网关侧的测量值，不是账单值。 */}
+          <CaliberCard
+            label="工具输出压缩节省"
+            value={savings ? formatBytes(savings.savedBytes) : '—'}
+            unit={savings ? `/${formatBytes(savings.bytesBefore)}` : undefined}
+            caliber="metered"
+            loading={daily.loading && !daily.data}
+          >
+            <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
+              {savings ? (
+                <>
+                  <div className="mt-2 mb-1">
+                    <ProgressBar ratio={savings.percent / 100} tone="brand" />
+                  </div>
+                  <CaliberRow k="节省比例（字节）" v={`${savings.percent.toFixed(1)}%`} />
+                  <CaliberRow k="压缩请求" v={`${formatNumber(savings.calls)} 次 · 覆盖 ${savings.days} 天`} />
+                  <CaliberRow k="压缩块" v={`${formatNumber(savings.blocks)} 块`} />
+                  {savings.partial && (
+                    <CaliberRow k="部分行数据不完整" v="节省量为下界" tone="warn" />
+                  )}
+                </>
+              ) : (
+                <CaliberRow k="状态" v="所选区间内没有压缩记录" />
+              )}
             </div>
           </CaliberCard>
         </div>
