@@ -52,6 +52,19 @@ function isQoderOnlyModel(model) {
 }
 
 /**
+ * 是否为 Raccoon 对话面的模型。
+ *
+ * 判据是**模型 id 的命名空间前缀 `sn-`**（该 provider 的全部远端模型都是
+ * `sn-` 开头：`sn-sensenova-6-8-flash` / `sn-glm-5-3` / `sn-kimi-k3` /
+ * `sn-deepseek-v4-1-flash` …）。这里刻意**不复用** Qoder 那种硬编码清单：
+ * Raccoon 的模型目录是远端动态下发的（含限免与倍率），写死清单必然随上游
+ * 上新而漏判，而漏判的后果是「平台密钥越界消耗别家积分」。
+ */
+function isRaccoonOnlyModel(model) {
+  return /^sn-[\w.-]+$/i.test(String(model || '').trim());
+}
+
+/**
  * 平台密钥的资源 ACL 关卡（M-S5 根因修复）。
  *
  * 此前 resources 校验只散布在虚拟模型分支与 all 分支，trae/workbuddy
@@ -72,6 +85,15 @@ function platformResourceGate(authKey, model, meta = {}) {
     return { ok: false, message: `access denied: ${chk.reason || 'resource_denied'}`, reason: chk.reason };
   }
   return { ok: true };
+}
+
+/** 模型名 → 归属平台（供资源路径映射）。 */
+function platformOfModel(model) {
+  const raw = String(model == null ? '' : model);
+  if (isQoderOnlyModel(raw)) return 'qoder';
+  if (isRaccoonOnlyModel(raw)) return 'raccoon';
+  if (raw.startsWith('wb/')) return 'workbuddy';
+  return 'trae';
 }
 
 /**
@@ -100,8 +122,8 @@ function canUseModel(keyPlatform, model, authKey = null) {
   if (platform === 'all' || platform === 'universal') {
     if (authKey && Array.isArray(authKey.resources) && authKey.resources.length) {
       const { canInvokeModel } = require('../auth/scope');
-      // Qoder 模型走独立资源前缀 model:qoder/*，不能归到 trae/workbuddy 前缀下
-      const meta = { platform: isQoderOnlyModel(raw) ? 'qoder' : (raw.startsWith('wb/') ? 'workbuddy' : 'trae') };
+      // Qoder / Raccoon 模型走各自独立的资源前缀，不能归到 trae/workbuddy 前缀下
+      const meta = { platform: platformOfModel(raw) };
       const chk = canInvokeModel(authKey, raw, meta);
       if (!chk.ok) {
         return { ok: false, message: `access denied: ${chk.reason || 'resource_denied'}`, reason: chk.reason };
@@ -123,6 +145,17 @@ function canUseModel(keyPlatform, model, authKey = null) {
     return {
       ok: false,
       message: `model "${raw}" is a Qoder model. Use the Qoder endpoint (/v1/qoder/chat/completions) with a universal key (platform=all).`,
+      reason: 'platform_mismatch',
+    };
+  }
+
+  // Raccoon 模型：同样只有通用密钥可调。理由与 Qoder 完全一致 ——
+  // 它是独立账号池，模型 id 前缀（sn-）不在 Trae/WorkBuddy 的命名空间里，
+  // 复用下面的 trae 分支会被当成 Trae 模型放行，等于让平台密钥越界消耗 Raccoon 积分。
+  if (isRaccoonOnlyModel(raw)) {
+    return {
+      ok: false,
+      message: `model "${raw}" is a Raccoon model. Use the Raccoon endpoint (/v1/raccoon/chat/completions) with a universal key (platform=all).`,
       reason: 'platform_mismatch',
     };
   }
@@ -163,6 +196,8 @@ module.exports = {
   isVirtualModel,
   isWorkBuddyOnlyModel,
   isQoderOnlyModel,
+  isRaccoonOnlyModel,
+  platformOfModel,
   providerAllowedForKey,
   PLATFORM_LABELS: apiKeys.PLATFORM_LABELS,
 };

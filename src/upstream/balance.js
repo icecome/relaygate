@@ -345,6 +345,12 @@ async function refreshBalance(accountId) {
   if (variant.isEdition(stored.edition, variant.ZCODE)) return refreshZcodeBalance(stored);
   // Qoder 账号走自己的 quota 刷新（多维度额度，独立键隔离）
   if (variant.isEdition(stored.edition, variant.QODER)) return refreshQoderBalance(stored);
+  // Raccoon 账号走自己的 points/v1/balance。它的单位是 **credit**（与 Trae/WorkBuddy
+  // 同口径），故写 `balance` 列是正确的；分池明细写隔离键 raccoonPoints，
+  // **不写** packs（余额 API 不给每个包的到期时间，写进去会污染 FEFO 排序）。
+  if (variant.isEdition(stored.edition, variant.RACCOON)) {
+    return require('../raccoon/credits').refreshBalance(stored);
+  }
 
   const authInfo = await auth.ensureAuth(accountId);
   const acct = { ...stored, ...authInfo };

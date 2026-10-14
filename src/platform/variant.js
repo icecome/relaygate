@@ -21,6 +21,7 @@ const TRAE = 'trae';
 const WORKBUDDY = 'workbuddy';
 const ZCODE = 'zcode';
 const QODER = 'qoder';
+const RACCOON = 'raccoon';
 
 /** Qoder 区域（realm）：国内版与国际版的账号体系、域名、协议三者都不同。 */
 const QODER_REALM_CN = 'cn';
@@ -62,6 +63,10 @@ const VARIANTS = {
       billing: true,
       oauthLogin: true,
       deviceFingerprint: true,
+      // 有 refreshToken 且可静默续期（scheduler 的保活扫描按本能力位筛账号）。
+      // 此前该扫描复用 oauthLogin，对 Trae 恰好成立；引入 Raccoon（非 OAuth
+      // 但必须续期）后两者不能再混为一谈。
+      tokenRefresh: true,
     },
     hosts: {
       // agent 面（chat / 模型详情）：按 edition 或 userRegion 选
@@ -125,6 +130,12 @@ const VARIANTS = {
       billing: true,
       oauthLogin: false,
       deviceFingerprint: false,
+      // ⚠️ 刻意**不给** tokenRefresh：判断依据是现状而非意图。
+      // 保活扫描的旧过滤条件是 `can(edition,'oauthLogin')`，而 workbuddy 的该位
+      // 为 false ⇒ 它从来没被扫描过；scheduler 循环体里那个
+      // `edition === 'workbuddy'` 分支因此是**不可达代码**（见该处注释）。
+      // 顺手打开会让 WB 账号开始产生全新的上游续期请求 —— 那是未经证实的
+      // 行为变更，不属于本次任务范围。要么单独验证后再开，要么保持现状。
     },
     hosts: {
       chat: { cn: 'https://copilot.tencent.com', global: 'https://www.workbuddy.ai' },
@@ -361,6 +372,88 @@ const VARIANTS = {
     // 国内版不发头是正确行为；国际版可能因此看不到活动，UI 需明示。
     omitMachineHeaders: true,
   },
+
+  // Raccoon（商汤小浣熊 / Raccoon Work）。移植来源与协议细节见 docs/raccoon-integration.md。
+  //
+  // 接入范围：**扫码登录 + 积分 + 模型目录 + 对话转发**。
+  // 本机没有官方桌面客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），
+  // 官方那条 `office-raccoon://auth/callback` 自定义协议回调服务端进程也收不到，
+  // 故登录走「本地生成 code + 面板展示二维码 + 自行轮询」（参考项目实测：
+  // 任意自造 code 都被接受并进入 pending）。
+  //
+  // ⚠️ **刻意没有 checkin**：每日 300 积分由服务端按日自动发放（`daily_grant`），
+  // 不存在可调用的端点。把它做成签到按钮必然失败 —— 一次性的是「桌面端登录奖励」
+  // （`desktop/v1/login/points/grant`），语义是 onboarding 任务，不是每日签到。
+  [RACCOON]: {
+    id: RACCOON,
+    label: 'Raccoon',
+    edition: RACCOON,
+    note: 'Raccoon（商汤小浣熊）Work；扫码登录，OpenAI 兼容对话与积分',
+    // 登录方式：面板承载二维码 + 轮询。这是本仓库第一种「由管理面板承载登录」
+    // 的渠道（其余三家都是读本机客户端或 OAuth 换票）。
+    onboarding: ['login'],
+    capability: {
+      // 对话面：POST /api/web/llm/v2/chat/completions，标准 OpenAI 兼容 + 标准 SSE
+      chat: true,
+      // 无签到端点（见上）
+      checkin: false,
+      // points/v1/balance 是真实积分口径（单位 credit），不是 token，故可写 balance 列
+      balance: true,
+      growth: false,
+      // points/v1/bills 可查账单明细
+      billing: true,
+      // 不是 OAuth 换票：扫码登录会话，凭据由本网关自己保存
+      oauthLogin: false,
+      deviceFingerprint: false,
+      // access_token 寿命约 3 小时且有 refresh 端点 ⇒ 必须参与定时续期。
+      // 这是新增的独立能力位：scheduler 此前用 oauthLogin 兼作「可续期」判据，
+      // 而 Raccoon 既不是 OAuth 又必须续期，两者不能再混为一谈。
+      tokenRefresh: true,
+      // 一次性「桌面端登录奖励」（每号一次，幂等；不是每日）
+      loginReward: true,
+      localImport: false,
+    },
+    hosts: {
+      openapi: 'https://xiaohuanxiong.com',
+      // 二维码承载的公开登录页（扫码后在微信内完成授权）
+      qrPage: 'https://xiaohuanxiong.com/login/mp',
+    },
+    identity: {
+      userAgent: 'Raccoon Work/1.0.35 (Windows)',
+      // `X-Client-Platform` 对 desktop/v1/login/points/grant 必需
+      clientPlatform: 'desktop-windows',
+      clientVersion: 'v1.0.35',
+      // 短信路径必需的阿里云滑块（扫码路径不需要）
+      aliyunCaptchaSceneId: '1pkmy0x3',
+      aliyunCaptchaPrefix: 'hk1r5l',
+    },
+    paths: {
+      // 认证面
+      loginWithQrcode: '/api/web/auth/v1/login_with_qrcode_code',
+      loginWithSms: '/api/web/auth/v1/login_with_sms',
+      sendSms: '/api/web/auth/v1/send_sms',
+      loginWithAuthCode: '/api/web/auth/v1/login_with_authorization_code',
+      refresh: '/api/web/auth/v1/refresh',
+      userInfo: '/api/web/auth/v1/user_info',
+      // 积分面
+      pointsBalance: '/api/web/points/v1/balance',
+      pointsBills: '/api/web/points/v1/bills',
+      loginRewardGrant: '/api/web/desktop/v1/login/points/grant',
+      // 对话面与模型目录
+      chat: '/api/web/llm/v2/chat/completions',
+      modelCatalog: '/api/web/llm/v2/model_catalog',
+    },
+    errors: {
+      // 手机号未加密 / 密文非法
+      paramsEncryptedError: 100003,
+      // 滑块验证码校验失败
+      captchaVerifyError: 100006,
+      // refresh_token 已失效（HTTP 也可能直接 401）
+      refreshExpired: 200003,
+      // 授权码不存在/过期/已消费
+      authCodeInvalid: 200035,
+    },
+  },
 };
 
 /** Trae 侧的 edition 历史值（cn/sg/us/manual）归一到 trae。 */
@@ -369,6 +462,7 @@ function normalizeEdition(edition) {
   if (e === WORKBUDDY) return WORKBUDDY;
   if (e === ZCODE) return ZCODE;
   if (e === QODER) return QODER;
+  if (e === RACCOON) return RACCOON;
   return TRAE;
 }
 
@@ -537,6 +631,7 @@ module.exports = {
   WORKBUDDY,
   ZCODE,
   QODER,
+  RACCOON,
   QODER_REALM_CN,
   QODER_REALM_INTL,
   VARIANTS,

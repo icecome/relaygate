@@ -6,6 +6,7 @@
  *   model:trae/*           Trae 平台模型
  *   model:workbuddy/*      WorkBuddy 模型
  *   model:qoder/*          Qoder 国际版对话面模型
+ *   model:raccoon/*        Raccoon 对话面模型
  *   model:virtual:vm/*     虚拟模型前缀
  *   model:virtual:vm/x     单个虚拟模型
  *   provider:deepseek/*    通用 Provider
@@ -16,6 +17,7 @@ function modelResourcePath(model, meta = {}) {
   if (meta.virtual || meta.isVirtual) return `model:virtual/${id}`;
   if (id.startsWith('wb/') || meta.platform === 'workbuddy') return `model:workbuddy/${id.replace(/^wb\//, '')}`;
   if (meta.platform === 'qoder') return `model:qoder/${id}`;
+  if (meta.platform === 'raccoon') return `model:raccoon/${id}`;
   if (meta.platform === 'openai' || meta.providerType === 'openai') {
     return `provider/${meta.providerId || 'openai'}/${id}`;
   }

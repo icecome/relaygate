@@ -21,6 +21,13 @@ export interface ChannelCapability {
   rewardClaim?: boolean;
   /** 运营面：本机客户端凭据导入 */
   localImport?: boolean;
+  /**
+   * 有 refreshToken 且可静默续期（定时保活扫描按此位筛账号）。
+   * 与 `oauthLogin` **不是**同一件事：Raccoon 不是 OAuth 换票但必须续期。
+   */
+  tokenRefresh?: boolean;
+  /** 一次性登录奖励（Raccoon；与每日活动领取区分开） */
+  loginReward?: boolean;
 }
 
 export interface ChannelAccounts {

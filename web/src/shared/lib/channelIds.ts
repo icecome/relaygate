@@ -6,8 +6,8 @@
  * 不去解析 TS 类型（尝试用正则读类型定义既脆弱又读不到有用信息）。
  *
  * 顺序与 `src/platform/variant.js` 的 VARIANTS 定义顺序一致：
- * Trae / WorkBuddy / ZCode / Qoder。
+ * Trae / WorkBuddy / ZCode / Qoder / Raccoon。
  */
-export const CHANNEL_IDS = ['trae', 'workbuddy', 'zcode', 'qoder'] as const;
+export const CHANNEL_IDS = ['trae', 'workbuddy', 'zcode', 'qoder', 'raccoon'] as const;
 
 export type ChannelId = (typeof CHANNEL_IDS)[number];

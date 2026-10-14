@@ -73,11 +73,19 @@ function isExpiringSoon(acct) {
   return t - Date.now() < leadMs();
 }
 
-/** 扫描并刷新临期账号 token。 */
+/**
+ * 扫描并刷新临期账号 token。
+ *
+ * 平台判据用 **`tokenRefresh` 能力位**，不再复用 `oauthLogin`。
+ * 此前用 oauthLogin 兼作「可续期」，对 Trae / WorkBuddy 恰好成立，但
+ * Raccoon 既不是 OAuth 换票（它是扫码登录会话）又**必须**续期
+ * （access_token 只有约 3 小时且有 refresh 端点）—— 继续复用会让它的
+ * 凭据悄悄过期、续期从不触发，而这类失效没有任何报错。
+ * ZCode 两侧都为 false：它的 JWT 无 exp、也不返回 refresh_token。
+ */
 async function refreshExpiringTokens() {
-  // 只刷新声明了 oauthLogin 能力的账号：ZCode 的 JWT 无 exp、也不返回 refresh_token，
-  // 走 Trae 的换票流程既无意义也会请求错误端点
-  const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
+  const accounts = store.list().filter((a) => a.enabled
+    && (variant.can(a.edition, 'tokenRefresh') || variant.can(a.edition, 'oauthLogin')));
   let refreshed = 0;
   let failed = 0;
   for (const a of accounts) {
@@ -86,7 +94,19 @@ async function refreshExpiringTokens() {
     if (!isExpiringSoon(full)) continue;
     if (!full.refreshToken) continue;
     try {
+      // Raccoon：自有 refresh 端点（POST /api/web/auth/v1/refresh）
+      if (variant.isEdition(full.edition, variant.RACCOON)) {
+        await require('../raccoon/auth').refreshAccount(full);
+        refreshed += 1;
+        console.log(`[scheduler] refreshed raccoon token for ${full.label || full.id}`);
+        continue;
+      }
       // WorkBuddy 与 Trae 刷新端点不同，统一走 ensureAuth（按 edition 分支）
+      //
+      // ⚠️ 本分支**当前不可达**：过滤条件是 `tokenRefresh || oauthLogin`，而
+      // workbuddy 的两位都为 false（见 variant.js 的说明）。保留它是为了不改变
+      // 既有行为；若要真正启用 WB 保活，需先单独验证 ensureAuth 对 WB 账号的效果，
+      // 不要顺手给它加 tokenRefresh。
       if (full.edition === 'workbuddy') {
         await auth.ensureAuth(full.id);
         refreshed += 1;

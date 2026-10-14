@@ -111,6 +111,16 @@ function onboardingFor(v) {
         return { kind, label: '粘贴凭据导入', available: true, detail: PASTE_HINT[v.id] || '' };
       }
       if (kind === 'local') return { kind, label: '读取本机客户端', ...localProbe(v.id) };
+      // 「面板承载登录」：不需要本机装任何客户端，也就不存在探测失败，
+      // 但必须始终可用 —— 若返回 available:false，卡片上的接入按钮会永久禁用。
+      if (kind === 'login') {
+        return {
+          kind,
+          label: '扫码登录',
+          available: true,
+          detail: '在面板里用微信扫码完成授权（本机无需安装客户端）',
+        };
+      }
       return { kind, label: kind, available: false, detail: '未识别的接入方式' };
     } catch (e) {
       return { kind, label: kind, available: false, detail: `探测失败：${e.message}` };

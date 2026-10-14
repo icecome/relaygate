@@ -24,7 +24,8 @@ export type WizardKind =
   | 'trae-paste'
   | 'wb-local'
   | 'zcode-local'
-  | 'qoder-local';
+  | 'qoder-local'
+  | 'raccoon-login';
 
 export interface ChannelEntry {
   /**
@@ -58,6 +59,12 @@ export const CHANNEL_ENTRY: Record<ChannelId, ChannelEntry> = {
   qoder: {
     accent: 'var(--rg-state-success)',
     wizards: { local: 'qoder-local' },
+  },
+  raccoon: {
+    // Raccoon 本机没有官方客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），
+    // 官方那条自定义协议回调服务端也收不到 —— 只能由面板承载扫码登录。
+    accent: 'var(--rg-state-error)',
+    wizards: { login: 'raccoon-login' },
   },
 };
 

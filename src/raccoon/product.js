@@ -1,0 +1,421 @@
+'use strict';
+/**
+ * raccoon/product.js —— Raccoon（商汤小浣熊）协议**纯函数与常量**。
+ *
+ * 移植来源：参考项目 `dsh-our-free-model` 的
+ * `vendor/channel-pack/src/raccoon.ts` 与 `raccoon-product.ts`
+ * （MIT License, Copyright (c) 2026 Ebony-Vinyl）。
+ *
+ * 分层约定（与本仓库其余平台一致）：
+ *   - **域名与路径在 `platform/variant.js`**（单一事实源），本文件不重复硬编码；
+ *   - 本文件只放纯函数与协议常量，**不发请求、不碰账号库**；
+ *   - HTTP 在 `client.js`，登录会话在 `auth.js`，积分在 `credits.js`。
+ *
+ * ## 三个必须记住的坑（原文照搬，改代码前先读）
+ *
+ * 1. **官方桌面端的登录链路不可复用**：它靠 `office-raccoon://auth/callback`
+ *    自定义协议回调，而本网关是服务端进程，收不到该回调；且 `/code/authorize`
+ *    页面的回调地址是**写死的**，改不成 localhost。故改为「本地生成 code +
+ *    自行轮询」—— 实测任意自造 code 都被接受。
+ * 2. **手机号必须 AES-128-CFB 加密**（密钥见 `PHONE_CIPHER_SECRET`），
+ *    否则 `send_sms` 回 `100003 params_encryted_error`。
+ * 3. **每日 300 积分没有端点**：服务端按日自动发放（`daily_grant`）。
+ *    不要把它实现成签到按钮 —— 不存在可调用的端点，按钮必然失败。
+ */
+const crypto = require('crypto');
+const variant = require('../platform/variant');
+
+const V = variant.variantOf(variant.RACCOON);
+
+/**
+ * 手机号传输层加密密钥。
+ *
+ * ⚠️ 这是**公开常量**（客户端把它硬编码在前端 bundle 里），只用于防止手机号
+ * 明文出现在日志/代理里，**不是安全边界**。故放在源码里不引入新的泄露面。
+ */
+const PHONE_CIPHER_SECRET = 'senseraccoon2023';
+
+/**
+ * 续期提前窗口（秒）。
+ * 照抄官方 `scheduleAuth.js` 的 `TOKEN_REFRESH_WINDOW_SECONDS = 300`：
+ * access_token 寿命约 3 小时（实测 `exp - nbf = 10805s`），提前 5 分钟刷新
+ * 可避免边界失败。
+ */
+const TOKEN_REFRESH_WINDOW_SECONDS = 300;
+
+/** 请求超时（毫秒）。 */
+const REQUEST_TIMEOUT_MS = Number(process.env.RACCOON_TIMEOUT_MS || 60_000);
+
+/** 扫码轮询间隔（毫秒）。与客户端一致；面板按此时长轮询后端。 */
+const QR_POLL_INTERVAL_MS = 2_000;
+
+/** 扫码登录整体超时（毫秒）。 */
+const LOGIN_TIMEOUT_MS = 5 * 60 * 1000;
+
+/** 扫码状态机的状态值（上游 `data.status`）。 */
+const QR_STATUS = Object.freeze({
+  PENDING: 'pending',
+  LOGGING: 'logging',
+  CANCELED: 'canceled',
+  SUCCESS: 'success',
+});
+
+/** 「桌面端登录奖励」在账单里的 `event_name`（用于判定是否已领）。 */
+const LOGIN_REWARD_EVENT_NAME = '桌面端登录奖励';
+/** 登录奖励默认额度（服务端未在 popup 里给出时兜底）。 */
+const LOGIN_REWARD_POINTS = 3000;
+
+/**
+ * 兜底模型表（远端目录拉不到时用）。
+ *
+ * ⚠️ `contextWindow` / `maxTokens` 是**实测值**（参考项目 2026-09-26 逐条核对），
+ * 不要省成 0：下游若拿 0 当上限会直接把请求判成非法，整轮对话起不来。
+ *
+ * ⚠️ **1 倍也要显示倍率**（参考项目里的真实用户报障：「为什么 Kimi-K3 没有倍率，
+ * ide 是 1 倍，1 倍也要显示倍率」）。早期按「1 倍是默认，显示属噪声」省略它，
+ * 结果该模型在列表里看起来没有计费信息 —— 用户无法区分「它就是 1 倍」与
+ * 「我们没取到它的倍率」。
+ *
+ * ⚠️ **不含 `Raccoon-Auto`**：它是客户端 i18n 条目，不是远端模型 ——
+ * 直接把该名字发给 `chat/completions` 会 404。
+ */
+const FALLBACK_MODELS = Object.freeze([
+  { id: 'sn-sensenova-6-8-flash', name: 'SenseNova-6.8-Flash · 免费', contextWindow: 256000, maxTokens: 63999, supportsImage: true },
+  { id: 'sn-sensenova-6-8-flash-lite', name: 'SenseNova-6.8-Flash-Lite · 免费', contextWindow: 256000, maxTokens: 63999, supportsImage: true },
+  { id: 'sn-glm-5-3', name: 'GLM-5-3 · x0.75', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-kimi-k3', name: 'Kimi-K3 · x1', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-glm-5-3-flash', name: 'GLM-5-3-Flash · x0.2→x0.1', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-deepseek-v4-1-flash', name: 'DeepSeek-V4.1-Flash · x0.25', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+]);
+
+/**
+ * 远端 `tags` 缺 `vision`、但**实测能看图**的模型（显式白名单）。
+ *
+ * ⚠️ 为什么不能「恒 true」：远端 `tags` 的真实用途是客户端「Raccoon-Auto 选模」
+ * 的偏好标签，回答的是「适不适合这类任务」，**不是**「能不能吃图」。参考项目
+ * 已穷举 9 个条目：顶层 14 个键、`params` 只有 `context_window` 与 `max_tokens`，
+ * 用模态相关正则扫描**命中 0 个** ⇒ 远端从未下发模态字段。
+ * 故只覆盖有真实请求证据的个案（`tags` 无 vision 但带图实测 6/6 全部读对）。
+ * 若改成「该家恒支持」，将来上架纯文本模型时会把图放行、让上游回一个更难懂的 400。
+ */
+const IMAGE_CAPABILITY_OVERRIDES = new Set([
+  'sn-deepseek-v4-1-flash',
+  'sn-glm-5-3-flash',
+]);
+
+/* ---------- 凭据 ---------- */
+
+/**
+ * 解码 JWT payload 的 `exp`，换算成**毫秒**时间戳。
+ *
+ * ⚠️ 只解码、**不验签** —— 我们只需要知道什么时候该续期，签名由服务端校验。
+ * ⚠️ 任何解析失败都返回 undefined 而**不抛错**：凭据可能被手工改坏，
+ * 那时应当降级成「无过期信息」（宁可试一次），而不是让整个平台崩。
+ */
+function decodeJwtExpMs(token) {
+  if (typeof token !== 'string' || token.length === 0) return undefined;
+  const parts = token.split('.');
+  if (parts.length < 2) return undefined;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1] || '', 'base64url').toString('utf8'));
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return undefined;
+    const exp = payload.exp;
+    if (typeof exp !== 'number' || !Number.isFinite(exp) || exp <= 0) return undefined;
+    return exp * 1000;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 解析凭据的过期时刻（毫秒）。
+ * 取值优先级：`expires_at`（显式字段）→ **JWT 的 `exp`**。
+ *
+ * ⚠️ 回退到 JWT 是**必需的**，不是锦上添花：`expires_at` 是可选字段，
+ * 老凭据或手工导入的凭据可能没有它。只读 `expires_at` 会让过期判定恒为 false，
+ * 于是续期永远跳过这些账号 —— 表现为「凭据悄悄过期、续期从不触发」，属静默失效。
+ * 这与 ZCode「JWT 无 exp、长期有效」是相反的坑，不要照抄那边。
+ */
+function credentialExpiresAtMs(credential) {
+  const raw = credential && credential.expires_at;
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return decodeJwtExpMs(credential && credential.access_token);
+}
+
+/**
+ * 凭据是否已过期。
+ * 无任何过期信息（既无 `expires_at` 也不是 JWT）时视为**不过期**：
+ * 宁可用一个可能过期的凭据去试（服务端会回 401，我们能识别并续期），
+ * 也不要凭猜测阻止用户使用。
+ */
+function isExpired(credential, now = Date.now()) {
+  const at = credentialExpiresAtMs(credential);
+  return at !== undefined && at <= now;
+}
+
+/** 是否已进入「提前续期窗口」，供定时保活使用。 */
+function needsRefresh(credential, now = Date.now()) {
+  const at = credentialExpiresAtMs(credential);
+  if (at === undefined) return false;
+  return at - TOKEN_REFRESH_WINDOW_SECONDS * 1000 <= now;
+}
+
+/** 凭据是否可静默续期（判据是 refresh_token 非空；raccoon **有** refresh 端点）。 */
+function isRefreshable(credential) {
+  return typeof (credential && credential.refresh_token) === 'string'
+    && credential.refresh_token.trim().length > 0;
+}
+
+/* ---------- 登录 ---------- */
+
+/**
+ * 加密手机号，供 `send_sms` / `login_with_sms` 使用。
+ *
+ * 算法照抄客户端（渲染层模块 68284 的 `yv()`）：
+ *   key    = UTF8("senseraccoon2023") → 16 字节 ⇒ AES-128
+ *   iv     = 随机 16 字节
+ *   mode   = CFB, padding = NoPadding
+ *   输出   = Base64(iv ‖ ciphertext)
+ *
+ * ⚠️ 必须**显式**写 `aes-128-cfb`：密钥是 16 字节，写成 `aes-256-cfb` 会因长度
+ * 不足而抛错（不会自动补齐）。
+ * ⚠️ 填充语义已实测：CFB 是流密码，`setAutoPadding(true/false)` 输出**完全一致**。
+ * 这里显式关掉以对齐 CryptoJS 的 NoPadding，避免读者误以为有填充。
+ *
+ * @param {string} phone
+ * @param {Buffer} [iv] 仅供单测注入固定值；生产路径省略（随机）。
+ */
+function encryptPhone(phone, iv) {
+  const key = Buffer.from(PHONE_CIPHER_SECRET, 'utf8');
+  const nonce = iv || crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv('aes-128-cfb', key, nonce);
+  cipher.setAutoPadding(false);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(phone, 'utf8')), cipher.final()]);
+  return Buffer.concat([nonce, ciphertext]).toString('base64');
+}
+
+/** 生成一个扫码用的 `qrcode_code`（32 位小写 hex = 16 字节随机）。 */
+function generateQrCode() {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+/**
+ * 构造二维码承载的微信登录页 URL。
+ *
+ * 依据客户端：`${base}/login/mp?code=${code}&appname=商汤小浣熊官网`。
+ * 这是一个**公开页面**，扫码后在微信内完成授权，服务端据此把该 code 置为
+ * `success`，我们轮询 `login_with_qrcode_code` 取回 token。
+ *
+ * ⚠️ 该 URL 含一次性登录票据，**只能由本机面板渲染**——绝不能转给外部二维码
+ * 图片服务生成，那等于把票据送给第三方。
+ */
+function buildQrImageUrl(code) {
+  const params = new URLSearchParams({ code, appname: '商汤小浣熊官网' });
+  return `${V.hosts.qrPage}?${params.toString()}`;
+}
+
+/**
+ * 业务端点请求头（依据客户端 `createHeaders()`）。
+ *
+ * ⚠️ **四个调用点的头集合互不相同，不要图省事统一成一份**（参考实现即如此，
+ * 逐点照抄才对得上上游）：
+ *   - `send_sms` / `login_with_sms` / `refresh` / `login_with_qrcode_code`：
+ *     **只有** `Content-Type`（无 Authorization、无任何业务头）；
+ *   - `user_info`：本函数默认形态（不含 platform / version）；
+ *   - `points/*` 与 `desktop/v1/login/points/grant`：用 {@link desktopHeaders}
+ *     （含 `X-Client-Platform` + `X-Client-Version`；后者**必需**该头）；
+ *   - `chat/completions`：含 `X-Client-Platform` 但**不含** version，且
+ *     `Accept: text/event-stream`（见 `chat.js`）；
+ *   - `model_catalog`：手写四头，**无 Content-Type**（见 {@link catalogHeaders}）。
+ *
+ * ⚠️ 刻意**不发送 `User-Agent`**：参考实现里该字段注释写明「仅记录用；实测该
+ * 端点不校验 UA」，全链路没有任何地方把它写进请求头。没有证据的头不要凭直觉加。
+ */
+function headers(credential, opts = {}) {
+  const h = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${credential.access_token}`,
+    // 个人账号为空串；客户端总是发送该头
+    'X-Org-Code': credential.office_identity || '',
+    'X-Raccoon-Language': 'zh',
+  };
+  if (opts.platform) h['X-Client-Platform'] = opts.platform;
+  if (opts.version) h['X-Client-Version'] = opts.version;
+  // device_id 只在凭据里存在时才发；本网关的登录流程**不生成**它
+  // （参考实现同样只读不写，故该头在实践中不出现）。没有生成规则就不要发明一个。
+  if (credential.device_id) h['X-Client-Device-ID'] = credential.device_id;
+  return h;
+}
+
+/** 桌面端点的完整身份头（积分与一次性登录奖励用）。 */
+function desktopHeaders(credential) {
+  return headers(credential, {
+    platform: V.identity.clientPlatform,
+    version: V.identity.clientVersion,
+  });
+}
+
+/** 目录请求头：实测只需要四个头，**不带** X-Client-Platform。 */
+function catalogHeaders(credential) {
+  return {
+    Accept: 'application/json',
+    Authorization: `Bearer ${credential.access_token}`,
+    'X-Org-Code': credential.office_identity || '',
+    'X-Raccoon-Language': 'zh',
+  };
+}
+
+/* ---------- 模型目录 ---------- */
+
+/** 倍率格式化：去掉浮点噪声，`0.75` → `0.75`、`1` → `1`、`0.1` → `0.1`。 */
+function formatMultiplier(value) {
+  return String(Number(value.toFixed(4)));
+}
+
+/**
+ * 最终展示名：`GLM-5-3 · x0.75` / `SenseNova-6.8-Flash · 免费` /
+ * `GLM-5-3-Flash · x0.2→x0.1` / `Kimi-K3 · x1`。
+ *
+ * 三条展示规则：
+ *   - 生效价为 **0** → 显示「免费」（**不是** `x0`）；
+ *   - 生效价 **严格小于**原价 → 显示 `x原价→x折后价`（箭头比「（促销 …）」短）；
+ *   - 其余（**含 1 倍**）→ 显示 `x生效价`。
+ *
+ * 非有限数/负数：不追加后缀，避免产出「模型名 · 」这种孤立分隔符。
+ * 这条只处理「取不到倍率」，与「倍率恰好是 1」是两回事（后者要显示）。
+ */
+function displayName(model) {
+  const name = typeof model.description === 'string' && model.description.length > 0
+    ? model.description
+    : model.id;
+  const effective = model.effectiveMultiplier;
+  if (typeof effective !== 'number' || !Number.isFinite(effective) || effective < 0) return name;
+  if (effective === 0) return `${name} · 免费`;
+
+  const base = model.baseMultiplier;
+  const hasBase = typeof base === 'number' && Number.isFinite(base) && base > 0;
+  if (hasBase && base > effective) {
+    return `${name} · x${formatMultiplier(base)}→x${formatMultiplier(effective)}`;
+  }
+  return `${name} · x${formatMultiplier(effective)}`;
+}
+
+/**
+ * 远端目录条目的图片能力判定 —— **远端解析路径专用**。
+ * 兜底表路径不走本函数：它的真相源是 `FALLBACK_MODELS[].supportsImage`。
+ */
+function supportsImage(modelId, tags) {
+  if (IMAGE_CAPABILITY_OVERRIDES.has(modelId)) return true;
+  const list = Array.isArray(tags) ? tags : [];
+  return list.includes('vision') || list.includes('image') || list.includes('image-understanding');
+}
+
+/**
+ * 解析远端模型目录。
+ *
+ * 实测响应形态：`{ code: 0, data: { categories: [ { type: 'chat', models: [...] } ] } }`
+ * —— 只取 `type === 'chat'` 那一类。
+ *
+ * 逐条归一化的**关键细节**（照抄参考实现，别按直觉改）：
+ *   - **模型 id 在远端的 `name` 字段**（不是 `id`）；
+ *   - `visible === false` 的条目要跳过（字段缺失视为可见，不因缺字段而隐藏模型）；
+ *   - 倍率在 `billing_effective_multiplier` / `billing_multiplier`；
+ *   - 窗口与上限在 `params.context_window` / `params.max_tokens`；
+ *   - 重名去重，保留首次出现。
+ *
+ * @returns {Array<{id,name,contextWindow,maxTokens,supportsImage,status,statusNote,multiplier}>}
+ */
+function parseModelCatalog(payload) {
+  if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) return [];
+  if (payload.code !== 0) return [];
+  const data = typeof payload.data === 'object' && payload.data !== null && !Array.isArray(payload.data)
+    ? payload.data
+    : undefined;
+  if (data === undefined) return [];
+  const categories = Array.isArray(data.categories) ? data.categories : [];
+  const chat = categories.find((c) => c && typeof c === 'object' && !Array.isArray(c) && c.type === 'chat');
+  if (chat === undefined) return [];
+  const models = Array.isArray(chat.models) ? chat.models : [];
+
+  const readPositiveInt = (value) => (typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0);
+  const seen = new Set();
+  const out = [];
+  for (const raw of models) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const id = typeof raw.name === 'string' ? raw.name.trim() : '';
+    if (id.length === 0 || seen.has(id)) continue;
+    if (raw.visible === false) continue;
+    seen.add(id);
+
+    const params = raw.params && typeof raw.params === 'object' ? raw.params : {};
+    const description = typeof raw.description === 'string' && raw.description.length > 0 ? raw.description : id;
+    const effective = typeof raw.billing_effective_multiplier === 'number' ? raw.billing_effective_multiplier : Number.NaN;
+    const base = typeof raw.billing_multiplier === 'number' ? raw.billing_multiplier : Number.NaN;
+    const rawStatus = typeof raw.billing_status === 'string' ? raw.billing_status : '';
+    const status = rawStatus === 'discount' || rawStatus === 'limited_free' ? rawStatus : 'normal';
+    const statusNote = typeof raw.billing_status_note === 'string' ? raw.billing_status_note : '';
+    const tags = Array.isArray(raw.tags)
+      ? raw.tags.filter((t) => typeof t === 'string').map((t) => t.toLowerCase())
+      : [];
+
+    out.push({
+      id,
+      name: displayName({ id, description, effectiveMultiplier: effective, baseMultiplier: base, status, statusNote }),
+      contextWindow: readPositiveInt(params.context_window),
+      maxTokens: readPositiveInt(params.max_tokens),
+      supportsImage: supportsImage(id, tags),
+      status,
+      statusNote,
+      // 倍率原值，供面板展示与计费参考（0 表示免费）
+      multiplier: Number.isFinite(effective) ? effective : null,
+    });
+  }
+  return out;
+}
+
+/** 兜底模型表转成同一形状（远端目录不可用时使用）。 */
+function fallbackCatalog() {
+  return FALLBACK_MODELS.map((m) => ({
+    id: m.id,
+    name: m.name,
+    contextWindow: m.contextWindow,
+    maxTokens: m.maxTokens,
+    supportsImage: m.supportsImage === true,
+    status: 'normal',
+    statusNote: '',
+    multiplier: null,
+  }));
+}
+
+module.exports = {
+  PHONE_CIPHER_SECRET,
+  TOKEN_REFRESH_WINDOW_SECONDS,
+  REQUEST_TIMEOUT_MS,
+  QR_POLL_INTERVAL_MS,
+  LOGIN_TIMEOUT_MS,
+  QR_STATUS,
+  LOGIN_REWARD_EVENT_NAME,
+  LOGIN_REWARD_POINTS,
+  FALLBACK_MODELS,
+  IMAGE_CAPABILITY_OVERRIDES,
+  decodeJwtExpMs,
+  credentialExpiresAtMs,
+  isExpired,
+  needsRefresh,
+  isRefreshable,
+  encryptPhone,
+  generateQrCode,
+  buildQrImageUrl,
+  headers,
+  desktopHeaders,
+  catalogHeaders,
+  formatMultiplier,
+  displayName,
+  supportsImage,
+  parseModelCatalog,
+  fallbackCatalog,
+};

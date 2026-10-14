@@ -25,7 +25,11 @@ const CAPABILITY_TAGS: { key: keyof Channel['capability']; label: string }[] = [
   { key: 'checkin', label: '每日签到' },
   { key: 'growth', label: '成长任务' },
   { key: 'rewardClaim', label: '活动领取' },
+  // 一次性奖励与「每日活动领取」是两件事（Raccoon 的每日 300 没有端点，
+  // 能领的只有每号一次的桌面端登录奖励），故分开标注。
+  { key: 'loginReward', label: '登录奖励' },
   { key: 'oauthLogin', label: 'OAuth 登录' },
+  { key: 'tokenRefresh', label: '自动续期' },
 ];
 
 export function ChannelGrid({

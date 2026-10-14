@@ -50,6 +50,7 @@ import { ImportTraeDialog } from './ImportTraeDialog';
 import { ImportWbDialog } from './ImportWbDialog';
 import { ImportQoderDialog } from './ImportQoderDialog';
 import { ImportZcodeDialog } from './ImportZcodeDialog';
+import { ImportRaccoonDialog } from './ImportRaccoonDialog';
 import { OauthTraeDialog } from './OauthTraeDialog';
 import { ChannelGrid } from './ChannelGrid';
 import { ChannelOpsDialog } from './ChannelOpsDialog';
@@ -73,6 +74,7 @@ export default function CredentialsPage() {
   const [showWbImport, setShowWbImport] = useState(false);
   const [showQoderImport, setShowQoderImport] = useState(false);
   const [showZcodeImport, setShowZcodeImport] = useState(false);
+  const [showRaccoonLogin, setShowRaccoonLogin] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [growthOpen, setGrowthOpen] = useState(false);
   /** 查看权益包的账号；null 表示弹窗关闭 */
@@ -253,6 +255,7 @@ export default function CredentialsPage() {
     else if (kind === 'wb-local') setShowWbImport(true);
     else if (kind === 'qoder-local') setShowQoderImport(true);
     else if (kind === 'zcode-local') setShowZcodeImport(true);
+    else if (kind === 'raccoon-login') setShowRaccoonLogin(true);
   }
 
   /**
@@ -266,7 +269,9 @@ export default function CredentialsPage() {
   function relogin(a: Account) {
     const platform = platformOf(a);
     const entry = channelEntry(platform);
-    const kind = entry?.wizards.oauth ?? entry?.wizards.local ?? null;
+    // Trae 的重新登录是 OAuth 换票；其余平台都是「重新获取登录态」——
+    // 前三个读本机客户端，Raccoon 重新扫码。
+    const kind = entry?.wizards.oauth ?? entry?.wizards.local ?? entry?.wizards.login ?? null;
     if (!kind) {
       toast(`该渠道暂无可用的重新登录向导：${a.label || a.id}`, 'warn');
       return;
@@ -275,7 +280,7 @@ export default function CredentialsPage() {
       setReloginTarget(a);
     } else {
       toast(
-        `请在「${platformLabel(a)}」接入向导里重新读取本机客户端登录态：${a.label || a.id}`,
+        `请在「${platformLabel(a)}」接入向导里重新获取登录态：${a.label || a.id}`,
         'warn',
       );
     }
@@ -688,6 +693,11 @@ export default function CredentialsPage() {
       <ImportZcodeDialog
         open={showZcodeImport}
         onClose={() => setShowZcodeImport(false)}
+        onImported={reloadAll}
+      />
+      <ImportRaccoonDialog
+        open={showRaccoonLogin}
+        onClose={() => setShowRaccoonLogin(false)}
         onImported={reloadAll}
       />
       <ImportTraeDialog

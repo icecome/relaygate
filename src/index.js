@@ -27,6 +27,7 @@ const status = require('./routes/status');
 const workbuddy = require('./routes/workbuddy');
 const zcode = require('./routes/zcode'); // ZCode 运营面（凭据导入 / 套餐领取 / 额度）
 const qoder = require('./routes/qoder'); // Qoder 运营面（双区域凭据导入 / 每日积分领取 / 额度 / 目录）
+const raccoon = require('./routes/raccoon'); // Raccoon 运营面（扫码登录 / 积分）+ 对话转发
 const catTrip = require('./routes/cat-trip'); // WorkBuddy 成长活动端点（/v1/workbuddy/growth）
 const apiKeys = require('./routes/api-keys');
 const modelRouterAdmin = require('./routes/model-router');
@@ -143,6 +144,10 @@ app.use('/v1/zcode', zcode);
 // 限流实例必须在此前创建——app.use 的顺序即中间件顺序。
 const rateLimitMw = keyRateLimit();
 app.use('/v1/qoder', qoder);
+// Raccoon 同构：运营面自带 admin 鉴权；对话转发（/v1/raccoon/chat/completions）
+// 在路由内用 authenticate + 独立限流实例。它**不进 Trae 转发池**
+// （pool.editionOk 的默认分支只取 Trae 系），故这里不需要任何分派改动。
+app.use('/v1/raccoon', raccoon);
 app.use('/v1/admin', adminOverview);
 app.use('/v1/admin', adminTraffic);
 app.use('/v1/admin', adminJobs);

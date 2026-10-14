@@ -152,6 +152,7 @@ const PLATFORM_LABEL: Record<Platform, string> = {
   workbuddy: 'WorkBuddy',
   zcode: 'ZCode',
   qoder: 'Qoder',
+  raccoon: 'Raccoon',
 };
 
 /** 平台的展示名。 */

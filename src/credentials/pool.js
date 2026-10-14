@@ -497,11 +497,21 @@ function editionOk(a, wanted) {
     if (variant.isEdition(edition, variant.QODER)) return variant.qoderChatOk(a);
     return true;
   }
-  // 未指定目标平台时：保持既有行为——canChat 为真且非 workbuddy
-  // （空 edition 的历史账号视为 Trae 系；显式平台过滤由上面的 wanted 分支负责）
-  // Qoder 显式排除：它只走 edition='qoder' 的专属池，不进 Trae 默认池。
-  if (variant.isEdition(edition, variant.QODER)) return false;
-  return variant.canChat(edition) && edition !== variant.WORKBUDDY;
+  // 未指定目标平台时：**只取归一化后属于 Trae 的账号**。
+  //
+  // 此前这里是「canChat 为真且非 workbuddy」，并逐个排除 qoder —— 那意味着每接入
+  // 一个 chat=true 的新平台，它都会被静默放进 Trae 默认池，于是 Trae 请求会拿着
+  // 别家的 token 去打别家上游，表现为「Trae 请求随机失败」。Raccoon 就是下一个
+  // （capability.chat=true，但只有自己的专属端点，不进池）。
+  //
+  // ⚠️ 这里刻意用 `variantOf(...).id === TRAE` 而**不是** `isTrae(edition)`：
+  // isTrae 是显式白名单（trae/cn/sg/us/manual），对**空 edition 与未知 edition
+  // 返回 false**；而默认池历来把「空/未知 edition 的历史账号」视为 Trae 系并放行
+  // （旧实现的注释与此处的单测都依赖这一点）。isTrae 会把这些账号静默踢出池，
+  // 表现为整池 "No account available in pool" —— 实测已踩到（4 个 pool 用例红）。
+  // variantOf 的「未知值回退 Trae」在这里正是需要的历史语义；而四家已知平台
+  // （workbuddy/zcode/qoder/raccoon）都能被正确排除。
+  return variant.variantOf(edition).id === variant.TRAE;
 }
 
 /**

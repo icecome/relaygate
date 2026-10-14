@@ -69,6 +69,11 @@ function ensureSchema(db) {
   // 因此必须持久化——不能每次从 host 猜（国际版客户端的 fastEndpoint 实测指向
   // .com.cn 域名，靠后缀判断会误判）。只在凭据导入时由扫到的客户端目录确定。
   if (!names.has('qoder_realm')) db.exec("ALTER TABLE accounts ADD COLUMN qoder_realm TEXT");
+  // Raccoon 组织码（仅 raccoon 账号）。`office_identity` 个人账号为空串、
+  // 企业账号是组织码，每次业务请求都要放进 `X-Org-Code` 头，故必须持久化。
+  // 刻意**没有**设备标识列：参考实现全链路只读不写 device_id，我们没有它的
+  // 生成规则，宁可不发该头也不发明一个假设备号。
+  if (!names.has('raccoon_org')) db.exec('ALTER TABLE accounts ADD COLUMN raccoon_org TEXT');
   // 乐观锁版本号（P0-001）：store.update 改为「按 patch 生成 SET + version CAS」后，
   // 每次成功写入 version+1。并发写入方读到旧 version 时 UPDATE 影响 0 行，
   // 重读重试即可避免用陈旧快照覆盖对方刚写的字段这类静默丢更新。

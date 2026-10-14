@@ -102,6 +102,9 @@ const PATCH_COLUMNS = {
   modelCoolStreak: { col: 'model_cool_streak', val: (a) => bindInt(a.modelCoolStreak, 0) },
   // Qoder 区域（仅 qoder 账号）。导入时按扫到的客户端目录确定，之后不再变。
   qoderRealm: { col: 'qoder_realm', val: (a) => bindText(a.qoderRealm) },
+  // Raccoon 组织码（仅 raccoon 账号）。个人账号为空串，企业账号是组织码；
+  // 每次业务请求都要放进 `X-Org-Code` 头，故必须持久化。
+  raccoonOrg: { col: 'raccoon_org', val: (a) => bindText(a.raccoonOrg) },
 };
 
 /** 写入冲突时的错误标记，供调用方与测试识别（不当作普通异常吞掉）。 */
@@ -138,6 +141,7 @@ function acctToRow(acct) {
     last_keepalive_at: bindText(acct.lastKeepaliveAt),
     last_keepalive_result: bindText(acct.lastKeepaliveResult),
     qoder_realm: bindText(acct.qoderRealm),
+    raccoon_org: bindText(acct.raccoonOrg),
     entitlement_snapshot: bindText(acct.entitlementSnapshot),
     priority: bindInt(acct.priority, 0),
     tags: acct.tags ? JSON.stringify(acct.tags) : null,
@@ -192,6 +196,7 @@ function rowToDecrypted(r, withSecrets = true) {
     lastKeepaliveAt: r.last_keepalive_at,
     lastKeepaliveResult: r.last_keepalive_result,
     qoderRealm: r.qoder_realm || null,
+    raccoonOrg: r.raccoon_org || null,
     entitlementSnapshot: parseSnapshotJson(r.entitlement_snapshot),
     priority: r.priority != null ? Number(r.priority) || 0 : 0,
     tags: parseTagsJson(r.tags),
@@ -252,15 +257,15 @@ function add(cred, source) {
       id, label, edition, token_enc, refresh_token_enc, api_key_enc, expired_at, refresh_expired_at,
       token_release_at, user_id, host, user_region, devices, fingerprint, mode, source, enabled,
       balance, error_count, cool_until, last_picked_at, last_checkin_at, last_checkin_result,
-      last_keepalive_at, last_keepalive_result, qoder_realm,
+      last_keepalive_at, last_keepalive_result, qoder_realm, raccoon_org,
       entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier,
       model_cooldowns, rate_streak, model_cool_streak
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
     r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result,
-    r.last_keepalive_at, r.last_keepalive_result, r.qoder_realm, r.entitlement_snapshot,
+    r.last_keepalive_at, r.last_keepalive_result, r.qoder_realm, r.raccoon_org, r.entitlement_snapshot,
     r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
     r.model_cooldowns, r.rate_streak, r.model_cool_streak);
   return safeTok(acct);
