@@ -7,6 +7,7 @@
 const { Router } = require('express');
 const { llmUtilsChat, consumeStream } = require('../upstream/client');
 const { isRateLimitCode, isModelConfigError } = require('../upstream/errors');
+const { sniffHead } = require('../lib/sse-sniff');
 const wbChat = require('../workbuddy/chat');
 const auth = require('../auth');
 const { normalizeTraeMessages } = require('../transform/request');
@@ -397,8 +398,13 @@ router.post('/v1/chat/completions', async (req, res) => {
       let roundUsage = null;
       const roundToolCalls = [];
       let roundIncompleteTools = false;
+      // 形状判定兜底（见 lib/sse-sniff.js）：上游忽略 stream=true 返回 JSON 时，
+      // SSE 解析器一个事件都不产出，而这里会照样收尾成「正常结束、内容为空」。
+      let sawEvent = false;
+      let firstRaw = '';
 
       const handler = createStreamHandler((evt) => {
+        sawEvent = true;
         switch (evt.type) {
           case 'text':
             if (evt.content) roundContent += evt.content;
@@ -435,9 +441,23 @@ router.post('/v1/chat/completions', async (req, res) => {
 
       const up = await llmUtilsChat(normalizeTraeMessages(roundMessages), model, true, { ...callOpts, accountId });
       const feeder = createLineFeeder((line) => handler.feedLine(line));
-      await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model });
+      await consumeStream(up.body, (text) => {
+        if (firstRaw.length < 200) firstRaw += text.slice(0, 200 - firstRaw.length);
+        feeder.feed(text);
+      }, { requestId: completionId, accountId, model });
       feeder.flush();
       handler.flushToolAccum();
+
+      // 没解析出任何事件 = 上游故障，不是「空回复成功」。抛错交还 pool.run：
+      // 流未开始时整体轮换账号；已开始时由外层补错误帧。绝不让客户端拿到空答案。
+      if (!sawEvent) {
+        const kind = sniffHead(firstRaw);
+        const e = new Error(`upstream sent no SSE event (shape=${kind}) for a streaming request`
+          + (kind === 'json' ? '：上游忽略了 stream=true，返回的是完整 JSON 正文' : ''));
+        e.status = 502;
+        e.code = 'UPSTREAM_NOT_STREAM';
+        throw e;
+      }
 
       // B2：参数残缺的工具调用按截断收尾（不续写工具轮，交由客户端处置）
       if (handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs()) {

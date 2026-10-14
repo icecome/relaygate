@@ -12,6 +12,7 @@ const { llmUtilsChat, consumeStream } = require('../upstream/client');
 const { isRateLimitCode } = require('../upstream/errors');
 const { normalizeTraeMessages } = require('../transform/request');
 const { createStreamHandler } = require('../transform/sse');
+const { sniffHead } = require('../lib/sse-sniff');
 const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
@@ -123,7 +124,12 @@ router.post('/v1/responses', async (req, res) => {
       streamAccountId = accountId;
       if (stickyKey && accountId) sticky.bind(stickyKey, accountId);
 
+      // 形状判定兜底（见 lib/sse-sniff.js）：上游忽略 stream=true 返回 JSON 时，
+      // SSE 解析器零事件，而这里会照样发 response.completed —— 一个不报错的空答案。
+      let sawEvent = false;
+      let firstRaw = '';
       const handler = createStreamHandler((evt) => {
+        sawEvent = true;
         if (evt.type === 'text' && evt.content) {
           sseWrite(res, 'response.output_text.delta', {
             type: 'response.output_text.delta',
@@ -141,9 +147,20 @@ router.post('/v1/responses', async (req, res) => {
       }, { markIncomplete: config.markIncompleteToolArgs });
       // 保留跨块残行：上游 JSON 事件被 chunk 边界切开时，整行解析会失败并丢事件
       const feeder = createLineFeeder((line) => handler.feedLine(line));
-      await consumeStream(up.body, (text) => feeder.feed(text));
+      await consumeStream(up.body, (text) => {
+        if (firstRaw.length < 200) firstRaw += text.slice(0, 200 - firstRaw.length);
+        feeder.feed(text);
+      });
       feeder.flush();
       handler.flushToolAccum();
+      if (!sawEvent) {
+        const kind = sniffHead(firstRaw);
+        const e = new Error(`upstream sent no SSE event (shape=${kind}) for a streaming request`
+          + (kind === 'json' ? '：上游忽略了 stream=true，返回的是完整 JSON 正文' : ''));
+        e.status = 502;
+        e.code = 'UPSTREAM_NOT_STREAM';
+        throw e;
+      }
       sseWrite(res, 'response.completed', {
         type: 'response.completed',
         response: { id: responseId, status: 'completed', model, account_id: accountId || null },

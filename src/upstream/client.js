@@ -11,6 +11,7 @@ const headersLib = require('../lib/headers');
 const { v4: uuidv4 } = require('../lib/uuid');
 const { localDateKey } = require('../lib/util');
 const { logsDir } = require('../lib/paths');
+const { sniffHead } = require('../lib/sse-sniff');
 const { retryWithBackoff } = require('./errors');
 const { createStreamHandler } = require('../transform/sse');
 const { isTruncatedFinish } = require('../transform/finish');
@@ -304,11 +305,14 @@ async function getModelDetailParam(functionName) {
   return resp.json();
 }
 
-/** 粗判正文是否为 SSE（兼容 event: / data: 开头）。 */
+/**
+ * 粗判正文是否为 SSE。
+ *
+ * 判定收口到 lib/sse-sniff（原实现只看 64 字符、只认三种前缀，且与流式侧的
+ * 形状判断各写一套）。这里是对**已全量缓冲**的正文判定，没有理由再省字节。
+ */
 function looksLikeSse(text) {
-  if (!text) return false;
-  const head = text.slice(0, 64).trimStart();
-  return head.startsWith('event:') || head.startsWith('data:') || head.startsWith(':');
+  return sniffHead(text) === 'sse';
 }
 
 /**

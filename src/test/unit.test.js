@@ -3485,6 +3485,164 @@ t('提交闸门对正常路径零影响：带闸门与不带闸门下发的字�
   }
 });
 
+console.log('lib/sse-sniff（上游返回形状判定）');
+
+t('sniffHead：SSE / JSON / HTML / 空 / 未知 各形态判定', () => {
+  const { sniffHead } = require('../lib/sse-sniff');
+  assert.strictEqual(sniffHead('data: {"a":1}\n\n'), 'sse');
+  assert.strictEqual(sniffHead('event: message\ndata: {}\n\n'), 'sse');
+  assert.strictEqual(sniffHead(': ping\n\n'), 'sse', '注释帧也是 SSE');
+  assert.strictEqual(sniffHead('id: 3\n'), 'sse');
+  assert.strictEqual(sniffHead('retry: 1000\n'), 'sse');
+  assert.strictEqual(sniffHead('{"choices":[]}'), 'json');
+  assert.strictEqual(sniffHead('[{"a":1}]'), 'json');
+  assert.strictEqual(sniffHead('<html><body>503</body></html>'), 'html');
+  assert.strictEqual(sniffHead(''), 'empty');
+  assert.strictEqual(sniffHead('   \n  '), 'empty');
+  assert.strictEqual(sniffHead(null), 'empty');
+  assert.strictEqual(sniffHead('乱码输出'), 'unknown');
+});
+
+t('sniffHead：前导空白与 BOM 不干扰判定', () => {
+  const { sniffHead } = require('../lib/sse-sniff');
+  assert.strictEqual(sniffHead('\n\n  data: {}\n\n'), 'sse');
+  assert.strictEqual(sniffHead('\uFEFF{"a":1}'), 'json');
+});
+
+t('describeShape 给出人话形状名', () => {
+  const { describeShape } = require('../lib/sse-sniff');
+  assert.match(describeShape('json'), /JSON/);
+  assert.match(describeShape('sse'), /SSE/);
+});
+
+console.log('出口对「零 SSE 事件」的处置（上游忽略 stream=true 返回 JSON）');
+
+t('dispatchTraeStream：上游返回 JSON 而非 SSE 时抛 UPSTREAM_NOT_STREAM，不得静默收尾成空回复', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  // 上游无视 stream=true，回了完整 JSON；SSE 解析器按行找不到 data:，零事件
+  const jsonBody = JSON.stringify({ choices: [{ message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }] });
+  client.consumeStream = async (body, onText) => { onText(jsonBody); };
+  const written = [];
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; },
+    write(s) { written.push(String(s)); return true; }, end() { this.writableEnded = true; },
+  };
+  try {
+    await assert.rejects(
+      () => dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, {}),
+      (e) => e.code === 'UPSTREAM_NOT_STREAM' && e.status === 502,
+      '必须抛 UPSTREAM_NOT_STREAM（可降级/可诊断），而不是安静地发一个空回复',
+    );
+    assert.strictEqual(written.length, 0, '抛错前不得写出任何 SSE 字节（这样上层还能整体换候选）');
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+t('dispatchTraeStream：上游流为空（零字节）同样抛错，不当作空回复成功', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async () => { /* 一个字节都没有 */ };
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; }, write() { return true; }, end() { this.writableEnded = true; },
+  };
+  try {
+    await assert.rejects(
+      () => dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, {}),
+      (e) => e.code === 'UPSTREAM_NOT_STREAM',
+    );
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+t('dispatchTraeStream：正常 SSE 不触发该兜底（回归保护）', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const client = require('../upstream/client');
+  const origRun = pool.run;
+  const origChat = client.llmUtilsChat;
+  const origConsume = client.consumeStream;
+  pool.run = async (fn) => fn('acct-1');
+  client.llmUtilsChat = async () => ({ body: {} });
+  client.consumeStream = async (body, onText) => {
+    onText('data: ' + JSON.stringify({ content: 'hi' }) + '\n\n');
+    onText('data: ' + JSON.stringify({ done: true, finish_reason: 'stop' }) + '\n\n');
+  };
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; }, write() { return true; }, end() { this.writableEnded = true; },
+  };
+  try {
+    const r = await dispatch.dispatchStream({ type: 'builtin', builtin: 'trae' }, 'glm-5.3', { messages: [{ role: 'user', content: 'hi' }] }, res, {});
+    assert.strictEqual(r.streamed, true);
+    assert.strictEqual(r.finishReason, 'stop');
+  } finally {
+    pool.run = origRun;
+    client.llmUtilsChat = origChat;
+    client.consumeStream = origConsume;
+  }
+});
+
+t('dispatchWorkBuddyStream：上游回 JSON 时不把裸 JSON 写进 SSE 流，而是抛错', async () => {
+  const dispatch = require('../model-router/dispatch');
+  const pool = require('../credentials/pool');
+  const auth = require('../auth');
+  const wbChat = require('../workbuddy/chat');
+  const origRun = pool.run;
+  const origEnsure = auth.ensureAuth;
+  const origStream = wbChat.chatStream;
+  pool.run = async (fn) => fn('acct-1');
+  auth.ensureAuth = async () => ({ token: 't' });
+  const jsonBody = JSON.stringify({ choices: [{ message: { role: 'assistant', content: '你好' }, finish_reason: 'stop' }] });
+  wbChat.chatStream = async () => ({
+    status: 200,
+    body: new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode(jsonBody));
+        c.close();
+      },
+    }),
+  });
+  const written = [];
+  const res = {
+    writableEnded: false, headersSent: false,
+    setHeader() {}, flushHeaders() { this.headersSent = true; },
+    write(s) { written.push(String(s)); return true; }, end() { this.writableEnded = true; },
+  };
+  try {
+    await assert.rejects(
+      () => dispatch.dispatchStream({ type: 'builtin', builtin: 'workbuddy' }, 'wb/hy3', { messages: [{ role: 'user', content: 'hi' }] }, res, {}),
+      (e) => e.code === 'UPSTREAM_NOT_STREAM',
+      '必须抛错；裸 JSON 写进 SSE 流会让客户端解析失败且难以排查',
+    );
+    assert.strictEqual(written.length, 0, '确认为 SSE 之前不得写出任何字节');
+  } finally {
+    pool.run = origRun;
+    auth.ensureAuth = origEnsure;
+    wbChat.chatStream = origStream;
+  }
+});
+
 console.log('log/retention（m-29）');
 t('ageInDays：合法日期目录计算天数，非法名返回 null', () => {
   const { ageInDays } = require('../log/retention');

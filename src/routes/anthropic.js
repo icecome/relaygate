@@ -21,6 +21,7 @@ const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
 const { estimateRequestTokens } = require('../lib/token-estimate');
+const { sniffHead } = require('../lib/sse-sniff');
 // 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
 // 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
@@ -310,7 +311,12 @@ router.post('/v1/messages', async (req, res) => {
    * responses.js 在 run 之后使用，两者均正确，只有此处必须用 ref）。
    */
   const streamAccountIdRef = { current: null };
+  // 形状判定兜底（见 lib/sse-sniff.js）：上游忽略 stream=true 返回 JSON 时，
+  // 这里会照样收尾成 stop_reason=end_turn + 空 content —— 一个不报错的空答案。
+  let sawEvent = false;
+  let firstRaw = '';
   const handler = createStreamHandler((evt) => {
+    sawEvent = true;
     let bytes = [];
     switch (evt.type) {
       case 'text': bytes = out.text(msgId, model, evt.content, evt.reasoning); break;
@@ -336,9 +342,22 @@ router.post('/v1/messages', async (req, res) => {
     streamAccountIdRef.current = accountId;
     logAccountId = accountId;
     const feeder = createLineFeeder((line) => handler.feedLine(line));
-    await consumeStream(up.body, (text) => feeder.feed(text));
+    await consumeStream(up.body, (text) => {
+      if (firstRaw.length < 200) firstRaw += text.slice(0, 200 - firstRaw.length);
+      feeder.feed(text);
+    });
     feeder.flush();
     handler.flushToolAccum();
+    // 没解析出任何事件 = 上游故障，不是「空回复成功」。此处 message_start 已下发，
+    // 故抛错走 catch 的流内错误帧路径（客户端至少能看到错误，而不是空答案）。
+    if (!sawEvent) {
+      const kind = sniffHead(firstRaw);
+      const e = new Error(`upstream sent no SSE event (shape=${kind}) for a streaming request`
+        + (kind === 'json' ? '：上游忽略了 stream=true，返回的是完整 JSON 正文' : ''));
+      e.status = 502;
+      e.code = 'UPSTREAM_NOT_STREAM';
+      throw e;
+    }
     if (!res.writableEnded) {
       // 结束原因：截断优先（避免客户端执行参数残缺的工具）。Anthropic 用
       // max_tokens 表达截断，tool_use 表达工具请求，end_turn 表达正常结束。

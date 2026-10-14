@@ -11,6 +11,7 @@ const { logRequest } = require('../log/traffic');
 const { createLineFeeder } = require('../lib/sse-lines');
 const { exportOpenAI } = require('../transform/emitters');
 const { commitsAnswerEvent, commitsAnswerLine } = require('./stream-gate');
+const { sniffHead } = require('../lib/sse-sniff');
 
 function resolveApiKey(p) {
   // M-S6：明文 apiKey 已从存储剥离，密钥统一经环境变量注入（apiKeyEnv）
@@ -394,7 +395,13 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
     if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
     let roundFinish = null;
     let sawToolCalls = false;
+    // 「一个事件都没解析出来」是失败而不是空回复成功（见 lib/sse-sniff.js）：
+    // 上游忽略 stream=true 返回 JSON 时，SSE 解析器什么都不产出，而三条出口
+    // 都会照样收尾成「正常结束、内容为空」——额度已花、客户端拿到空答案。
+    let sawEvent = false;
+    let firstRaw = '';
     const handler = createStreamHandler((evt) => {
+      sawEvent = true;
       switch (evt.type) {
         case 'text':
           if (evt.content || evt.reasoning) {
@@ -437,9 +444,23 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
 
     const up = await llmUtilsChat(normalizeTraeMessages(body.messages), remoteModel, true, { ...callOpts, accountId });
     const feeder = createLineFeeder((line) => handler.feedLine(line));
-    await consumeStream(up.body, (text) => feeder.feed(text), { requestId: completionId, accountId, model: remoteModel });
+    await consumeStream(up.body, (text) => {
+      if (firstRaw.length < 200) firstRaw += text.slice(0, 200 - firstRaw.length);
+      feeder.feed(text);
+    }, { requestId: completionId, accountId, model: remoteModel });
     feeder.flush();
     handler.flushToolAccum();
+
+    // 形状判定兜底：上游没给任何 SSE 事件时抛错交还上层（未提交答案 → 仍可换候选），
+    // 而不是安静地发一个空回复。
+    if (!sawEvent) {
+      const kind = sniffHead(firstRaw);
+      const e = new Error(`upstream sent no SSE event (shape=${kind}) for a streaming request`
+        + (kind === 'json' ? '：上游忽略了 stream=true，返回的是完整 JSON 正文' : ''));
+      e.status = 502;
+      e.code = 'UPSTREAM_NOT_STREAM';
+      throw e;
+    }
 
     // B2 口径：参数残缺的工具调用按截断收尾（与聚合出口一致）
     const incomplete = handler.sawIncompleteToolArgs && handler.sawIncompleteToolArgs();
@@ -503,6 +524,10 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
     let sawDone = false;
     let sawToolCalls = false;
     let lastFinish = null;
+    // 确认是 SSE 之前不下发非 data 行：上游若无视 stream=true 回了完整 JSON，
+    // 原先会把裸 JSON 当普通行写进 SSE 流，客户端收到夹在流里的 JSON——
+    // 比空回复更难排查（见 lib/sse-sniff.js）。
+    let sawDataLine = false;
     const feeder = createLineFeeder(handleLine);
     for (;;) {
       const { done, value } = await reader.read();
@@ -515,9 +540,10 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
       const t = line.trim();
       if (!t) return;
       if (!t.startsWith('data:')) {
-        if (!res.writableEnded) res.write(t + '\n');
+        if (sawDataLine && !res.writableEnded) res.write(t + '\n');
         return;
       }
+      sawDataLine = true;
       const payload = t.slice(5).trim();
       if (payload === '[DONE]') {
         sawDone = true;
@@ -556,6 +582,13 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
       if (!res.writableEnded) res.write(`data: ${JSON.stringify(ev)}\n\n`);
     }
     const resolvedFinish = resolveStreamFinish({ sawToolCalls, lastFinish });
+    if (!sawDataLine) {
+      const e = new Error('upstream sent no SSE data frame for a streaming request'
+        + (usage === null ? '' : '（已解析到 usage，属异常收尾）'));
+      e.status = 502;
+      e.code = 'UPSTREAM_NOT_STREAM';
+      throw e;
+    }
     if (usage && !res.writableEnded) {
       const id = 'chatcmpl-wb-' + Date.now().toString(36);
       const created = Math.floor(Date.now() / 1000);
