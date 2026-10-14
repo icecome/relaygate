@@ -585,6 +585,91 @@ t('RTK：没有任何工具输出时整个字段缺席（与「测量到 0」区
   assert.strictEqual(logged[0].rtkCalls, undefined);
 });
 
+console.log('本地应答（Claude Code 的 5 类固定问题，不调上游）');
+
+/** Claude Code 的额度探测形态：max_tokens=1 + 单条 user + 文本含 quota。 */
+const quotaProbe = (extra) => Object.assign({
+  model: 'glm-5',
+  max_tokens: 1,
+  messages: [{ role: 'user', content: [{ type: 'text', text: 'quota' }] }],
+}, extra);
+
+t('本地应答（非流式）：直接返回 Anthropic Message，且**不调上游**', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  const r = await post('/v1/messages', quotaProbe({ stream: false }));
+  assert.strictEqual(r.status, 200);
+  assert.strictEqual(upstreamStub.calls.length, 0, '本地应答绝不能调上游（这正是它存在的意义）');
+  const body = JSON.parse(r.text);
+  assert.strictEqual(body.type, 'message');
+  assert.strictEqual(body.role, 'assistant');
+  assert.deepStrictEqual(body.content, [{ type: 'text', text: 'Quota check passed.' }]);
+  assert.strictEqual(body.stop_reason, 'end_turn');
+});
+
+t('本地应答（流式，客户端默认 stream）补完整帧序列', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  const r = await post('/v1/messages', quotaProbe());
+  assert.strictEqual(r.status, 200);
+  assert.ok(r.contentType.includes('text/event-stream'), `缺省应为 SSE，实际 ${r.contentType}`);
+  assert.strictEqual(upstreamStub.calls.length, 0);
+  const types = dataLines(r.text).map((d) => d.type);
+  assert.deepStrictEqual(types, [
+    'message_start', 'content_block_start', 'content_block_delta',
+    'content_block_stop', 'message_delta', 'message_stop',
+  ], `帧序列必须完整，实际 ${types.join(',')}`);
+  const delta = dataLines(r.text).find((d) => d.type === 'content_block_delta');
+  assert.strictEqual(delta.delta.text, 'Quota check passed.');
+});
+
+t('本地应答记账：打 localAnswer 标记且**一个 token 字段都不写**', async () => {
+  logged.length = 0;
+  await post('/v1/messages', quotaProbe({ stream: false }));
+  assert.strictEqual(logged.length, 1);
+  const row = logged[0];
+  assert.strictEqual(row.localAnswer, 'quota');
+  assert.strictEqual(row.status, 200);
+  assert.strictEqual(row.account, null, '本地应答没有账号归属');
+  // 写 0 会被 isMetered 判成 exact（上游真值），虚高计量覆盖率；写 tokensEstimated 是谎报
+  assert.strictEqual(row.promptTokens, undefined);
+  assert.strictEqual(row.completionTokens, undefined);
+  assert.strictEqual(row.totalTokens, undefined);
+  assert.strictEqual(row.tokensEstimated, undefined);
+  assert.strictEqual(row.rtkSavedBytes, undefined, '没调上游就没有可省的输入字节');
+});
+
+t('本地应答：按类禁用后落到上游（留了退路）', async () => {
+  const config = require('../config');
+  const saved = config.localAnswerDisabled;
+  config.localAnswerDisabled = ['quota'];
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  upstreamStub.data = {
+    choices: [{ index: 0, message: { role: 'assistant', content: '上游答的' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  };
+  try {
+    await post('/v1/messages', quotaProbe({ stream: false }));
+    assert.strictEqual(upstreamStub.calls.length, 1, '被禁用后必须照常走上游');
+    assert.strictEqual(logged[0].localAnswer, undefined);
+  } finally {
+    config.localAnswerDisabled = saved;
+  }
+});
+
+t('本地应答：普通对话不命中（不得误吞正常请求）', async () => {
+  logged.length = 0;
+  upstreamStub.calls.length = 0;
+  upstreamStub.data = {
+    choices: [{ index: 0, message: { role: 'assistant', content: '正常回答' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  };
+  await post('/v1/messages', msgBody({ stream: false, max_tokens: 1 }));
+  assert.strictEqual(upstreamStub.calls.length, 1, 'max_tokens=1 但文本不含 quota 时不得命中');
+  assert.strictEqual(logged[0].localAnswer, undefined);
+});
+
 // 汇总
 
 async function main() {

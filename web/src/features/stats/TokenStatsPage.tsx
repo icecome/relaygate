@@ -152,6 +152,8 @@ export default function TokenStatsPage() {
         exact: acc.exact + (r.exact ?? 0),
         estimated: acc.estimated + (r.estimated ?? 0),
         none: acc.none + (r.none ?? 0),
+        // 本地应答（没调上游）：与 none 分开计数，见 shared/api/stats.ts 的说明
+        local: acc.local + (r.local ?? 0),
         // 历史脱敏缺陷把 token 写成 "***"，原值从未写入文件，无法逐行还原
         tokensLost: acc.tokensLost + (r.tokensLost ?? 0),
         unmetered: acc.unmetered + r.unmetered,
@@ -168,6 +170,7 @@ export default function TokenStatsPage() {
       }),
       {
         requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0,
+        local: 0,
         tokensLost: 0, unmetered: 0, cacheRead: 0, cost: 0, officialCredit: 0, officialTokens: 0,
         turns: 0, turnsFailed: 0, recoveredTurns: 0,
       },
@@ -202,6 +205,9 @@ export default function TokenStatsPage() {
     };
   }, [official.data]);
 
+  // 计量覆盖率的分母刻意**排除本地应答**：那些请求根本没调上游，
+  // 本就不该有 usage，计入分母会把覆盖率无端拉低。
+  // （后端已把它们单列成 local，不计入 metered 也不计入 unmetered/none。）
   const meteredRate =
     totals.metered + totals.unmetered > 0
       ? (totals.metered / (totals.metered + totals.unmetered)) * 100
@@ -359,6 +365,13 @@ export default function TokenStatsPage() {
             <div className="mt-1 border-t pt-1" style={{ borderColor: 'var(--rg-border)' }}>
               <CaliberRow k="总请求（上游请求行）" v={formatNumber(totals.requests)} />
               <CaliberRow k="错误行" v={formatNumber(totals.errors)} />
+              {totals.local > 0 && (
+                <CaliberRow
+                  k="本地应答（未调上游）"
+                  v={`${formatNumber(totals.local)} 次`}
+                  tone="muted"
+                />
+              )}
               {/* 回合口径：降级换候选会给同一客户端请求写多行，只按行算成功率会把
                   「降级后成功」记成失败。回合数通常小于请求行数，故必须写明口径。 */}
               {totals.turns > 0 && (

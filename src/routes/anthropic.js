@@ -25,6 +25,7 @@ const { sniffHead } = require('../lib/sse-sniff');
 const { countToolErrors } = require('../transform/request');
 const { resolveMaxTokens } = require('../lib/effort');
 const { compressMessages } = require('../lib/rtk');
+const { detectLocalAnswer } = require('../lib/local-answer');
 // 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
 // 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
@@ -257,14 +258,13 @@ router.post('/v1/messages', async (req, res) => {
   // 客户端已传 max_tokens 或没表达意图时，本模块不介入（零行为变化）。
   const effort = resolveMaxTokens({ requested: max_tokens, thinking });
   const effMaxTokens = effort.maxTokens;
-  // 工具输出压缩（RTK）：在派发前就地重写工具结果的文本。
-  // **只压一次**——pool.run 的账号重试与流式/非流式两条分支共用这份结果，
-  // 否则同一次客户端请求会被重复计数，节省量虚高（记账口径见 log/stats.js）。
-  const rtk = compressMessages(built, { enabled: config.rtkEnabled });
-  const upstreamMessages = rtk.messages;
+  // RTK 节省的占位：压缩结果在**本地应答判定之后**才产生（不调上游就无字节可省），
+  // 而 emitLog 要先定义好、并被本地应答分支复用，故这里先置 null。
+  // 直接用后声明的 `const rtk` 会在本地应答分支里触发 TDZ ReferenceError（已踩过）。
+  let rtkStats = null;
 
   /** 两个分支共用的一条流量日志（字段口径必须一致，否则同端点出现两种统计口径）。 */
-  const emitLog = () => {
+  const emitLog = (extra) => {
     logRequest({
       endpoint: '/v1/messages',
       method: 'POST',
@@ -280,18 +280,83 @@ router.post('/v1/messages', async (req, res) => {
       ...(effort.level ? { effortLevel: effort.level, maxTokensApplied: effMaxTokens } : {}),
       // 工具输出压缩节省（单位 UTF-8 字节；键名避开 token 以免被 sanitize 掩码）。
       // 字段拼装收口在 log/traffic.js#rtkLogFields，避免两处各写一套。
-      ...rtkLogFields(rtk.stats),
+      // 本地应答时 rtkStats 仍为 null → 该函数返回空对象，不写这些字段。
+      ...rtkLogFields(rtkStats),
       durationMs: Date.now() - startedAt,
       error: requestError,
       stream: stream !== false,
-      promptTokens: lastUsage ? lastUsage.prompt_tokens || 0 : 0,
-      completionTokens: lastUsage ? lastUsage.completion_tokens || 0 : 0,
-      totalTokens: lastUsage ? lastUsage.total_tokens || 0 : 0,
+      // 无 usage 时**不写**这三个字段，而不是写 0。
+      //
+      // 写 0 会被 stats.js#isMetered 判成「有计量值」，于是 tokenSource 归入 exact
+      // （上游真值）——失败请求与本地应答都会虚高「计量覆盖率」。
+      // 「没测量」与「测到 0」是两件事，这里必须靠字段缺席来区分。
+      // （本端点在修复前没有真实流量，故这是潜伏缺陷，不是正在发生的失真。）
+      ...(lastUsage
+        ? {
+          promptTokens: lastUsage.prompt_tokens || 0,
+          completionTokens: lastUsage.completion_tokens || 0,
+          totalTokens: lastUsage.total_tokens || 0,
+        }
+        : {}),
       ...(finishReasonForLog
         ? { finishReason: finishReasonForLog, truncated: finishReasonForLog === 'max_tokens' }
         : {}),
+      ...(extra || {}),
     });
   };
+
+  // ---- 本地应答 ----
+  //
+  // 5 类「答案就在请求体里」的固定问题（额度探测 / 命令前缀 / 会话标题 / 建议模式 /
+  // 文件路径提取）：转发一次要花一轮上游额度与往返，而答案有唯一正确值。
+  // 命中就直接本地答，不调上游（检测器见 lib/local-answer.js）。
+  const localHit = config.localAnswerEnabled ? detectLocalAnswer(req.body || {}) : null;
+  const local = localHit && !config.localAnswerDisabled.includes(String(localHit.kind).toLowerCase())
+    ? localHit
+    : null;
+  if (local) {
+    requestStatus = 200;
+    finishReasonForLog = local.stopReason || 'end_turn';
+    // 记账：**一个 token 字段都不写**。写 0 会被 isMetered 判成 exact（上游真值），
+    // 虚高计量覆盖率；写 tokensEstimated 同样是谎报。只打 localAnswer 标记，
+    // 由 log/stats.js#tokenSource 归入第四类 local（与 none 分开，见那里的说明）。
+    emitLog({ localAnswer: local.kind });
+    if (stream === false) {
+      res.json({
+        id: msgId,
+        type: 'message',
+        role: 'assistant',
+        model,
+        content: [{ type: 'text', text: local.text }],
+        stop_reason: local.stopReason || 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 0, output_tokens: 0 },
+      });
+      return;
+    }
+    // 流式：照本文件既有的 data-only 帧风格补完整序列（客户端按 data.type 分派）
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    const stopReason = local.stopReason || 'end_turn';
+    res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: msgId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: local.text } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
+    res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+    res.end();
+    return;
+  }
+
+  // 工具输出压缩（RTK）：在派发前就地重写工具结果的文本。
+  // **只压一次**——pool.run 的账号重试与流式/非流式两条分支共用这份结果，
+  // 否则同一次客户端请求会被重复计数，节省量虚高（记账口径见 log/stats.js）。
+  // 放在本地应答之后：既然不调上游，就没有可省的输入字节。
+  const rtk = compressMessages(built, { enabled: config.rtkEnabled });
+  rtkStats = rtk.stats;
+  const upstreamMessages = rtk.messages;
 
   // ---- 非流式分支 ----
   //

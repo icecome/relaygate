@@ -186,6 +186,13 @@ const config = {
   // 而 RTK 只压「工具输出」且小于 500 字节的块一律不动、错误轨迹一律跳过。
   // 置 RTK_ENABLED=false 可整体关闭（改动模型所见内容，留一个总闸）。
   rtkEnabled: process.env.RTK_ENABLED !== 'false',
+  // 本地应答：5 类「答案就在请求体里」的固定问题（额度探测/命令前缀/标题/建议/文件路径）
+  // 直接本地答，不调上游。默认开（这些请求转发一次就是白花一轮额度与往返），
+  // 但会改变客户端收到什么，故留两道闸：总开关 + 按类禁用清单
+  // （LOCAL_ANSWER_DISABLE=title,suggestion）。
+  localAnswerEnabled: process.env.LOCAL_ANSWER_ENABLED !== 'false',
+  localAnswerDisabled: String(process.env.LOCAL_ANSWER_DISABLE || '')
+    .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
   workspaceDir: path.resolve(ROOT, process.env.WORKSPACE_DIR || 'output'),
   logLevel: process.env.LOG_LEVEL || 'info',
   // 是否写旧格式逐请求 JSON 文件（默认关；默认写 traffic.jsonl + 控制台一行）

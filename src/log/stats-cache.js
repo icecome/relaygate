@@ -41,7 +41,7 @@ const CACHE_TTL_MS = 60 * 60 * 1000;
  *      同一次客户端请求产生多行 traffic，只按行数算成功率会系统性偏低）；
  *   11 补工具输出压缩节省 rtk*（只有跑过压缩的行才有，故以嵌套对象存在）。
  */
-const BUCKET_VERSION = 11;
+const BUCKET_VERSION = 12;
 
 function todayKey() {
   return localDateKey();
@@ -82,7 +82,7 @@ function writeCache(dateKey, buckets) {
 function buildDayBucket(rows, dateKey) {
   const b = {
     date: dateKey,
-    requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0,
+    requests: 0, errors: 0, tokens: 0, metered: 0, exact: 0, estimated: 0, none: 0, local: 0,
     tokensLost: 0, priced: 0, costUpper: 0,
     estimatedCost: 0, cacheReadTokens: 0, durationSumMs: 0, durationCount: 0, toolCalls: 0,
     byModel: {}, byAccount: {},
@@ -111,7 +111,8 @@ function buildDayBucket(rows, dateKey) {
     if (r.error || (r.status && r.status >= 400)) b.errors++;
     const src = tokenSource(r);
     b[src]++;
-    if (src !== 'none') b.metered++;
+    // metered 只算真的拿到/补算出数值的两类；local 没调上游，计入会虚高覆盖率
+    if (src === 'exact' || src === 'estimated') b.metered++;
     // token 字段被脱敏成 "***"（非数字字符串）：原值已丢，只能计数。
     // 数字字符串（"49569"）可还原，numTok 已接受，不算丢失。
     if (isMasked(r.totalTokens) || isMasked(r.promptTokens)) b.tokensLost++;
@@ -131,14 +132,14 @@ function buildDayBucket(rows, dateKey) {
     if (typeof r.durationMs === 'number') { b.durationSumMs += r.durationMs; b.durationCount++; }
     const m = r.model || 'unknown';
     const bm = b.byModel[m] || (b.byModel[m] = { requests: 0, errors: 0, tokens: 0, metered: 0, cost: 0, cacheReadTokens: 0, promptTokens: 0, completionTokens: 0 });
-    bm.requests++; bm.tokens += tok; if (src !== 'none') bm.metered++; bm.cost += cost; bm.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
+    bm.requests++; bm.tokens += tok; if (src === 'exact' || src === 'estimated') bm.metered++; bm.cost += cost; bm.cacheReadTokens += numTok(r.cacheReadTokens) || 0;
     bm.promptTokens += pt; bm.completionTokens += ct;
     if (r.error || (r.status && r.status >= 400)) bm.errors++;
     const a = r.account || 'unknown';
     const ba = b.byAccount[a] || (b.byAccount[a] = { requests: 0, errors: 0, tokens: 0, metered: 0, cost: 0 });
     ba.requests++;
     if (r.error || (r.status && r.status >= 400)) ba.errors++;
-    if (src !== 'none') ba.metered++;
+    if (src === 'exact' || src === 'estimated') ba.metered++;
     ba.tokens += tok; ba.cost += cost;
   }
   return { ...b, ...turnCounters(turns), ...(rtk.calls > 0 ? { rtk } : {}) };
@@ -182,6 +183,9 @@ function cachedDailyStats(days) {
       exact: b.exact || 0,
       estimated: b.estimated || 0,
       none: b.none || 0,
+      // 本地应答（额度探测/标题生成等），根本没调上游；与 none 分开，
+      // 否则前端「计量覆盖率」的分母会含上这些本就不该有计量的请求。
+      local: b.local || 0,
       unmetered: b.none != null ? b.none : b.requests - b.metered,
       tokensLost: b.tokensLost || 0,
       priced: b.priced || 0,

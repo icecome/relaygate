@@ -19,6 +19,12 @@ export interface DailyStat {
   exact?: number;
   estimated?: number;
   none?: number;
+  /**
+   * 本地应答的请求数（额度探测/标题生成等固定问题，网关直接应答、**没调上游**）。
+   * 与 none 分开：并进 metered 会虚高覆盖率，并进 none 会把覆盖率分母拉低。
+   * 这些行按约定不写任何 token 字段。
+   */
+  local?: number;
   /** token 字段被历史脱敏缺陷写成 '***' 而无法还原的行数（该日 token 总量是下界）。 */
   tokensLost?: number;
   /** 能算出估算积分的行数；远小于请求数时说明该日估算总量是下界。 */

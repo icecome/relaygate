@@ -122,11 +122,16 @@ function costOf(r) {
  *   exact     上游回传的真实 usage，可当账单口径
  *   estimated tiktoken 补算，数值但非账单口径，只作趋势
  *   none      完全没有 token（错误请求，或上游不带 usage 且补算未开）
+ *   local     网关**本地应答**（额度探测/标题生成等固定问题），根本没调上游
  *
- * 三者必须分开：metered（有数值）把 exact 与 estimated 混在一起，
- * 前端若把 unmetered 读作补算数就是错的——unmetered 实际是 none。
+ * 四者必须分开，尤其 `local` 不能并进 `none`：
+ *   - 并进 metered 会把「没调上游」算成「上游回了真值」，虚高覆盖率；
+ *   - 并进 none 会让「计量覆盖率」的分母含上这些本就不该有计量的请求，
+ *     覆盖率被无端拉低（见前端 meteredRate 的算法）。
+ * `local` 行按约定**不写任何 token 字段**（写 0 会被 isMetered 判成 exact）。
  */
 function tokenSource(r) {
+  if (r.localAnswer != null) return 'local';
   if (r.tokensEstimated === true) return 'estimated';
   if (isMetered(r)) return 'exact';
   return 'none';
@@ -191,7 +196,7 @@ function dailyStats(lines) {
     if (!byDay[day]) {
       byDay[day] = {
         date: day, requests: 0, errors: 0, tokens: 0, metered: 0,
-        exact: 0, estimated: 0, none: 0, tokensLost: 0, priced: 0, costUpper: 0,
+        exact: 0, estimated: 0, none: 0, local: 0, tokensLost: 0, priced: 0, costUpper: 0,
         estimatedCost: 0, cacheReadTokens: 0, byModel: {},
       };
       turnsByDay[day] = turnBuckets();
@@ -220,7 +225,9 @@ function dailyStats(lines) {
     if (r.error || (r.status && r.status >= 400)) d.errors++;
     const src = tokenSource(r);
     d[src]++;
-    if (src !== 'none') d.metered++;
+    // metered 只算「真的从上游拿到/补算出数值」的两类。local 根本没调上游，
+    // 计入会让计量覆盖率虚高。
+    if (src === 'exact' || src === 'estimated') d.metered++;
     // token 字段被脱敏成 "***"：历史脱敏缺陷的痕迹，原值从未写入文件，不可还原。
     // 数字字符串（"49569"）可完整还原，numTok 已接受，不算丢失。
     if (isMasked(r.totalTokens) || isMasked(r.promptTokens)) d.tokensLost++;

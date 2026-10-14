@@ -4420,4 +4420,64 @@ t('effort：reasoning_effort 命中档位表，high/xhigh 也按表上限而非�
   assert.strictEqual(resolveMaxTokens({ reasoningEffort: 'high' }).level, 'high');
 });
 
+console.log('本地应答的计量口径（第四类 local，不污染 exact 与覆盖率分母）');
+
+t('tokenSource：localAnswer 行归入 local，而不是 exact/none', () => {
+  const { tokenSource } = require('../log/stats');
+  assert.strictEqual(tokenSource({ localAnswer: 'quota' }), 'local');
+  assert.strictEqual(tokenSource({ localAnswer: 'title', promptTokens: 0 }), 'local', 'local 优先于其它判定');
+  // 反证：若本地应答也写 0 值 token 字段，会被 isMetered 判成 exact（上游真值）——所以按约定不写
+  assert.strictEqual(tokenSource({ promptTokens: 0, completionTokens: 0 }), 'exact',
+    '这就是「本地应答绝不能写 0 值 token 字段」的原因');
+  assert.strictEqual(tokenSource({ tokensEstimated: true }), 'estimated');
+  assert.strictEqual(tokenSource({}), 'none');
+});
+
+t('dailyStats：四类分开计数；metered 与 unmetered 都不含 local（覆盖率分母被保护）', () => {
+  const { dailyStats } = require('../log/stats');
+  const day = '2026-10-10';
+  const rows = [
+    { _day: day, model: 'glm-5', status: 200, promptTokens: 100, completionTokens: 10, totalTokens: 110 },
+    { _day: day, model: 'glm-5', status: 200, tokensEstimated: true, totalTokens: 50 },
+    { _day: day, model: 'glm-5', status: 200, localAnswer: 'quota' },
+    { _day: day, model: 'glm-5', status: 200, localAnswer: 'title' },
+    { _day: day, model: 'glm-5', status: 500, error: 'x' },
+  ];
+  const [d] = dailyStats(rows);
+  assert.strictEqual(d.requests, 5);
+  assert.strictEqual(d.exact, 1);
+  assert.strictEqual(d.estimated, 1);
+  assert.strictEqual(d.local, 2);
+  assert.strictEqual(d.none, 1);
+  assert.strictEqual(d.metered, 2, 'metered 只含 exact+estimated');
+  assert.strictEqual(d.unmetered, 1, 'unmetered 就是 none，不含 local');
+  assert.strictEqual(d.metered + d.unmetered, d.requests - d.local,
+    '覆盖率分母 = 请求数 − 本地应答数（前端的 meteredRate 正是这么算的）');
+  assert.strictEqual(d.tokens, 160, 'local 行不贡献 token');
+});
+
+t('stats-cache：local 计数与逐日口径一致，桶版本已递增', () => {
+  const fs = require('fs');
+  const { localDateKey } = require('../lib/util');
+  const { logsDir } = require('../lib/paths');
+  const sc = require('../log/stats-cache');
+  assert.ok(sc.BUCKET_VERSION >= 12, '桶版本必须递增，否则旧桶（无 local）会继续被读');
+  const day = localDateKey();
+  const dir = path.join(logsDir(), day);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'traffic.jsonl'), [
+    { ts: `${day}T03:00:00.000Z`, model: 'glm-5', account: 'a', status: 200, totalTokens: 7 },
+    { ts: `${day}T03:00:01.000Z`, model: 'glm-5', account: 'a', status: 200, localAnswer: 'title' },
+  ].map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf-8');
+  sc.clearCache();
+  const got = sc.cachedDailyStats(1).find((d) => d.date === day);
+  assert.ok(got);
+  assert.strictEqual(got.local, 1);
+  assert.strictEqual(got.exact, 1);
+  assert.strictEqual(got.metered, 1);
+  assert.strictEqual(got.unmetered, 0, 'local 不得落进 unmetered');
+  fs.rmSync(dir, { recursive: true, force: true });
+  sc.clearCache();
+});
+
 main();
