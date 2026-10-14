@@ -457,6 +457,37 @@ t('两分支都记账：count_tokens 不记（非上游消耗），messages 记�
   assert.strictEqual(logged[0].totalTokens, 4);
 });
 
+t('D5：工具结果带 is_error 时，流量日志记录 toolErrors（is_error 全链路生效）', async () => {
+  logged.length = 0;
+  upstreamStub.data = {
+    choices: [{ index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+  };
+  await post('/v1/messages', {
+    model: 'glm-5',
+    stream: false,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'f', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', is_error: true, content: 'ENOENT' }] },
+    ],
+  });
+  assert.strictEqual(logged.length, 1, '应记一条流量');
+  assert.strictEqual(logged[0].toolErrors, 1, 'is_error 必须被计入 toolErrors（丢了它模型会重试同一次调用）');
+  // 无错误工具结果时不该出现该字段（避免把「没测量」写成 0）
+  logged.length = 0;
+  await post('/v1/messages', {
+    model: 'glm-5',
+    stream: false,
+    messages: [
+      { role: 'user', content: [{ type: 'text', text: 'run it' }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: 'ok' }] },
+    ],
+  });
+  assert.strictEqual(logged.length, 1);
+  assert.strictEqual(logged[0].toolErrors, undefined, '无失败工具结果时不写该字段');
+});
+
 // 汇总
 
 async function main() {

@@ -33,10 +33,17 @@ function normalizeTraeMessages(messages) {
       continue;
     }
 
-    // role=tool：保留真实执行结果，供模型下一轮参考
+    // role=tool：保留真实执行结果，供模型下一轮参考。
+    // is_error 一并保留（内部信号）：它是「工具失败」的唯一标记，丢了模型会把
+    // 错误轨迹当正常结果、重试同一次调用。该字段**不上行**，由 buildBody 剥掉。
     if (m.role === 'tool') {
       const text = content.map((c) => (c && c.text != null ? c.text : JSON.stringify(c))).join('\n');
-      out.push({ role: 'tool', tool_call_id: m.tool_call_id || '', content: [{ type: 'text', text }] });
+      out.push({
+        role: 'tool',
+        tool_call_id: m.tool_call_id || '',
+        content: [{ type: 'text', text }],
+        ...(m.is_error === true ? { is_error: true } : {}),
+      });
       continue;
     }
 
@@ -56,4 +63,29 @@ function normalizeTraeMessages(messages) {
   return merged;
 }
 
-module.exports = { normalizeTraeMessages, toContentArray };
+/**
+ * 统计本次请求里标记为「失败」的工具结果数。
+ *
+ * is_error 是**内部信号**（Trae 协议没有该字段，由 buildBody 在上行前剥掉）。
+ * 它有两个用途：① 日志的 toolErrors——工具失败率是可观测的模型能力信号；
+ * ② 将来做工具输出压缩时必须跳过错误轨迹，否则模型失去唯一的失败证据，
+ * 会重试同一次调用，用户为这个循环付钱。
+ *
+ * 兼容两种形态：已归一化的 `{role:'tool', is_error}` 与 Anthropic 原生
+ * `{role:'user', content:[{type:'tool_result', is_error}]}`。
+ */
+function countToolErrors(messages) {
+  let n = 0;
+  for (const m of messages || []) {
+    if (!m) continue;
+    if (m.role === 'tool' && m.is_error === true) { n += 1; continue; }
+    if (Array.isArray(m.content)) {
+      for (const b of m.content) {
+        if (b && b.type === 'tool_result' && b.is_error === true) n += 1;
+      }
+    }
+  }
+  return n;
+}
+
+module.exports = { normalizeTraeMessages, toContentArray, countToolErrors };

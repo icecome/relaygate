@@ -22,6 +22,7 @@ const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
 const { estimateRequestTokens } = require('../lib/token-estimate');
 const { sniffHead } = require('../lib/sse-sniff');
+const { countToolErrors } = require('../transform/request');
 // 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
 // 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
 const { canUseModel, isVirtualModel } = require('../middleware/model-access');
@@ -62,7 +63,17 @@ function anthropicToOpenAI(messages) {
       if (blocks.some((b) => b.type === 'tool_result')) {
         for (const b of blocks) {
           if (b.type === 'tool_result') {
-            out.push({ role: 'tool', tool_call_id: b.tool_use_id || '', content: [{ type: 'text', text: blockToText(b) }] });
+            // is_error 必须保留：它区分「工具正常返回」与「工具执行失败」。
+            // 丢掉它，模型会把错误轨迹当正常结果读，于是重试同一次调用，
+            // 用户为这个循环付钱（参照项目对 RTK 的错误轨迹跳过有同源论证）。
+            // 注意：这是**内部信号**，不能上行——Trae 协议没有这个字段，
+            // 而实测未知字段会偶发 503。由 buildBody 在序列化前剥掉。
+            out.push({
+              role: 'tool',
+              tool_call_id: b.tool_use_id || '',
+              content: [{ type: 'text', text: blockToText(b) }],
+              ...(b.is_error === true ? { is_error: true } : {}),
+            });
           } else {
             out.push({ role: 'user', content: [{ type: 'text', text: blockToText(b) }] });
           }
@@ -235,6 +246,10 @@ router.post('/v1/messages', async (req, res) => {
   const built = anthropicToOpenAI(messages);
   const sys = systemMessage(system);
   if (sys) built.unshift(sys);
+  // 工具失败数：从**原始** Anthropic 形态统计（tool_result 上的 is_error）。
+  // 只有 Anthropic 入口能表达它——OpenAI 协议的 tool 消息没有这个字段，
+  // 故不要在 openai.js 那边也记一份「恒为 0」的口径。
+  const toolErrors = countToolErrors(messages);
 
   /** 两个分支共用的一条流量日志（字段口径必须一致，否则同端点出现两种统计口径）。 */
   const emitLog = () => {
@@ -246,6 +261,9 @@ router.post('/v1/messages', async (req, res) => {
       status: requestStatus,
       toolCalls: toolCallCount,
       toolsIn: tools ? tools.length : 0,
+      // 工具失败率（is_error 为内部信号，不上行；见 transform/request.js#countToolErrors）。
+      // Anthropic 入口是工具最密集的客户端（Claude Code），这项最有参考价值。
+      ...(toolErrors > 0 ? { toolErrors } : {}),
       durationMs: Date.now() - startedAt,
       error: requestError,
       stream: stream !== false,

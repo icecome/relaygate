@@ -4249,4 +4249,60 @@ t('请求上下文：logRequest 继承 turnId——跨 await 不丢、并发请�
   fs.rmSync(file, { force: true });
 });
 
+console.log('D5：工具结果的 is_error 全链路（内部信号，不上行）');
+
+t('normalizeTraeMessages：保留 tool 消息的 is_error（丢了模型会把错误轨迹当正常结果）', () => {
+  const { normalizeTraeMessages } = require('../transform/request');
+  const out = normalizeTraeMessages([
+    { role: 'assistant', tool_calls: [{ id: 'c1', function: { name: 'f', arguments: '{}' } }] },
+    { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'ENOENT' }], is_error: true },
+    { role: 'tool', tool_call_id: 'c2', content: [{ type: 'text', text: 'ok' }] },
+  ]);
+  const tools = out.filter((m) => m.role === 'tool');
+  assert.strictEqual(tools[0].is_error, true, '失败的工具结果必须保留标记');
+  assert.strictEqual(tools[1].is_error, undefined, '正常结果不该被加上标记');
+});
+
+t('countToolErrors：兼容归一化形态与 Anthropic 原生 tool_result 两种写法，且不重复计数', () => {
+  const { countToolErrors } = require('../transform/request');
+  assert.strictEqual(countToolErrors([
+    { role: 'tool', is_error: true },
+    { role: 'tool' },
+    { role: 'tool', is_error: true },
+  ]), 2);
+  assert.strictEqual(countToolErrors([
+    { role: 'user', content: [{ type: 'tool_result', is_error: true }, { type: 'text', text: 'x' }] },
+    { role: 'user', content: [{ type: 'tool_result' }] },
+  ]), 1);
+  assert.strictEqual(countToolErrors([]), 0);
+  assert.strictEqual(countToolErrors(null), 0);
+  // 归一化后的 tool 消息即使 content 里带 tool_result 也只算一次
+  assert.strictEqual(countToolErrors([{ role: 'tool', is_error: true, content: [{ type: 'tool_result', is_error: true }] }]), 1);
+});
+
+t('buildBody：内部字段 is_error 必须在序列化前剥掉（未知字段会偶发 503）', () => {
+  const { buildBody } = require('../upstream/client');
+  const body = buildBody([
+    { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'tool', tool_call_id: 'c1', content: [{ type: 'text', text: 'ENOENT' }], is_error: true },
+  ], 'glm-5', false, {}, null);
+  const msgs = body.messages;
+  assert.strictEqual(msgs.length, 2, '消息条数不变（不是过滤掉整条）');
+  assert.ok(!('is_error' in msgs[1]), 'is_error 不得上行');
+  assert.strictEqual(msgs[1].role, 'tool', '其余字段原样保留');
+  assert.strictEqual(msgs[1].tool_call_id, 'c1');
+  // 没有内部字段时不应产生无谓的拷贝
+  const same = buildBody([{ role: 'user', content: 'x' }], 'glm-5', false, {}, null);
+  assert.deepStrictEqual(same.messages, [{ role: 'user', content: 'x' }]);
+});
+
+t('anthropicToOpenAI：tool_result 的 is_error 被带到归一化消息上（供计数与将来压缩跳过）', () => {
+  // 该函数未单独导出，通过路由行为间接验证成本高；此处校验 countToolErrors
+  // 对 Anthropic 原始形态的识别已覆盖同一语义（见上一条），
+  // 并静态确认路由构建处确实透传了 is_error。
+  const src = require('fs').readFileSync(require.resolve('../routes/anthropic'), 'utf8');
+  assert.ok(/b\.is_error === true \? \{ is_error: true \}/.test(src), 'anthropic 路由必须透传 is_error');
+  assert.ok(/countToolErrors\(messages\)/.test(src), 'anthropic 路由必须统计 toolErrors');
+});
+
 main();

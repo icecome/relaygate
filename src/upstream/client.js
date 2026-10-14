@@ -122,8 +122,27 @@ function buildBody(messages, model, stream, options, authInfo) {
   const funcName = options?.function
     || (workOn && baseFunc !== 'inline_chat' ? 'solo_work_lite' : baseFunc);
 
+  /**
+   * 上行前剥掉**仅供内部使用**的字段。
+   *
+   * messages 是原样进 body 的，任何内部标记都会随之上行——而参照项目实测过
+   * 「未知字段偶发 503」。`is_error` 是唯一这类字段：它标记工具执行失败，
+   * 供统计与将来的工具输出压缩跳过错误轨迹用，Trae 协议并不认识它。
+   *
+   * 新增内部字段时**必须**加进这里，否则会静默泄漏到上游。
+   */
+  const INTERNAL_MESSAGE_FIELDS = ['is_error'];
+  const wireMessages = INTERNAL_MESSAGE_FIELDS.some((f) => messages && messages.some && messages.some((m) => m && f in m))
+    ? messages.map((m) => {
+      if (!m || typeof m !== 'object') return m;
+      const copy = { ...m };
+      for (const f of INTERNAL_MESSAGE_FIELDS) delete copy[f];
+      return copy;
+    })
+    : messages;
+
   const body = {
-    messages,
+    messages: wireMessages,
     function: funcName,
     stream: stream !== false,
   };
