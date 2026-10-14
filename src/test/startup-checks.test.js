@@ -164,6 +164,51 @@ t('model-router.json 不存在 → 可选配置，通过', () => {
   });
 });
 
+t('D13：工作区文件损坏时必须报不健康——即使仓库模板完好（此前会漏报）', () => {
+  withRoot({ 'model-router.json': JSON.stringify({ virtualModels: { 'vm/ok': {} } }) }, (root) => {
+    // 模板完好，工作区文件损坏：路由实际读工作区那份，必须被检查到
+    const ws = pathMod.join(root, 'workspace');
+    fsMod.mkdirSync(ws, { recursive: true });
+    fsMod.writeFileSync(pathMod.join(ws, 'model-router.json'), '{{{ broken', 'utf8');
+    const r = checks.checkModelRouter({ ROOT: root, workspaceDir: ws }, fsMod, pathMod);
+    assert.strictEqual(r.ok, false, '工作区文件损坏必须报不健康（此前因只读模板而漏报）');
+    assert.match(r.detail, /工作区/, 'detail 必须说明检查的是哪个来源');
+  });
+});
+
+t('D13：仓库模板损坏但工作区文件正常时不得误报', () => {
+  withRoot({ 'model-router.json': '{{{ broken' }, (root) => {
+    const ws = pathMod.join(root, 'workspace');
+    fsMod.mkdirSync(ws, { recursive: true });
+    fsMod.writeFileSync(
+      pathMod.join(ws, 'model-router.json'),
+      JSON.stringify({ virtualModels: { 'vm/a': { candidates: [{ provider: 'trae', model: 'glm-5.3' }] } } }),
+      'utf8',
+    );
+    const r = checks.checkModelRouter({ ROOT: root, workspaceDir: ws }, fsMod, pathMod);
+    assert.strictEqual(r.ok, true, `路由不用模板，模板损坏不该让 /health 报不健康：${r.detail}`);
+    assert.match(r.detail, /工作区/);
+    assert.match(r.detail, /1 个虚拟模型/);
+  });
+});
+
+t('校准表死条目在 detail 中提示（曾因候选键漂移导致整表静默失效）', () => {
+  withRoot({}, (root) => {
+    const ws = pathMod.join(root, 'workspace');
+    fsMod.mkdirSync(ws, { recursive: true });
+    // 候选键故意与校准表（provider/model 形态）不一致
+    fsMod.writeFileSync(
+      pathMod.join(ws, 'model-router.json'),
+      JSON.stringify({ virtualModels: { 'vm/a': { candidates: [{ provider: 'workbuddy', model: 'hy3' }] } } }),
+      'utf8',
+    );
+    const r = checks.checkModelRouter({ ROOT: root, workspaceDir: ws }, fsMod, pathMod);
+    assert.strictEqual(r.ok, true, '死条目只是提示，不应把 /health 打成不健康');
+    assert.match(r.detail, /校准表/, `应提示校准表未命中，实际：${r.detail}`);
+    assert.match(r.detail, /workbuddy\/wb\/hy3/);
+  });
+});
+
 // 汇总
 
 console.log('startup-checks — 汇总语义');

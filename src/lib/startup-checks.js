@@ -98,23 +98,58 @@ function checkModelConfig(config, fsMod, pathMod) {
   return { name: 'modelConfig', ok: true, detail: `${n} 个模型` };
 }
 
-/** 模型路由配置是否可用。 */
+/**
+ * 模型路由配置是否可用。
+ *
+ * 必须与实际使用的文件一致：model-router/store.js 读
+ * `<workspaceDir>/model-router.json`，缺失时才回退仓库内模板
+ * `<ROOT>/model-router.json`（见 store.js#readSourceFile）。
+ * 此前这里固定读 ROOT 模板，两边看的是不同文件，两个方向的误判都会发生：
+ *   - 工作区文件损坏 → 模板仍能解析 → /health 报 ok，而这恰恰是本检查要拦的场景；
+ *   - 模板损坏但工作区文件正常 → /health 报不健康，而路由根本不用那个文件。
+ * 故按同一顺序解析，并把实际检查到的来源写进 detail。
+ *
+ * 同时顺带报告「校准表里没有任何候选与之匹配」的条目：候选键是
+ * `${provider}/${model}`，配置漂移（例如候选 model 从 `wb/hy3` 改成 `hy3`）会让
+ * 整张校准表静默失效，守门按虚高窗口放行，直到上游 11115 才暴露——实测曾一天
+ * 造成 64 条 400。这里只作为 detail 提示（不降低 ok），避免合法地删掉某个模型后
+ * /health 变成长期告警。
+ */
 function checkModelRouter(config, fsMod, pathMod) {
-  const file = pathMod.join(config.ROOT, 'model-router.json');
+  const wsFile = pathMod.join(config.workspaceDir || config.ROOT, 'model-router.json');
+  const tplFile = pathMod.join(config.ROOT, 'model-router.json');
+  const file = fsMod.existsSync(wsFile) ? wsFile : tplFile;
+  const from = file === wsFile ? '工作区' : '仓库模板';
   if (!fsMod.existsSync(file)) {
     return { name: 'modelRouter', ok: true, detail: '未配置虚拟模型（可选）' };
   }
+  let raw;
   try {
-    const raw = JSON.parse(fsMod.readFileSync(file, 'utf8'));
-    const n = Object.keys((raw && raw.virtualModels) || {}).length;
-    return { name: 'modelRouter', ok: true, detail: `${n} 个虚拟模型` };
+    raw = JSON.parse(fsMod.readFileSync(file, 'utf8'));
   } catch (e) {
     return {
       name: 'modelRouter',
       ok: false,
-      detail: `model-router.json 解析失败：${e.message}（vm/* 会被当作物理模型发给上游，必然 400）`,
+      detail: `model-router.json 解析失败（${from} ${file}）：${e.message}（vm/* 会被当作物理模型发给上游，必然 400）`,
     };
   }
+  const virtualModels = (raw && raw.virtualModels) || {};
+  const n = Object.keys(virtualModels).length;
+  const keys = new Set();
+  for (const vm of Object.values(virtualModels)) {
+    for (const c of (vm && vm.candidates) || []) {
+      if (c && c.provider && c.model) keys.add(`${c.provider}/${c.model}`);
+    }
+  }
+  let calibNote = '';
+  try {
+    const table = require('../model-router/window-calibration').CALIBRATED_WINDOW;
+    const dead = Object.keys(table).filter((k) => !keys.has(k));
+    if (dead.length) {
+      calibNote = `；窗口校准表有 ${dead.length} 项未命中任何候选（已静默失效）：${dead.slice(0, 3).join('、')}${dead.length > 3 ? ' 等' : ''}`;
+    }
+  } catch { /* 校准表不可读不影响主检查 */ }
+  return { name: 'modelRouter', ok: true, detail: `${n} 个虚拟模型（${from}）${calibNote}` };
 }
 
 /**

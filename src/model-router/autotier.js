@@ -20,6 +20,21 @@ const health = require('./health');
 const { estimateRequestTokens } = require('../lib/token-estimate');
 const windowCalib = require('./window-calibration');
 
+/**
+ * 守门余量：估算输入超过候选有效窗口的这个比例时跳过该候选。
+ *
+ * **不要按字面理解这个 0.75 就动手把它调小**。lib/token-estimate 的启发式是
+ * 单向系统性偏低的：用本仓库自带的对照数据（traffic 日志里成功行同时记
+ * `tokenEstimate` 与上游真值 `promptTokens`）实测 1272 组样本，
+ * 上游真值/估算 的比值 p50 = 1.185、p95 = 1.304、max = 1.325，
+ * **高估超过 20% 的样本为 0**。因此 0.75 的名义余量实际约等于
+ * 「放行到真实窗口的 ~89%」，正贴近上游硬顶。
+ *
+ * 这个形态是经过验证的：27 天全量流量里本地守门**一次误拒都没有**
+ * （`no candidate can fit` 0 行），代价只有「撞上游 100000 硬顶」的极尾样本
+ * （实测 11115 报文集中在一天 64 条，估算比值恰为分布最大值 1.33）。
+ * 减小余量会开始误拒本可成功的大请求，增大余量则让更多请求撞上游硬顶。
+ */
 const CONTEXT_INPUT_HEADROOM_RATIO = 0.75;
 
 /**
