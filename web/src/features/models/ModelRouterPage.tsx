@@ -5,6 +5,7 @@
 import { Fragment, useMemo, useState } from 'react';
 import { useAuth } from '../../shared/api/auth';
 import {
+  deleteProvider,
   deleteVirtual,
   getRouterOverview,
   patchCandidate,
@@ -199,6 +200,31 @@ export default function ModelRouterPage() {
     }
   }
 
+  /**
+   * 删除第三方 Provider。
+   * 只对 type=openai 的端点开放：内置 trae/workbuddy 是账号池的落地实现，
+   * 后端也会拒绝，面板不给出按钮以免误导。删除会连带清掉引用它的候选。
+   */
+  async function removeProvider(id: string, label: string) {
+    const ok = await prompt({
+      title: `删除上游 Provider ${label || id}？`,
+      message: '引用该 Provider 的候选会一并移除，此操作不可撤销。',
+      okText: '删除',
+      danger: true,
+    });
+    if (ok !== true) return;
+    setBusy(`provider:${id}`);
+    try {
+      await deleteProvider(id, key);
+      toast('已删除', 'ok');
+      overview.reload();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '删除失败', 'err');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function patchCandidateFlags(
     virtualId: string,
     candidateId: string,
@@ -257,6 +283,7 @@ export default function ModelRouterPage() {
                   <th className="th cell-num">模型数</th>
                   <th className="th cell-num">超时</th>
                   <th className="th">Base URL</th>
+                  <th className="th cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -296,6 +323,22 @@ export default function ModelRouterPage() {
                     </td>
                     <td className="td cell-num">{p.timeoutMs ? formatDuration(p.timeoutMs) : '—'}</td>
                     <td className="td font-mono text-[11px] break-all">{p.baseUrl || '—'}</td>
+                    <td className="td cell-act">
+                      {p.type === 'builtin' ? (
+                        <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          内置，不可删除
+                        </span>
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="danger"
+                          disabled={busy === `provider:${p.id}`}
+                          onClick={() => removeProvider(p.id, p.label)}
+                        >
+                          删除
+                        </Button>
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>

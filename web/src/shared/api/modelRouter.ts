@@ -82,6 +82,17 @@ export interface AutoTierSyncResult {
 export const getRouterOverview = (key: string, signal?: AbortSignal) =>
   api<RouterOverview>('/v1/admin/model-router/overview', { signal }, key);
 
+/**
+ * 删除 Provider（仅第三方 OpenAI 兼容端点；内置 trae/workbuddy 由后端拒绝）。
+ * 后端会同时清掉引用该 Provider 的候选，避免留下悬空引用。
+ */
+export const deleteProvider = (id: string, key: string) =>
+  api<{ object: string; id: string }>(
+    `/v1/admin/model-router/providers/${encodeURIComponent(id)}`,
+    { method: 'DELETE' },
+    key,
+  );
+
 export const upsertVirtual = (id: string, body: Partial<VirtualModel>, key: string) =>
   api<{ data: VirtualModel }>(
     `/v1/admin/model-router/virtual/${encodeURIComponent(id)}`,

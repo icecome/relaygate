@@ -5,7 +5,7 @@
  */
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useAuth } from '../../shared/api/auth';
+import { setKey, useAuth } from '../../shared/api/auth';
 import { getClientConfig } from '../../shared/api/admin';
 import {
   createAccessKey,
@@ -63,6 +63,8 @@ export default function AccessKeysPage() {
 
   const [filter, setFilter] = useState<Filter>('all');
   const [fresh, setFresh] = useState<CreatedKey | null>(null);
+  // 登录密钥明文单独展示：不附带「客户端接入」面板（那是访问密钥的 IDE 配置指引）
+  const [loginFresh, setLoginFresh] = useState<CreatedKey | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showLoginInput, setShowLoginInput] = useState(false);
 
@@ -198,6 +200,38 @@ export default function AccessKeysPage() {
       toast('已复制', 'ok');
     } catch {
       toast('复制失败，请手动选择文本', 'err');
+    }
+  }
+
+  async function copyLoginPlaintext() {
+    if (!loginFresh) return;
+    try {
+      await navigator.clipboard.writeText(loginFresh.key);
+      toast('已复制', 'ok');
+    } catch {
+      toast('复制失败，请手动选择文本', 'err');
+    }
+  }
+
+  /**
+   * 取回当前登录密钥的明文（后端 key_enc 有密文备份）。
+   * 覆盖「已配置但手头没明文」的场景，避免只能再重置一次。
+   */
+  async function revealLoginKey() {
+    const id = loginKeyRow?.id;
+    if (!id) {
+      toast('尚未配置登录密钥', 'err');
+      return;
+    }
+    setBusyId('__reveal_login__');
+    try {
+      const r = await revealAccessKey(id, key);
+      setLoginFresh({ id: r.id, key: r.key, label: loginKeyRow?.label || undefined });
+      toast('已显示登录密钥明文', 'ok');
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '读取明文失败', 'err');
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -347,36 +381,94 @@ export default function AccessKeysPage() {
           </>
         )}
 
+        {loginFresh && (
+          <Panel
+            title="登录密钥明文"
+            description="当前会话已切换到该密钥，无需重新登录"
+            actions={
+              <>
+                <Button size="sm" onClick={copyLoginPlaintext}>
+                  复制
+                </Button>
+                <Button size="sm" variant="ghost" onClick={() => setLoginFresh(null)}>
+                  关闭
+                </Button>
+              </>
+            }
+          >
+            <div
+              className="rounded-md border p-3 font-mono text-[13px] break-all select-all"
+              style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+            >
+              {loginFresh.key}
+            </div>
+            <div className="mt-3">
+              <Note tone="warn">
+                请立即复制并妥善保存。明文只在这里显示一次，关闭后列表仅保留掩码
+                （必要时可用「查看明文」按密文备份取回）。登录密钥用于打开管理面板，
+                不需要配置到 IDE；IDE 用的是访问密钥。
+              </Note>
+            </div>
+          </Panel>
+        )}
+
         <Panel
           title="登录密钥"
           description="用于打开本管理面板，与访问密钥相互独立"
           actions={
             <>
+              {loginKeyRow && (
+                <Button
+                  size="sm"
+                  disabled={busyId === '__reveal_login__'}
+                  onClick={revealLoginKey}
+                >
+                  {busyId === '__reveal_login__' ? '读取中…' : '查看明文'}
+                </Button>
+              )}
               <Button size="sm" onClick={() => setShowLoginInput(true)}>
                 输入密钥
               </Button>
               <Button
                 size="sm"
+                disabled={busyId === '__reset_login__'}
                 onClick={async () => {
                   const label = await prompt({
                     title: '重置登录密钥？',
-                    message: '重置后旧登录密钥立即失效，当前会话将回到首登引导。',
+                    message:
+                      '重置后旧登录密钥立即失效。新明文只显示一次，请先复制保存；当前会话会自动切换到新密钥，不会被退出。',
                     input: { label: '备注', value: 'login' },
                     okText: '重置',
                     danger: true,
                   });
                   if (typeof label !== 'string') return;
+                  setBusyId('__reset_login__');
                   try {
                     const created = await resetLoginKey(label.trim() || 'login', key);
-                    revealFresh(created);
-                    loginKeys.reload();
+                    // 后端在异常契约下可能不带明文；此时绝不能 setKey(空)，
+                    // 那等于把会话清掉并丢掉唯一一次的新密钥展示机会。
+                    if (!created || typeof created.key !== 'string' || !created.key) {
+                      toast('已重置，但响应未包含新明文，请用 CLI 重新取密钥', 'err');
+                      return;
+                    }
+                    // 顺序关键：先切换会话密钥，再展示明文。
+                    // 后端 createKey 已把旧 login 密钥置为 enabled=0，若此时
+                    // 仍用旧 key 发 GET /login-key，会得到 401 Invalid login key
+                    // → http 层 clearKey + 派发 auth-lost → 本组件连同刚拿到的
+                    // 新明文一起卸载，用户被踢回首登引导且无处粘贴新密钥。
+                    // key 变化会让列表 / 登录密钥 / 接入配置三个 useAsyncData
+                    // 自动用新密钥重拉，无需手动 reload。
+                    setKey(created.key);
+                    setLoginFresh(created);
                     toast('登录密钥已重置，请立即复制保存', 'ok');
                   } catch (e) {
                     toast(e instanceof ApiError ? e.message : '重置失败', 'err');
+                  } finally {
+                    setBusyId(null);
                   }
                 }}
               >
-                重置登录密钥
+                {busyId === '__reset_login__' ? '重置中…' : '重置登录密钥'}
               </Button>
             </>
           }

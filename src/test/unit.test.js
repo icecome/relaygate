@@ -2428,6 +2428,56 @@ t('orderCandidates：置顶候选被禁用后退出轮转池', () => {
   assert.ok(firsts.has('a'), '剩余候选仍应可被选中');
   store.removeVirtual('vm/pin-off');
 });
+t('removeSeededExampleProviders：只清种子指纹未动的示例，改过的真实端点保留', () => {
+  const store = require('../model-router/store');
+  // 种子里那条示例（label/baseUrl/apiKeyEnv 均未改、enabled=false）应被清掉，
+  // 且引用它的候选一并移除；用户改成自己端点的（label 已改）必须保留。
+  store.upsertProvider('deepseek-seed', {
+    type: 'openai',
+    label: 'DeepSeek（示例）',
+    enabled: false,
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+  });
+  store.upsertProvider('my-endpoint', {
+    type: 'openai',
+    label: '我的自建端点',
+    enabled: true,
+    baseUrl: 'https://my.example.com/v1',
+    apiKeyEnv: 'MY_KEY',
+  });
+  store.upsertVirtual('vm/seed-cleanup', {
+    candidates: [
+      { id: 'seed', provider: 'deepseek-seed', model: 'deepseek-chat' },
+      { id: 'mine', provider: 'my-endpoint', model: 'my-model' },
+    ],
+  });
+
+  const removed = store.removeSeededExampleProviders();
+  assert.deepStrictEqual(removed, ['deepseek-seed'], '只应移除种子示例');
+  assert.ok(!store.getProvider('deepseek-seed'), '示例 Provider 应已删除');
+  assert.ok(store.getProvider('my-endpoint'), '用户改过的真实端点必须保留');
+  assert.deepStrictEqual(
+    store.getVirtual('vm/seed-cleanup').candidates.map((c) => c.id),
+    ['mine'],
+    '引用示例的候选应一并清理，不留悬空引用',
+  );
+  assert.deepStrictEqual(store.removeSeededExampleProviders(), [], '幂等：再跑一次不应有变化');
+
+  // 用户显式启用过该示例 = 有效配置，不能被自动清理
+  store.upsertProvider('deepseek-seed', {
+    type: 'openai',
+    label: 'DeepSeek（示例）',
+    enabled: true,
+    baseUrl: 'https://api.deepseek.com/v1',
+    apiKeyEnv: 'DEEPSEEK_API_KEY',
+  });
+  assert.deepStrictEqual(store.removeSeededExampleProviders(), [], '已启用则视为有效配置，保留');
+
+  store.removeProvider('deepseek-seed');
+  store.removeProvider('my-endpoint');
+  store.removeVirtual('vm/seed-cleanup');
+});
 console.log('usage 计量与 token 补算');
 t('usageToLogFields：蛇形/驼峰键名，全 0 视为未计量', () => {
   const mr = require('../model-router');

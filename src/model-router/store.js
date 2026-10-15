@@ -243,6 +243,48 @@ function reload() {
   return load();
 }
 
+/**
+ * 清理历史种子里的示例 Provider（一次性、幂等）。
+ *
+ * 背景：`model-router.json` 模板早期内置了一个演示用的第三方 Provider
+ * （label `DeepSeek（示例）`，baseUrl api.deepseek.com，apiKeyEnv DEEPSEEK_API_KEY，
+ * enabled=false），用于向首次使用者展示「第三方 OpenAI 兼容端点」长什么样。
+ * 该条目已在仓库模板中删除（commit 8ea262b），但**工作区运行期副本没跟着走**：
+ * 模板是只读回退，真正被面板读取的是 `<workspaceDir>/model-router.json`，
+ * 于是升级后「上游 Provider」表里仍一直显示这个示例，用户以为它是真实配置。
+ *
+ * 判定按**种子指纹**而非 provider id：label、baseUrl、apiKeyEnv 三项都还保持
+ * 原样，且 enabled 仍为 false（种子就是停用的），才认定是「没人动过的示例」。
+ * 用户若已经把它改成自己的真实端点，或显式启用过它，那是有效配置，必须保留——
+ * 按 id 一刀切会误删真实凭据配置。这类被用户动过的条目改由面板的删除按钮处理。
+ *
+ * @returns {string[]} 被移除的 Provider id 列表
+ */
+function removeSeededExampleProviders() {
+  const c = load();
+  const removed = [];
+  for (const [id, p] of Object.entries(c.providers || {})) {
+    if (!p || p.type !== 'openai') continue;
+    const isSeed =
+      p.label === 'DeepSeek（示例）'
+      && String(p.baseUrl || '') === 'https://api.deepseek.com/v1'
+      && String(p.apiKeyEnv || '') === 'DEEPSEEK_API_KEY'
+      && p.enabled === false;
+    if (!isSeed) continue;
+    delete c.providers[id];
+    // 与 removeProvider 同口径：一并清掉引用它的候选，避免留下悬空引用
+    for (const vm of Object.values(c.virtualModels || {})) {
+      vm.candidates = (vm.candidates || []).filter((x) => x.provider !== id);
+    }
+    removed.push(id);
+  }
+  if (removed.length) {
+    cache = c;
+    save();
+  }
+  return removed;
+}
+
 /** 更新单个虚拟模型的候选列表与排序（autotier 专用；不改动其余配置）。 */
 function setVirtualCandidates(id, candidates, extra = {}) {
   const c = load();
@@ -269,6 +311,7 @@ module.exports = {
   getProvider,
   upsertProvider,
   removeProvider,
+  removeSeededExampleProviders,
   listVirtual,
   getVirtual,
   upsertVirtual,

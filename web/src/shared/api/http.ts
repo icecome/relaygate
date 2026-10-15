@@ -77,7 +77,12 @@ function isLoginKeyRejection(status: number, type?: string, message?: string): b
   return false;
 }
 
-function handleAuthLost(): void {
+function handleAuthLost(requestKey: string): void {
+  // 会话密钥已前进时（如面板重置登录密钥后 setKey 到新明文），
+  // 用旧密钥发出的在途请求必然收到 401。那是过期凭据的余波，不是登录失效；
+  // 若照样清密钥并广播 auth-lost，刚生成的新明文会随组件卸载一起消失，
+  // 用户被锁在面板外，只能回服务器重跑 CLI。
+  if (requestKey && getKey() !== requestKey) return;
   const had = !!getKey();
   clearKey();
   if (had) {
@@ -164,7 +169,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions, key: string): P
       } catch {
         // 响应体非 JSON，保留 HTTP 状态码作为信息
       }
-      if (isLoginKeyRejection(r.status, type, msg)) handleAuthLost();
+      if (isLoginKeyRejection(r.status, type, msg)) handleAuthLost(key);
       throw new ApiError(r.status, msg, type, details);
     }
 

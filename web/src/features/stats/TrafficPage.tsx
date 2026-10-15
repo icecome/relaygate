@@ -13,10 +13,11 @@ import {
   getTraffic,
   testChat,
   type TrafficResponse,
+  type TrafficRow,
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
-import { formatCost, formatDuration, formatNumber, formatTime } from '../../shared/lib/format';
+import { formatDuration, formatNumber, formatTime } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -42,6 +43,24 @@ interface TestResult {
   finishReason?: string;
   message?: string;
   content?: string;
+}
+
+/**
+ * 该行实际命中的上游模型名。
+ *
+ * 必须优先取 pricedModel（日志侧按真实命中的候选写入）：虚拟模型行的 model 是
+ * 对外 ID（如 vm/unified-chat），上游模型名只存在于 pricedModel / routedTo。
+ * 历史行没有 pricedModel 时退回解析 routedTo（形如 "trae/qwen3.8-flash@max"，
+ * 取最后一段），最后才用 model。与后端 log/stats.js#pricedModelOf 同口径。
+ */
+function upstreamModelOf(r: TrafficRow): string {
+  if (r.pricedModel) return r.pricedModel;
+  const rt = r.routedTo || '';
+  if (rt) {
+    const seg = rt.split('/').filter(Boolean).pop();
+    if (seg) return seg;
+  }
+  return r.model || '';
 }
 
 export default function TrafficPage() {
@@ -72,6 +91,17 @@ export default function TrafficPage() {
 
   const summary = traffic.data?.summary;
   const rows = traffic.data?.data ?? [];
+  // 序号列按**当前展示顺序**连续编号（跨页接续），不直接用日志里的 seq。
+  // seq 是进程内自增计数器：网关重启会从 1 重新开始，同一天内因此出现多段
+  // 互不衔接的编号（实测某日 48 次回退），而表格是按时间新→旧排序的，
+  // 直接显示 seq 就会呈现「时间有序、序号乱序」。它只用于排查，不代表排序。
+  //
+  // 偏移取**后端实际生效**的页码与页长，而不是本地状态：后端会把越界的 page
+  // 钳到 totalPages，数据随时间窗收缩时本地 page 可能已越界，用本地值会让
+  // 编号与「第 N 页」的显示一起错位。
+  const effPage = traffic.data?.page ?? page;
+  const pageSize = traffic.data?.pageSize ?? 50;
+  const rowNo = (i: number) => (effPage - 1) * pageSize + i + 1;
 
   const metrics = [
     { key: '总请求', value: formatNumber(traffic.data?.total) },
@@ -161,7 +191,7 @@ export default function TrafficPage() {
             <Button onClick={traffic.reload}>刷新</Button>
           </div>
           <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-            第 {page} / {traffic.data?.totalPages ?? 1} 页
+            第 {effPage} / {traffic.data?.totalPages ?? 1} 页
           </span>
         </>
       }
@@ -195,11 +225,11 @@ export default function TrafficPage() {
                   <th className="th">时间</th>
                   <th className="th">接口</th>
                   <th className="th">模型</th>
+                  <th className="th">上游模型</th>
                   <th className="th">账号</th>
                   <th className="th">状态</th>
                   <th className="th cell-num">耗时</th>
                   <th className="th cell-num">Token</th>
-                  <th className="th cell-num">估算成本</th>
                 </tr>
               </thead>
               <tbody>
@@ -207,15 +237,18 @@ export default function TrafficPage() {
                   const bad = r.error || (typeof r.status === 'number' && r.status >= 400);
                   return (
                     <tr
-                      key={r.seq ?? i}
+                      // seq 是进程内计数器，网关重启会重复（同一天内可多次回到 1），
+                      // 单用它当 key 会撞键。拼上时间与下标保证唯一。
+                      key={`${r.ts ?? ''}-${r.seq ?? ''}-${i}`}
                       className={bad ? 'row-hover cursor-pointer' : 'row-hover'}
                       onClick={bad ? () => setFailed(r) : undefined}
                       title={bad ? '点击查看失败详情' : undefined}
                     >
-                      <td className="td cell-num font-mono text-[11px]" data-label="#">{r.seq ?? '—'}</td>
+                      <td className="td cell-num font-mono text-[11px]" data-label="#">{rowNo(i)}</td>
                       <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
                       <td className="td font-mono text-[11px] break-all" data-label="接口">{r.endpoint || '—'}</td>
                       <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
+                      <td className="td font-mono text-[12px] break-all" data-label="上游模型">{upstreamModelOf(r) || '—'}</td>
                       <td className="td font-mono text-[12px]" data-label="账号">{r.account || '—'}</td>
                       <td className="td" data-label="状态">
                         <Chip tone={bad ? 'danger' : 'ok'} dot={bad ? 'dot-error' : 'dot-ok'}>
@@ -224,7 +257,6 @@ export default function TrafficPage() {
                       </td>
                       <td className="td cell-num" data-label="耗时">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
                       <td className="td cell-num" data-label="Token">{formatNumber(r.totalTokens)}</td>
-                      <td className="td cell-num" data-label="估算成本">{formatCost(r.estimatedCost)}</td>
                     </tr>
                   );
                 })}

@@ -267,6 +267,18 @@ try {
   /* 检查失败不影响启动 */
 }
 
+// 历史种子的示例 Provider 清理：模板里的 DeepSeek（示例）已在 8ea262b 删除，
+// 但工作区运行期副本（面板实际读的那份）不会随代码更新，升级后仍显示该示例。
+// 幂等；只删种子指纹未被改动的那条，用户改过的真实端点保留。
+try {
+  const removedProviders = require('./model-router/store').removeSeededExampleProviders();
+  if (removedProviders.length) {
+    console.log(`[model-router] 已清理历史示例 Provider: ${removedProviders.join(', ')}`);
+  }
+} catch (e) {
+  console.error('[model-router] 示例 Provider 清理失败:', e.message);
+}
+
 // 启动期健康校验（把「静默降级」变成「明确失败」）
 // 顺序要求：必须先打开 DB 拿到密文行信息，才能判断 encrypt.key 是否可用。
 try {

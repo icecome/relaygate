@@ -38,6 +38,8 @@ export interface TrafficResponse {
   total: number;
   totalScan: number;
   page: number;
+  /** 后端实际生效的每页条数（缺省 50）。序号列按它换算跨页连续编号。 */
+  pageSize: number;
   totalPages: number;
   summary?: {
     byModel?: Record<string, number>;

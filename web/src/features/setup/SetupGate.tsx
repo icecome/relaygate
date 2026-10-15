@@ -171,9 +171,7 @@ export default function SetupGate({ onReady }: Props) {
                 <>
                   <p className="text-[13px] mb-4 leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
                     库中尚未配置登录密钥，无法打开管理面板。
-                    {hasLoginKey
-                      ? '也可以直接粘贴已有的登录密钥进入。'
-                      : '请创建首把登录密钥，或粘贴已有的登录密钥。'}
+                    请创建首把登录密钥，或粘贴已有的登录密钥。
                   </p>
                   <Field
                     label="已有登录密钥（可选）"
