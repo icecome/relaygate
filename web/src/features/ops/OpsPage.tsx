@@ -94,7 +94,8 @@ export default function OpsPage() {
     rotateHour: 0,
     rotateMinute: 10,
     growthPollEnabled: 1,
-    growthPollIntervalHours: 4,
+    growthHour: 8,
+    growthMinute: 0,
     checkinSpreadMinutes: 30,
     balanceSpreadMinutes: 15,
   });
@@ -166,7 +167,8 @@ export default function OpsPage() {
       rotateHour: d.rotateHour ?? 0,
       rotateMinute: d.rotateMinute ?? 10,
       growthPollEnabled: d.growthPollEnabled ?? 1,
-      growthPollIntervalHours: d.growthPollIntervalHours ?? 4,
+      growthHour: d.growthHour ?? 8,
+      growthMinute: d.growthMinute ?? 0,
       checkinSpreadMinutes: d.checkinSpreadMinutes ?? 30,
       balanceSpreadMinutes: d.balanceSpreadMinutes ?? 15,
     });
@@ -346,7 +348,8 @@ const rotateRows = useMemo(() => {
           rotateHour: schedulerDraft.rotateHour,
           rotateMinute: schedulerDraft.rotateMinute,
           growthPollEnabled: schedulerDraft.growthPollEnabled,
-          growthPollIntervalHours: schedulerDraft.growthPollIntervalHours,
+          growthHour: schedulerDraft.growthHour,
+          growthMinute: schedulerDraft.growthMinute,
           checkinSpreadMinutes: schedulerDraft.checkinSpreadMinutes,
           balanceSpreadMinutes: schedulerDraft.balanceSpreadMinutes,
         },
@@ -903,14 +906,14 @@ const rotateRows = useMemo(() => {
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
-                          成长中心轮询
+                          成长中心（WorkBuddy 派猫旅行）
                         </span>
                         <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <label className="flex items-center justify-between gap-3">
                           <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
-                            启用轮询
+                            启用
                           </span>
                           <input
                             type="checkbox"
@@ -924,18 +927,34 @@ const rotateRows = useMemo(() => {
                             }}
                           />
                         </label>
-                        <FieldRow label="轮询间隔（小时）">
-                          <input
-                            className="field font-mono text-[12px]"
-                            type="number"
-                            min={0}
-                            max={168}
-                            value={String(schedulerDraft.growthPollIntervalHours)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, growthPollIntervalHours: Number(e.target.value) }));
-                              setSchedulerDirty(true);
-                            }}
-                          />
+                        <FieldRow label="每日执行时刻">
+                          <div className="flex items-center gap-2">
+                            <input
+                              className="field font-mono text-[12px]"
+                              type="number"
+                              min={0}
+                              max={23}
+                              value={String(schedulerDraft.growthHour)}
+                              onChange={(e) => {
+                                setSchedulerDraft((d) => ({ ...d, growthHour: Number(e.target.value) }));
+                                setSchedulerDirty(true);
+                              }}
+                              aria-label="成长中心小时"
+                            />
+                            <span className="font-mono text-[12px]">:</span>
+                            <input
+                              className="field font-mono text-[12px]"
+                              type="number"
+                              min={0}
+                              max={59}
+                              value={String(schedulerDraft.growthMinute)}
+                              onChange={(e) => {
+                                setSchedulerDraft((d) => ({ ...d, growthMinute: Number(e.target.value) }));
+                                setSchedulerDirty(true);
+                              }}
+                              aria-label="成长中心分钟"
+                            />
+                          </div>
                         </FieldRow>
                       </div>
                     </div>
@@ -953,6 +972,7 @@ const rotateRows = useMemo(() => {
                       <dl className="flex flex-col text-[13px]">
                         {[
                           { k: '下次签到', v: runtime.data?.scheduler?.nextCheckinAt },
+                          { k: '下次成长', v: runtime.data?.scheduler?.nextGrowthAt },
                           { k: '下次轮换', v: runtime.data?.scheduler?.nextRotateAutoAt },
                           { k: '上次签到', v: runtime.data?.scheduler?.lastCheckinAt },
                         ].map((row) => (

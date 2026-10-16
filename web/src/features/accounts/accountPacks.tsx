@@ -16,7 +16,12 @@
  */
 import { useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
-import { formatNumber, formatTime } from '../../shared/lib/format';
+import {
+  formatNumber,
+  formatTime,
+  platformOf,
+  type Platform,
+} from '../../shared/lib/format';
 import { Chip } from '../../shared/ui';
 
 type Urgency = 'expired' | 'critical' | 'warning';
@@ -116,9 +121,26 @@ export function usablePacksOf(account: Account, now = Date.now()): PackView[] {
   return packsOf(account, now).filter((p) => p.usable);
 }
 
-/** 账号表单元格用：最紧迫的一项（已到期优先，其次 3 日内、7 日内）。 */
+/**
+ * 到期提醒是否值得计入：只有「作废仍会造成损失」的包才算。
+ *
+ * 已用尽（remaining === 0）的包过期不损失任何积分，不参与「权益到期」判定。
+ * Trae 每日签到赠送按天拆包（每包 100 分），用尽后包体还要挂 1~3 天才到期——
+ * 此前 worstExpiry / expirySummary 把这些死包读成「3 日内 / 7 日内到期」，
+ * 整池明明没有任何额度临期却持续告警。后端的金额与调度口径
+ * （credentials/credits.js summarizeFefo、pool.js poolSignals）都只统计
+ * remaining > 0 的包，展示口径在此与之对齐。
+ * unlimited 包（remaining=null）过期即失去不限量额度，属真实损失，保留提醒；
+ * remaining 为 null 且非 unlimited（未知）与后端 summarizeExpiry 同口径跳过。
+ */
+function expiryWorthNoticing(p: PackView): boolean {
+  if (p.unlimited) return true;
+  return typeof p.remaining === 'number' && p.remaining > 0;
+}
+
+/** 账号表单元格用：最紧迫的一项（已到期优先，其次 3 日内、7 日内；已用尽的包不计）。 */
 export function worstExpiry(account: Account, now = Date.now()): PackView | null {
-  const notice = packsOf(account, now).filter((p) => p.urgency != null);
+  const notice = packsOf(account, now).filter((p) => p.urgency != null && expiryWorthNoticing(p));
   if (notice.length === 0) return null;
   const order: Record<Urgency, number> = { expired: 0, critical: 1, warning: 2 };
   return notice.sort(
@@ -259,6 +281,105 @@ export function keepaliveOf(account: Account, now = Date.now()): KeepaliveView {
     return { expiresMs, refreshExpiresMs, days, label: `${days} 天`, tone: 'warn' };
   }
   return { expiresMs, refreshExpiresMs, days, label: `${days} 天`, tone: 'ok' };
+}
+
+/**
+ * 分平台保活汇总：每个账号池各自一份，供面板逐池展示。
+ *
+ * 为什么要按池拆开：此前「最近操作与保活」表取 `rows.slice(0, 8)`，
+ * 而行序来自后端 store.list() 的插入顺序 —— Trae 与 WorkBuddy 账号在库里
+ * 交错排列，前 8 行必然混着两个池、并静默丢掉后面的账号。表现就是
+ * 「选全部来源时看不到完整保活情况，切到某个池才看到那几行」。
+ * 本函数只读账号字段；「该平台是否纳入定时保活」属渠道能力位，
+ * 由调用方从 /v1/admin/channels 取，不在这里越界。
+ */
+export interface KeepalivePoolStat {
+  platform: Platform;
+  /** 启用账号数 */
+  accounts: number;
+  /** 有保活记录（lastKeepaliveAt 非空）的账号数 */
+  withRecord: number;
+  /** 该池全部启用账号都无保活记录 */
+  never: boolean;
+  /** 该池最近一次保活时刻（毫秒）；无记录为 null */
+  lastAtMs: number | null;
+  /** 最近一次保活结果以 fail 开头的账号数 */
+  failing: number;
+  /** 登录 token 7 日内到期（含已过期）的账号数 */
+  expiringSoon: number;
+  /**
+   * 保活记录超过一个执行周期（26 小时）的账号数。
+   * 定时保活每天一次（默认 22:00），超期意味着服务停机或调度未启动，
+   * 面板据此把「没跑」与「跑了但失败」区分开。
+   */
+  stale: number;
+}
+
+/** 保活记录的新鲜度上限：每日一次，留 2 小时余量吸收排程抖动。 */
+const KEEPALIVE_RECORD_FRESH_MS = 26 * 3600_000;
+
+/**
+ * 分池保活汇总的池归属。
+ *
+ * 比 platformOf 多认 Raccoon：platformOf 的返回值不含 'raccoon'（该平台的
+ * 账号会落进 'trae' 分支），而 Raccoon 恰恰是定时保活口径与 Trae 不同的池
+ * （它有独立的 refresh 端点），把它并进 Trae 池会让本面板的「纳入定时保活」
+ * 与失败计数归错地方。其余判定仍与 platformOf 同源，不另起一套。
+ */
+function keepalivePoolOf(a: Account): Platform {
+  const edition = String(a.edition || '').toLowerCase();
+  const source = String(a.source || '').toLowerCase();
+  if (edition === 'raccoon' || source === 'raccoon') return 'raccoon';
+  return platformOf(a);
+}
+
+export { keepalivePoolOf };
+
+export function keepalivePools(accounts: Account[], now = Date.now()): KeepalivePoolStat[] {
+  const toMs = (iso: string | null | undefined): number | null => {
+    if (!iso) return null;
+    const t = new Date(iso).getTime();
+    return Number.isNaN(t) ? null : t;
+  };
+  const byPlatform = new Map<Platform, KeepalivePoolStat>();
+  for (const a of accounts) {
+    if (!a.enabled) continue;
+    const p = keepalivePoolOf(a);
+    let s = byPlatform.get(p);
+    if (!s) {
+      s = {
+        platform: p,
+        accounts: 0,
+        withRecord: 0,
+        never: false,
+        lastAtMs: null,
+        failing: 0,
+        expiringSoon: 0,
+        stale: 0,
+      };
+      byPlatform.set(p, s);
+    }
+    s.accounts += 1;
+    const kaMs = toMs(a.lastKeepaliveAt);
+    if (kaMs != null) {
+      s.withRecord += 1;
+      if (s.lastAtMs == null || kaMs > s.lastAtMs) s.lastAtMs = kaMs;
+      if (/^fail/i.test(String(a.lastKeepaliveResult || ''))) s.failing += 1;
+      if (now - kaMs > KEEPALIVE_RECORD_FRESH_MS) s.stale += 1;
+    }
+    const k = keepaliveOf(a, now);
+    // 已过期与临期都计入 expiringSoon；「长期有效」（token 无到期）不计
+    if (k.expiresMs != null && k.expiresMs - now <= KEEPALIVE_NOTICE_DAYS * 86_400_000) {
+      s.expiringSoon += 1;
+    }
+  }
+  const list = [...byPlatform.values()];
+  for (const s of list) s.never = s.withRecord === 0;
+  // 有风险的池排在前面：先看「7 日内到期」，再看「完全没跑过保活」
+  return list.sort(
+    (a, b) => b.expiringSoon - a.expiringSoon || Number(b.never) - Number(a.never)
+      || b.stale - a.stale || a.platform.localeCompare(b.platform),
+  );
 }
 
 /** 弹窗内的到期明细表：失效项置底并置灰。 */

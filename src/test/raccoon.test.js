@@ -146,12 +146,68 @@ async function httpTests() {
   assert.ok(m.json.data.every((x) => x.maxTokens > 0 && x.contextWindow > 0), '兜底表必须带真实窗口与上限');
   assert.ok(!m.json.data.some((x) => /raccoon-auto/i.test(x.id)), 'Raccoon-Auto 不是远端模型，绝不能出现在列表里');
 
-  // 渠道卡片：Raccoon 自动出现，且接入方式是「面板承载登录」
+  // ---- 本机客户端预检 ----
+  // ⚠️ 必须把 BOX_AGENT_CONFIG_DIR 指到临时目录：否则这里读的是**真实**
+  // ~/.box-agent/config/auth.json（真机上装了客户端就会 installed:true），
+  // 测试既不确定、又碰了开发者的真实凭据文件。
+  const fsLocal = require('node:fs');
+  const localDir = path.join(os.tmpdir(), `raccoon-http-local-${Date.now()}`);
+  fsLocal.mkdirSync(localDir, { recursive: true });
+  const prevLocalDir = process.env.BOX_AGENT_CONFIG_DIR;
+  process.env.BOX_AGENT_CONFIG_DIR = localDir;
+  try {
+    // 未安装 → 仍然 200 + installed:false（面板要能正常渲染这张卡）
+    const lp0 = await req('GET', '/v1/raccoon/local/preview', { token: ADMIN });
+    assert.strictEqual(lp0.status, 200);
+    assert.strictEqual(lp0.json.installed, false);
+    assert.ok(lp0.json.path, '要告诉用户「从哪读的」');
+    assert.strictEqual(lp0.json.error, null);
+    assert.strictEqual(lp0.json.userId, undefined, '没装就没有账号信息');
+
+    // 写入真实形态的凭据 → preview 如实回显（且不回显 token 本身）
+    const jwt = `eyJhbGciOiJIUzI1NiJ9.${
+      Buffer.from(JSON.stringify({ sub: 'pu-http-1', exp: 1794619246 })).toString('base64url')
+    }.sig`;
+    fsLocal.writeFileSync(path.join(localDir, 'auth.json'), JSON.stringify({
+      access_token: jwt, refresh_token: jwt, office_identity: 'personal',
+    }), 'utf8');
+    const lp1 = await req('GET', '/v1/raccoon/local/preview', { token: ADMIN });
+    assert.strictEqual(lp1.status, 200);
+    assert.strictEqual(lp1.json.installed, true);
+    assert.strictEqual(lp1.json.account.userId, 'pu-http-1');
+    assert.strictEqual(lp1.json.account.hasRefreshToken, true);
+    assert.strictEqual(lp1.json.account.officeIdentity, '', 'personal 不出现在 preview 里');
+    assert.ok(!/eyJ/.test(JSON.stringify(lp1.json)), 'token 一律不出网');
+
+    // 导入会打真实上游拉 user_info，测试环境没有网络隔离保证 → 只断言
+    // 端点存在且鉴权正确（401），不实际触发导入
+    const impNoAuth = await req('POST', '/v1/raccoon/local/import', { body: {} });
+    assert.strictEqual(impNoAuth.status, 401, '导入端点必须鉴权');
+  } finally {
+    if (prevLocalDir === undefined) delete process.env.BOX_AGENT_CONFIG_DIR;
+    else process.env.BOX_AGENT_CONFIG_DIR = prevLocalDir;
+    fsLocal.rmSync(localDir, { recursive: true, force: true });
+  }
+
+  // ---- 每日积分看板：非 Raccoon 账号一律 400，不误打别家上游 ----
+  const foreignAcct = store.add({ label: 'rr-daily-foreign', edition: 'cn', token: 't'.repeat(40), enabled: true }, 'login');
+  try {
+    const dailyForeign = await req('GET', `/v1/raccoon/accounts/${foreignAcct.id}/daily-usage`, { token: ADMIN });
+    assert.strictEqual(dailyForeign.status, 400, '非 Raccoon 账号不能查 Raccoon 的每日积分');
+    const dailyNoAuth = await req('GET', `/v1/raccoon/accounts/${foreignAcct.id}/daily-usage`);
+    assert.strictEqual(dailyNoAuth.status, 401, '每日积分端点必须鉴权');
+  } finally {
+    store.remove(foreignAcct.id);
+  }
+
+  // 渠道卡片：Raccoon 自动出现，且接入方式是「扫码 + 本机导入」双入口
   const ch = await req('GET', '/v1/admin/channels', { token: ADMIN });
   const rc = (ch.json?.data || []).find((c) => c.id === 'raccoon');
   assert.ok(rc, '/v1/admin/channels 应自动包含 Raccoon（注册表驱动的意义所在）');
-  assert.deepStrictEqual(rc.onboarding.map((o) => o.kind), ['login']);
+  assert.deepStrictEqual(rc.onboarding.map((o) => o.kind), ['login', 'local'],
+    '2026-10-15 起本机客户端凭据（明文 auth.json）也可导入');
   assert.strictEqual(rc.onboarding[0].available, true, '面板承载登录恒可用（不依赖本机客户端）');
+  assert.strictEqual(rc.onboarding[1].label, '读取本机客户端');
   assert.ok(rc.note && rc.note.length > 0);
 
   // ---- 对话面的三道闸门（端点 → 平台 → 模型归属） ----
@@ -314,6 +370,28 @@ async function run() {
     assert.strictEqual(product.headers({ access_token: 'T' })['X-Org-Code'], '');
   });
 
+  // P0 回归（2026-10-15 抓包实证）：个人账号的 office_identity 字面值是
+  // "personal"，原样塞进 X-Org-Code 会被上游当真组织码查并回
+  // 400 org_not_found_error，打掉余额 / 目录 / 登录奖励 / 对话转发。
+  // 客户端自己的 createHeaders() 显式排除 personal，这里必须照抄。
+  t('orgCodeOf()：personal 必须归空串（P0：X-Org-Code 不能填 personal）', () => {
+    assert.strictEqual(product.orgCodeOf({ office_identity: 'personal' }), '', 'personal 是身份标记，不是组织码');
+    assert.strictEqual(product.orgCodeOf({ office_identity: 'Personal' }), '', '大小写不敏感');
+    assert.strictEqual(product.orgCodeOf({ office_identity: ' personal ' }), '', '前后空白也要归一');
+    assert.strictEqual(product.orgCodeOf({}), '', '缺失即空串');
+    assert.strictEqual(product.orgCodeOf({ office_identity: '' }), '', '空串保持空串');
+    // 真实企业组织码必须照发（不能简化成恒空串，否则企业账号跨组织会失败）
+    assert.strictEqual(product.orgCodeOf({ office_identity: 'ORG-123' }), 'ORG-123', '真组织码要透传');
+    // 三处头构造都必须经过 orgCodeOf：personal 绝不能出现在任何一处的 X-Org-Code
+    for (const h of [
+      product.headers({ access_token: 'T', office_identity: 'personal' }),
+      product.desktopHeaders({ access_token: 'T', office_identity: 'personal' }),
+      product.catalogHeaders({ access_token: 'T', office_identity: 'personal' }),
+    ]) {
+      assert.strictEqual(h['X-Org-Code'], '', `personal 不得出现在业务头：${JSON.stringify(h)}`);
+    }
+  });
+
   t('desktopHeaders()：含 platform + version（登录奖励端点必需）', () => {
     const h = product.desktopHeaders({ access_token: 'T' });
     assert.strictEqual(h['X-Client-Platform'], 'desktop-windows');
@@ -409,6 +487,58 @@ async function run() {
     assert.ok(fb.find((m) => m.id === 'sn-kimi-k3').name.includes('x1'), '1 倍也要显示倍率（用户报障）');
   });
 
+  // ===== product：每日积分运营视图（2026-10-15 抓包新增）=====
+  // 输入即本机账号 2026-10-15 的真实抓包样本（balance/income/expense 三页）。
+  t('summarizeDailyPoints：真实账单样本 → 每日池剩余 + 最早到期 + 历史作废', () => {
+    const balance = { available_points: 3993, daily_points: 294, monthly_points: 0, reward_points: 3699 };
+    const income = [
+      // 今天发放的 300，7 天后作废
+      { bill_id: 'b1', event_name: '每日积分发放', biz_type: 'daily_grant', points: 300, created_at: '2026-10-15T09:14:46+08:00', grant_at: '2026-10-15T00:00:00+08:00', expire_at: '2026-10-21T23:59:59+08:00' },
+      // 昨天的补发（daily_makeup），已随当日作废
+      { bill_id: 'b2', event_name: '每日积分发放', biz_type: 'daily_grant', points: 300, created_at: '2026-10-14T00:00:00+08:00', grant_at: '2026-10-14T00:00:00+08:00', expire_at: '2026-10-14T23:59:59+08:00' },
+      // 非每日类的正向账单必须被排除
+      { bill_id: 'b3', event_name: '新人注册礼包', biz_type: 'reward_grant', points: 3000, created_at: '2026-10-14T09:51:15+08:00' },
+      { bill_id: 'b4', event_name: '桌面端登录奖励', biz_type: 'reward_grant', points: 3000, created_at: '2026-10-14T09:51:15+08:00' },
+    ];
+    const expense = [
+      // 昨天整额作废（一分没花）—— 这正是要做这个视图的原因
+      { bill_id: 'e1', event_name: '每日积分到期清零', biz_type: 'daily_expire', points: -300, created_at: '2026-10-14T23:59:59+08:00', grant_at: '2026-10-14T00:00:00+08:00', expire_at: '2026-10-14T23:59:59+08:00' },
+      // 普通消耗不参与
+      { bill_id: 'e2', event_name: '桌面端 LLM 对话消耗', biz_type: 'desktop', points: -4 },
+    ];
+    const nowMs = Date.parse('2026-10-15T05:00:00Z');
+    const s = product.summarizeDailyPoints({ balance, incomeItems: income, expenseItems: expense, nowMs });
+    assert.strictEqual(s.claimable, false, '恒为 false：没有领取端点');
+    assert.strictEqual(s.grantPoints, 300);
+    assert.strictEqual(s.dailyRemaining, 294, '每日池剩余直接来自 balance.daily_points');
+    assert.strictEqual(s.grantedBatches, 2, '只数 daily_grant，reward_grant 不算');
+    assert.strictEqual(s.expiredTotal, 300, 'daily_expire 绝对值累加，desktop 消耗不算');
+    // 最早到期 = 今天发放那批（昨天那批已过期，不进未来窗口）
+    assert.strictEqual(s.nextExpiryAt, '2026-10-21T15:59:59.000Z');
+    assert.strictEqual(s.nextExpiryHoursLeft, 155);
+  });
+
+  t('summarizeDailyPoints：空输入全空、1971 哨兵时间戳不参与到期判定', () => {
+    const s = product.summarizeDailyPoints({});
+    assert.strictEqual(s.claimable, false);
+    assert.strictEqual(s.dailyRemaining, null);
+    assert.strictEqual(s.nextExpiryAt, null);
+    assert.strictEqual(s.nextExpiryHoursLeft, null);
+    assert.strictEqual(s.expiredTotal, 0);
+    assert.strictEqual(s.billsAvailable, undefined, 'billsAvailable 由 credits 层补，纯函数不管');
+
+    // 客户端模块 34917 的判据：1971-01-01 之前的时间戳视为「无意义」，
+    // 这样的批次绝不能出现在 nextExpiryAt（否则面板会显示「54 年后作废」）
+    const s2 = product.summarizeDailyPoints({
+      balance: { daily_points: 300 },
+      incomeItems: [{ biz_type: 'daily_grant', points: 300, grant_at: '1970-01-01T00:00:00Z', expire_at: '1970-01-01T00:00:00Z' }],
+      nowMs: Date.parse('2026-10-15T05:00:00Z'),
+    });
+    assert.strictEqual(s2.grantedBatches, 1);
+    assert.strictEqual(s2.nextExpiryAt, null);
+    assert.strictEqual(s2.nextExpiryHoursLeft, null);
+  });
+
   // ===== chat：思考档位与请求体 =====
   t('resolveThinking：只有 extra_body.thinking 是有效载波，且需要明确意图', () => {
     // 客户端什么都不说 → 一个字节都不改
@@ -456,6 +586,75 @@ async function run() {
     assert.strictEqual(h['X-Client-Version'], undefined, '对话面与积分面的头不同，别统一');
     assert.strictEqual(h.Accept, 'text/event-stream');
     assert.strictEqual(h['X-Org-Code'], 'o');
+    // P0 同样适用于对话面：本机账号的 raccoonOrg 就是 "personal"，
+    // 带上它上游会回 400 org_not_found_error，整条转发链路直接不可用。
+    const personal = raccoonChat.chatHeaders({ token: 'T', raccoonOrg: 'personal' });
+    assert.strictEqual(personal['X-Org-Code'], '', '对话面也必须把 personal 归空串');
+  });
+
+  // ===== local：本机客户端凭据导入（2026-10-15 解包新增）=====
+  // 用临时目录注入凭据文件，绝不读真实 ~/.box-agent（CI 与真机行为一致）。
+  await t('local：凭据路径随 BOX_AGENT_CONFIG_DIR，且 personal 入库前被归空串', () => {
+    const fs = require('node:fs');
+    const dir = path.join(os.tmpdir(), `raccoon-local-${Date.now()}`);
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'auth.json');
+    const prevDir = process.env.BOX_AGENT_CONFIG_DIR;
+    process.env.BOX_AGENT_CONFIG_DIR = dir;
+    // 重新加载模块，让 credentialsPath() 读到新的 env
+    delete require.cache[require.resolve('../raccoon/local')];
+    const local = require('../raccoon/local');
+    try {
+      // 未安装：preview 不抛错，如实报 false（面板要能正常渲染这张卡）
+      assert.strictEqual(local.isClientInstalled(), false);
+      const p0 = local.preview();
+      assert.strictEqual(p0.installed, false);
+      assert.strictEqual(p0.error, null);
+      assert.strictEqual(p0.userId, null);
+
+      // 写入真实形态的凭据（本机客户端实测字段：access_token/refresh_token/office_identity）
+      const jwt = `eyJhbGciOiJIUzI1NiJ9.${
+        Buffer.from(JSON.stringify({ sub: 'pu-test-1', exp: 1794619246 })).toString('base64url')
+      }.sig`;
+      fs.writeFileSync(file, JSON.stringify({
+        access_token: jwt,
+        refresh_token: jwt,
+        office_identity: 'personal',
+      }), 'utf8');
+
+      assert.strictEqual(local.isClientInstalled(), true);
+      const cred = local.readLocalCredential();
+      assert.strictEqual(cred.access_token, jwt);
+      assert.strictEqual(cred.refresh_token, jwt, '客户端把 refresh 与 access 写成同一个值');
+      assert.strictEqual(cred.office_identity, '', 'personal 必须在入库前归空串（P0）');
+      assert.strictEqual(cred.expires_at, String(1794619246 * 1000), 'auth.json 无过期时间，须从 JWT exp 解出');
+
+      const p1 = local.preview();
+      assert.strictEqual(p1.installed, true);
+      assert.strictEqual(p1.hasRefreshToken, true);
+      assert.strictEqual(p1.userId, 'pu-test-1', 'userId 从 JWT sub 取，仅作展示');
+      assert.strictEqual(p1.officeIdentity, '');
+      assert.strictEqual(p1.error, null);
+
+      // 已过期的本地凭据必须拒绝导入（不能静默导入成「可用账号」）
+      const expiredJwt = `eyJhbGciOiJIUzI1NiJ9.${
+        Buffer.from(JSON.stringify({ sub: 'pu-test-2', exp: 1000000 })).toString('base64url')
+      }.sig`;
+      fs.writeFileSync(file, JSON.stringify({ access_token: expiredJwt, refresh_token: expiredJwt }), 'utf8');
+      const credExpired = local.readLocalCredential();
+      assert.strictEqual(product.isExpired(credExpired), true, '过期凭据应被判为过期');
+
+      // 缺 access_token → preview 把原因放进 error，不抛
+      fs.writeFileSync(file, JSON.stringify({ refresh_token: 'x' }), 'utf8');
+      const p2 = local.preview();
+      assert.strictEqual(p2.installed, true);
+      assert.ok(p2.error && /access_token/.test(p2.error), `error 应说明缺 token，实际：${p2.error}`);
+    } finally {
+      if (prevDir === undefined) delete process.env.BOX_AGENT_CONFIG_DIR;
+      else process.env.BOX_AGENT_CONFIG_DIR = prevDir;
+      delete require.cache[require.resolve('../raccoon/local')];
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   // ===== client：信封 =====
@@ -532,7 +731,9 @@ async function run() {
     assert.strictEqual(cap.checkin, false, '没有签到端点就不能声明签到能力');
     assert.strictEqual(cap.oauthLogin, false);
     assert.strictEqual(cap.tokenRefresh, true);
-    assert.strictEqual(cap.localImport, false);
+    // 2026-10-15 解包实证：本机桌面端把凭据明文写在 ~/.box-agent/config/auth.json，
+    // 可直接导入（与 ZCode/Qoder 的加密存储不同），能力位翻转为 true。
+    assert.strictEqual(cap.localImport, true);
     assert.strictEqual(cap.deviceFingerprint, false);
     // 展示顺序在最后（与 CHANNEL_IDS 的约定一致）
     assert.strictEqual(variant.allVariants().map((v) => v.id).pop(), 'raccoon');

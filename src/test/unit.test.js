@@ -1811,6 +1811,50 @@ t('scheduler.runKeepalive 把 _refreshError 记为失败而非成功', async () 
   }
 });
 
+t('scheduler.runKeepalive 纳入 Raccoon 账号并走其自有续期端点', async () => {
+  // 回归：每日兜底轮此前用 can(edition,'oauthLogin') 过滤账号，而 Raccoon
+  // 该位为 false（扫码登录会话，非 OAuth）⇒ 整号从不被保活，也不写保活记录。
+  // 判据统一为 tokenRefresh || oauthLogin 后，Raccoon 必须进入候选，且走
+  // raccoon/auth.refreshAccount —— 落到 ensureAuth 会打 Trae 换票端点。
+  const scheduler = require('../jobs/scheduler');
+  const authMod = require('../auth');
+  const raccoonAuth = require('../raccoon/auth');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origGet = store.get;
+  const origUpdate = store.update;
+  const origEnsure = authMod.ensureAuth;
+  const origRefresh = raccoonAuth.refreshAccount;
+  const updates = [];
+  let raccoonCalls = 0;
+  let ensureCalls = 0;
+  store.list = () => [
+    { id: 'acct_rc_ka', edition: 'raccoon', enabled: true, label: 'rc-ka' },
+    { id: 'acct_zc_ka', edition: 'zcode', enabled: true, label: 'zc-ka' },
+  ];
+  store.get = (id) => (id === 'acct_rc_ka'
+    ? { id, edition: 'raccoon', enabled: true, expiredAt: null, refreshToken: 'rt' }
+    : null);
+  store.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  authMod.ensureAuth = async (id) => { ensureCalls += 1; return { id, token: 't' }; };
+  raccoonAuth.refreshAccount = async () => { raccoonCalls += 1; return {}; };
+  try {
+    const r = await scheduler.runKeepalive();
+    assert.strictEqual(raccoonCalls, 1, 'Raccoon 账号应经自有续期端点保活一次');
+    assert.strictEqual(ensureCalls, 0, 'ZCode 不声明 tokenRefresh/oauthLogin，不得进入保活');
+    assert.strictEqual(r.total, 1, '保活候选只含 Raccoon 账号');
+    const u = updates.find((x) => x.id === 'acct_rc_ka' && x.patch.lastKeepaliveAt);
+    assert.ok(u, 'Raccoon 保活应逐账号写 lastKeepaliveAt');
+    assert.strictEqual(u.patch.lastKeepaliveResult, 'ok');
+  } finally {
+    store.list = origList;
+    store.get = origGet;
+    store.update = origUpdate;
+    authMod.ensureAuth = origEnsure;
+    raccoonAuth.refreshAccount = origRefresh;
+  }
+});
+
 console.log('jobs.balance-refresh');
 t('余额刷新配置：默认关闭，间隔夹紧到 5-1440', () => {
   const fs = require('fs');
@@ -3009,9 +3053,26 @@ t('stop() 之后 started 为 false，restart 可重新排链（重排语义不�
   assert.strictEqual(snap.checkinMinute, ss.checkinMinute, '签到分钟应来自生效配置');
   assert.strictEqual(snap.keepaliveHour, ss.keepaliveHour, '保活小时应来自生效配置');
   assert.strictEqual(snap.rotateHour, ss.rotateHour, '轮换小时应来自生效配置');
+  assert.strictEqual(snap.growthHour, ss.growthHour, '成长中心小时应来自生效配置');
+  assert.strictEqual(snap.growthMinute, ss.growthMinute, '成长中心分钟应来自生效配置');
   // 收尾：停掉测试期启动的定时器，避免影响后续用例
   sched.stop();
   assert.strictEqual(sched.snapshot().enabled, false, '收尾 stop 后应仍为 false');
+});
+
+t('成长中心定时为墙钟排程，不再按启动时刻轮询（夜间打扰根因）', () => {
+  // 根因：growth poll 曾是「进程启动时刻 + setInterval(每 N 小时)」，间隔锚定启动时间，
+  // 半夜重启 → 全天所有派猫/领奖通知落在夜间，且面板只有间隔没有时刻可配。
+  const src = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'scheduler.js'), 'utf-8');
+  const fnBody = src.match(/function scheduleGrowthPoll\([\s\S]*?\n\}/)[0];
+  assert.ok(!/setInterval/.test(fnBody), 'scheduleGrowthPoll 不应再使用 setInterval 轮询');
+  assert.ok(/scheduleOnce\(eff\.growthHour, eff\.growthMinute, 'growth'/.test(fnBody), '应走墙钟 scheduleOnce');
+  const specs = require('../jobs/scheduler-settings').SPECS;
+  assert.strictEqual(specs.growthHour.default, 8, 'growthHour 默认应为早晨 8 点');
+  assert.strictEqual(specs.growthMinute.default, 0, 'growthMinute 默认应为 0 分');
+  assert.ok(!specs.growthPollIntervalHours, '旧的启动锚定间隔字段应已移除');
+  // 下次执行时刻要进快照供面板展示
+  assert.ok(/if \(label === 'growth'\) state\.nextGrowthAt/.test(src), 'scheduleOnce 应记录 growth 的下次执行时刻');
 });
 
 t('model-access 不再 require model-router 的 index（避免加载期循环）', () => {

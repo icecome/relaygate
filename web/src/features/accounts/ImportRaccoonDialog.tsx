@@ -1,25 +1,21 @@
 /**
- * Raccoon 接入弹窗：面板承载扫码登录 + 已登录账号的运营操作。
+ * Raccoon 接入弹窗：面板承载扫码登录 / 本机客户端导入 + 已登录账号的运营操作。
  *
- * ## 为什么必须由面板承载登录
+ * ## 两条登录入口
  *
- * 本机没有 Raccoon 官方桌面客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），
- * 而官方那条 `office-raccoon://auth/callback` 自定义协议回调**服务端进程收不到**，
- * `/code/authorize` 的回调地址又写死改不成 localhost。参考项目实测后的解法是
- * 「本地生成 code + 自行轮询」——本弹窗就是那条链路的界面：
- * 后端生成 code 与二维码 → 用户微信扫码 → 面板轮询 → 成功后账号落库。
- *
- * ## 二维码为什么是 `<svg><path>` 而不是 `<img src=...>`
- *
- * 二维码内容含**一次性登录票据**。若交给第三方二维码图片服务生成，等于把票据
- * 送出去；而 `<img>` 又无法携带管理密钥。故后端用零依赖编码器直接产出
- * SVG 的 path 属性，前端只渲染一个属性字符串——既不出网，也不需要
- * `dangerouslySetInnerHTML`（无注入面）。
+ * 1. **扫码**（主入口，不依赖本机客户端）：官方那条 `office-raccoon://auth/callback`
+ *    自定义协议回调**服务端进程收不到**，`/code/authorize` 的回调地址又写死，
+ *    故由后端生成 code + 二维码（零依赖编码器，`<svg><path>` 直渲，不出网），
+ *    用户微信扫码后前端轮询到 success。
+ * 2. **读取本机客户端**（2026-10-15 解包后新增）：桌面端把凭据**明文**写在
+ *    `~/.box-agent/config/auth.json`，可直接导入 —— 与 WorkBuddy/ZCode/Qoder 的
+ *    本机导入同语义，但零解密成本。装了客户端的机器优先用这条，免扫码。
  *
  * ## 两条必须记住的语义
  *
  * 1. **每日 300 积分没有端点**（服务端按日自动发），本弹窗**不提供签到按钮**；
  *    能领的只有一次性的「桌面端登录奖励」，且它幂等（已领过返回 already）。
+ *    但每日池**会过期**，故提供只读的「每日积分」查询（不触发任何写端点）。
  * 2. 轮询的 `pending` 是**兜底**状态（未知状态与网络抖动都归到它），
  *    界面不能把它当成失败停止轮询，也不能把 `logging` 当成已完成。
  */
@@ -31,13 +27,18 @@ import {
   raccoonAccounts,
   raccoonCancelLogin,
   raccoonClaimReward,
+  raccoonDailyUsage,
   raccoonDeleteAccount,
+  raccoonLocalImport,
+  raccoonLocalPreview,
   raccoonModels,
   raccoonPollLogin,
   raccoonRefreshPoints,
   raccoonRefreshToken,
   raccoonStartLogin,
   type RaccoonAccount,
+  type RaccoonDailyUsage,
+  type RaccoonLocalPreview,
   type RaccoonLoginSession,
 } from '../../shared/api/raccoon';
 import { formatNumber, formatTime } from '../../shared/lib/format';
@@ -61,6 +62,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<RaccoonAccount[] | null>(null);
   const [models, setModels] = useState<{ source: string; count: number } | null>(null);
+  /** 本机客户端预检（装了客户端就有值；为 null 表示还没探测或没装） */
+  const [localPreview, setLocalPreview] = useState<RaccoonLocalPreview | null>(null);
+  /** 选中账号的每日积分看板（点「每日积分」时加载） */
+  const [daily, setDaily] = useState<{ accountId: string; data: RaccoonDailyUsage } | null>(null);
   /** 在途轮询标记：2 秒一次 + 用户可能开两个标签页，不能并发打上游 */
   const polling = useRef(false);
   const sessionRef = useRef<RaccoonLoginSession | null>(null);
@@ -75,6 +80,49 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
       setAccounts([]);
     }
   }, [key]);
+
+  /** 探测本机客户端凭据（失败不影响弹窗其它部分）。 */
+  const loadLocalPreview = useCallback(async () => {
+    if (!key) return;
+    try {
+      setLocalPreview(await raccoonLocalPreview(key));
+    } catch {
+      setLocalPreview(null);
+    }
+  }, [key]);
+
+  /** 从本机客户端凭据导入（幂等）。 */
+  const importFromLocal = useCallback(async () => {
+    setBusy(true);
+    try {
+      const r = await raccoonLocalImport(key);
+      if ('error' in r && r.error) {
+        toast(r.error.message, 'err');
+      } else if ('account' in r && r.account) {
+        toast(`已导入本机账号：${r.account.label || r.account.id}`, 'ok');
+        await loadAccounts();
+        onImported();
+      }
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '本机导入失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, loadAccounts, onImported, toast]);
+
+  /** 查询每日积分（只读，不触发任何写端点）。 */
+  const loadDaily = useCallback(async (accountId: string) => {
+    setBusy(true);
+    try {
+      const r = await raccoonDailyUsage(accountId, key);
+      setDaily({ accountId, data: r });
+    } catch (e) {
+      setDaily(null);
+      toast(e instanceof ApiError ? e.message : '每日积分查询失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, toast]);
 
   /** 开启（或重开）一次扫码会话。 */
   const startSession = useCallback(async () => {
@@ -94,10 +142,11 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
     }
   }, [key]);
 
-  // 打开时：探测账号与模型目录，并发起扫码会话；关闭时：取消会话
+  // 打开时：探测账号与本机客户端、拉模型目录，并发起扫码会话；关闭时：取消会话
   useEffect(() => {
     if (open) {
       void loadAccounts();
+      void loadLocalPreview();
       void startSession();
       if (key) {
         raccoonModels(key)
@@ -111,9 +160,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
       setPhase('idle');
       setError('');
       setBusy(false);
+      setDaily(null);
     }
     // key 变化（重新登录面板）时也要重来
-  }, [open, key, loadAccounts, startSession]);
+  }, [open, key, loadAccounts, loadLocalPreview, startSession]);
 
   /**
    * 轮询循环。
@@ -228,6 +278,27 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
       }
     >
       <div className="flex flex-col gap-4">
+        {/* ---------- 本机客户端导入（装了客户端时优先，免扫码） ---------- */}
+        {localPreview?.installed && (
+          <div className="flex items-center gap-2 flex-wrap rounded-lg p-3"
+            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+            <Chip tone="brand" dot="dot-ok">检测到本机小浣熊客户端</Chip>
+            <span className="text-[12px] flex-1 min-w-[240px]"
+              style={{ color: 'var(--rg-text-secondary)' }}>
+              可直接从本机登录态导入，无需扫码。凭据文件：<code>{localPreview.credentialFile}</code>
+              {localPreview.account?.expiresAt
+                ? `（有效期至 ${formatTime(localPreview.account.expiresAt)}）`
+                : ''}
+            </span>
+            <Button size="sm" variant="primary" disabled={busy} onClick={importFromLocal}>
+              从本机导入
+            </Button>
+          </div>
+        )}
+        {localPreview && !localPreview.installed && localPreview.error && (
+          <Note tone="warn">本机客户端读取失败：{localPreview.error}</Note>
+        )}
+
         {/* ---------- 扫码区 ---------- */}
         <div className="flex flex-col items-center gap-3">
           {phase === 'done' ? (
@@ -351,6 +422,13 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                         <Button
                           size="sm"
                           disabled={busy}
+                          onClick={() => loadDaily(a.id)}
+                        >
+                          每日积分
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busy}
                           onClick={() =>
                             act('领登录奖励', () => raccoonClaimReward(a.id, key), '已处理登录奖励')
                           }
@@ -375,6 +453,46 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
             </table>
           )}
         </div>
+
+        {/* ---------- 每日积分看板（只读） ---------- */}
+        {daily && daily.data && (
+          <div className="rounded-lg p-3 text-[12px] flex flex-col gap-1"
+            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <strong>每日积分（{accounts?.find((a) => a.id === daily.accountId)?.label || daily.accountId}）</strong>
+              {!daily.data.billsAvailable && (
+                <Chip tone="warn">账单面不可用，以下可能不完整</Chip>
+              )}
+              {daily.data.balanceAvailable === false && (
+                <Chip tone="warn">余额面不可用</Chip>
+              )}
+            </div>
+            <div className="flex gap-4 flex-wrap" style={{ color: 'var(--rg-text-secondary)' }}>
+              <span>
+                今日剩余
+                <strong className="mx-1">
+                  {typeof daily.data.dailyRemaining === 'number' ? formatNumber(daily.data.dailyRemaining) : '—'}
+                </strong>
+                （每日期初 {daily.data.grantPoints}）
+              </span>
+              {daily.data.nextExpiryAt && (
+                <span>
+                  最早
+                  <strong className="mx-1">{daily.data.nextExpiryHoursLeft} 小时后</strong>
+                  作废（{formatTime(daily.data.nextExpiryAt)}）
+                </span>
+              )}
+              <span>
+                历史已作废
+                <strong className="mx-1">{formatNumber(daily.data.expiredTotal)}</strong>
+              </span>
+            </div>
+            <div style={{ color: 'var(--rg-text-tertiary)' }}>
+              每日 {daily.data.grantPoints} 分由服务端自动发放（无领取端点），约 7 天内未用完即清零。
+              想少浪费就把它排进消耗计划，而不是等一个不存在的签到按钮。
+            </div>
+          </div>
+        )}
 
         <Note>
           <strong>每日 300 积分没有签到端点</strong>：它由服务端按日自动发放（账单里的

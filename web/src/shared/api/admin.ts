@@ -197,9 +197,15 @@ export interface SchedulerSnapshot {
   rotateHour?: number;
   rotateMinute?: number;
   growthPollEnabled?: number;
+  /** 成长中心每日执行时刻（墙钟） */
+  growthHour?: number;
+  growthMinute?: number;
   nextCheckinAt?: string | null;
   lastCheckinAt?: string | null;
   nextRotateAutoAt?: string | null;
+  /** 下次成长中心执行 / 上次执行（墙钟排程） */
+  nextGrowthAt?: string | null;
+  lastGrowthAt?: string | null;
 }
 
 export interface RuntimeInfo {
@@ -339,9 +345,11 @@ export interface SchedulerSettings {
   modelProbeMaxPerRun?: number;
   rotateHour?: number;
   rotateMinute?: number;
-  /** 成长中心轮询开关（0/1） */
+  /** 成长中心定时开关（0/1） */
   growthPollEnabled?: number;
-  growthPollIntervalHours?: number;
+  /** 成长中心每日执行时刻（墙钟，默认 8:00） */
+  growthHour?: number;
+  growthMinute?: number;
   /** 确定性错峰窗口（分钟） */
   checkinSpreadMinutes?: number;
   balanceSpreadMinutes?: number;

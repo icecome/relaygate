@@ -163,6 +163,11 @@ export function platformLabel(a: {
   return PLATFORM_LABEL[platformOf(a)];
 }
 
+/** 已知平台 id 的展示名；未知值原样返回（新增平台不至于显示空白）。 */
+export function platformIdLabel(p: Platform | string): string {
+  return PLATFORM_LABEL[p as Platform] ?? String(p);
+}
+
 export function formatBoolean(v: boolean | null | undefined): string {
   if (v === true) return '是';
   if (v === false) return '否';

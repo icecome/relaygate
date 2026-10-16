@@ -23,6 +23,7 @@ const variant = require('../platform/variant');
 const wbAuth = require('../workbuddy/auth');
 const zcodeLocal = require('../zcode/local');
 const qoderLocal = require('../qoder/local');
+const raccoonLocal = require('../raccoon/local');
 const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
@@ -96,6 +97,18 @@ function localProbe(platformId) {
       detail: any ? '可导入已登录区域' : '未检测到已登录的 Qoder 客户端（国内版 / 国际版）',
       windows: !!probe.windows,
       realms,
+    };
+  }
+  if (platformId === variant.RACCOON) {
+    // 小浣熊桌面端把凭据**明文**写在 ~/.box-agent/config/auth.json；
+    // 这里只回答「有没有、在哪」，不读取 token 内容（面板不需要）。
+    const installed = raccoonLocal.isClientInstalled();
+    const p = raccoonLocal.credentialsPath();
+    return {
+      available: installed,
+      detail: installed
+        ? `本机登录态：${p}`
+        : `未找到凭据文件 ${p}，需先安装并登录商汤小浣熊桌面端`,
     };
   }
   return { available: false, detail: '该平台未实现本机客户端导入' };

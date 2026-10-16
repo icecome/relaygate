@@ -21,6 +21,16 @@
  *    否则 `send_sms` 回 `100003 params_encryted_error`。
  * 3. **每日 300 积分没有端点**：服务端按日自动发放（`daily_grant`）。
  *    不要把它实现成签到按钮 —— 不存在可调用的端点，按钮必然失败。
+ *    2026-10-15 解包 + 抓包**再次实证**：全量 asar 里没有任何 daily/checkin/
+ *    sign_in 端点，`points/v1/*` 只有 `balance` 与 `bills` 两条；能主动调用的
+ *    发放端点只有**一次性**的 `desktop/v1/login/points/grant`。
+ *
+ * ## 2026-10-15 解包新增的第四个大坑（P0，抓包实证）
+ *
+ * 4. **`X-Org-Code` 绝不能填 `"personal"`** —— 个人账号的 `office_identity`
+ *    字面值就是 `"personal"`，上游会把它当真组织码查并回
+ *    `400 org_not_found_error`，打掉**余额 / 模型目录 / 登录奖励 / 对话转发**。
+ *    客户端自己的处理是显式排除 personal（见 {@link orgCodeOf}），必须照抄。
  */
 const crypto = require('crypto');
 const variant = require('../platform/variant');
@@ -37,9 +47,14 @@ const PHONE_CIPHER_SECRET = 'senseraccoon2023';
 
 /**
  * 续期提前窗口（秒）。
- * 照抄官方 `scheduleAuth.js` 的 `TOKEN_REFRESH_WINDOW_SECONDS = 300`：
- * access_token 寿命约 3 小时（实测 `exp - nbf = 10805s`），提前 5 分钟刷新
- * 可避免边界失败。
+ * 照抄官方 `scheduleAuth.js` 的 `TOKEN_REFRESH_WINDOW_SECONDS = 300`。
+ *
+ * ⚠️ **token 寿命已由 2026-10-15 本机实测修正为 30 天**（`exp - nbf = 2592005s`），
+ * 不是本文档早期记载的「约 3 小时」。判据来自解码本机客户端
+ * `~/.box-agent/config/auth.json` 的 access_token：
+ * `nbf=1792027241 exp=1794619246` ⇒ 720.0 小时。
+ * 该数值只影响「多久续一次」，不影响正确性（提前窗口照旧 300s 即可），
+ * 但它**推翻了**「必须每天定时保活」的紧迫性假设 —— 见 scheduler 的说明。
  */
 const TOKEN_REFRESH_WINDOW_SECONDS = 300;
 
@@ -64,6 +79,110 @@ const QR_STATUS = Object.freeze({
 const LOGIN_REWARD_EVENT_NAME = '桌面端登录奖励';
 /** 登录奖励默认额度（服务端未在 popup 里给出时兜底）。 */
 const LOGIN_REWARD_POINTS = 3000;
+
+/**
+ * 每日发放的积分额度（实测账单 `biz_type === 'daily_grant'` 恒为 +300）。
+ * 仅作展示与「作废了多少」的基准，**不是**可领取额度 —— 没有领取端点。
+ */
+const DAILY_GRANT_POINTS = 300;
+
+/** 账单里代表「每日发放 / 每日作废」的 `biz_type`（实测字符串，勿改）。 */
+const DAILY_GRANT_BIZ_TYPE = 'daily_grant';
+const DAILY_EXPIRE_BIZ_TYPE = 'daily_expire';
+
+/**
+ * 把积分账单聚合出**每日池**的运营视图（纯函数，不发请求）。
+ *
+ * ## 为什么这个函数才是本渠道「每日签到」的正确形态
+ *
+ * 每日 300 分**没有领取端点**（服务端自动发），所以「签到按钮」在这个渠道
+ * 注定失败。但它**会过期** —— 实测账单同时给出
+ * `grant_at` 与 `expire_at`，未用尽的部分由一条 `daily_expire` 负向账单清零：
+ * 本机账号 2026-10-14 的 300 分**一分没花、整额作废**。
+ *
+ * 所以用户真正需要的是「**今天还剩多少、什么时候作废**」，据此决定要不要
+ * 在过期前把额度烧掉。这把一个「领不到」的事实变成「可运营」的信息，
+ * 是本渠道在每日维度上唯一有收益的自动化点。
+ *
+ * ## 口径
+ *
+ * - `remaining`：余额接口的 `daily_points`（当前每日池余额）。缺它则为 null。
+ * - `grantedBatches`：`biz_type=daily_grant` 且 points>0 的发放批次数。
+ * - `nextExpiryAt` / `nextExpiryHoursLeft`：**最早到期**的未作废批次时刻。
+ *   到期时刻取账单的 `expire_at`；客户端自己的处理（模块 34917 的 `d()`）
+ *   同样以 `expire_at` 为准，并对 `1971-01-01` 之前的哨兵值判为「无意义」，
+ *   这里照抄该判据：无效时间戳的批次不参与到期判定。
+ *   ⚠️ 将作废的**额度**是 `dailyRemaining`（每日池当前余额），不是各批次
+ *   发放额之和 —— 发放额里已花掉的部分不会作废，相加会虚报损失。
+ * - `expiredTotal`：所有 `daily_expire` 账单的绝对值之和（历史作废总量）。
+ *
+ * 时间参数用毫秒注入，便于单测；缺省为 `Date.now()`。
+ *
+ * @param {{balance?:{daily_points?:number}, incomeItems?:Array, expenseItems?:Array, nowMs?:number}} input
+ */
+function summarizeDailyPoints(input = {}) {
+  const nowMs = Number.isFinite(input.nowMs) ? input.nowMs : Date.now();
+  const balance = input.balance && typeof input.balance === 'object' ? input.balance : {};
+  const income = Array.isArray(input.incomeItems) ? input.incomeItems : [];
+  const expense = Array.isArray(input.expenseItems) ? input.expenseItems : [];
+
+  const dailyRemaining = Number.isFinite(balance.daily_points) ? balance.daily_points : null;
+
+  /** 解析时间戳 → 毫秒；无效或 1971 年以前的哨兵值返回 null（与客户端一致）。 */
+  const toMs = (value) => {
+    if (typeof value !== 'string' || value.trim().length === 0) return null;
+    const ms = Date.parse(value);
+    if (!Number.isFinite(ms) || ms <= new Date('1971-01-01T00:00:00Z').getTime()) return null;
+    return ms;
+  };
+
+  const granted = [];
+  for (const item of income) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    if (item.biz_type !== DAILY_GRANT_BIZ_TYPE) continue;
+    const points = Number.isFinite(item.points) ? item.points : 0;
+    if (points <= 0) continue;
+    granted.push({
+      points,
+      grantedAtMs: toMs(item.grant_at),
+      expiresAtMs: toMs(item.expire_at),
+      createdAt: typeof item.created_at === 'string' ? item.created_at : '',
+      bizId: typeof item.biz_id === 'string' ? item.biz_id : '',
+    });
+  }
+  granted.sort((a, b) => (a.grantedAtMs ?? Number.MAX_SAFE_INTEGER) - (b.grantedAtMs ?? Number.MAX_SAFE_INTEGER));
+
+  // 作废总量：daily_expire 是负向账单，取绝对值累加
+  let expiredTotal = 0;
+  for (const item of expense) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
+    if (item.biz_type !== DAILY_EXPIRE_BIZ_TYPE) continue;
+    const points = Number.isFinite(item.points) ? item.points : 0;
+    if (points < 0) expiredTotal += -points;
+  }
+
+  // 待作废：取**最早到期**的批次。
+  // ⚠️ 不能把各批次的 points 相加当「将损失额度」—— 那是发放额，其中已花掉的
+  // 部分不会作废。真正会作废的额度就是 daily_remaining（每日池当前余额），
+  // 到期时刻取最早那一批的 expire_at（实测同批 grant→expire 约 7 天）。
+  const live = granted.filter((g) => g.expiresAtMs !== null && g.expiresAtMs > nowMs);
+  const nextExpiry = live.length
+    ? live.reduce((min, g) => (g.expiresAtMs < min.expiresAtMs ? g : min), live[0])
+    : null;
+
+  return {
+    claimable: false,
+    grantPoints: DAILY_GRANT_POINTS,
+    dailyRemaining,
+    grantedBatches: granted.length,
+    nextExpiryAt: nextExpiry ? new Date(nextExpiry.expiresAtMs).toISOString() : null,
+    nextExpiryHoursLeft: nextExpiry
+      ? Math.max(0, Math.round((nextExpiry.expiresAtMs - nowMs) / 3600_000 * 10) / 10)
+      : null,
+    expiredTotal,
+    observedAt: new Date(nowMs).toISOString(),
+  };
+}
 
 /**
  * 兜底模型表（远端目录拉不到时用）。
@@ -218,6 +337,43 @@ function buildQrImageUrl(code) {
 }
 
 /**
+ * `X-Org-Code` 头的取值 —— **必须过滤掉 `personal`**。
+ *
+ * ⚠️ **P0，2026-10-15 抓包实证**：个人账号的 `office_identity` 字面值是
+ * `"personal"`（本机客户端 `~/.box-agent/config/auth.json` 实测即为此值）。
+ * 把它原样塞进 `X-Org-Code` 会被组织服务当成一个真实 org code 去查，
+ * 回 `400 {code:200022, message:"org_not_found_error"}`。实测影响面：
+ *
+ * | 端点 | `X-Org-Code: ""` | `X-Org-Code: "personal"` |
+ * |---|---|---|
+ * | `points/v1/balance` | 200 | **400 org_not_found** |
+ * | `llm/v2/model_catalog` | 200 | **400 org_not_found** |
+ * | `desktop/v1/login/points/grant` | 200 | **400 org_not_found** |
+ * | `llm/v2/chat/completions` | 200 | **400 org_not_found** |
+ * | `points/v1/bills` | 200 | 200（该端点不查 org） |
+ * | `auth/v1/user_info` | 200 | 200（同上） |
+ *
+ * 也就是说：**积分、模型目录、登录奖励、整条对话转发全挂**，只有账单和
+ * 用户信息能过。早期参考实现写的是「个人账号为空串」，恰好绕开了这个坑；
+ * 本仓库把 `office_identity` 落进 `raccoonOrg` 列后原样透传，就踩中了。
+ *
+ * 客户端自己的处理（asar 渲染层模块 79746 的 `createHeaders()`）正是如此：
+ * `let e = cookie||""; e && "personal" !== e && (c = e)` —— **显式排除 personal**。
+ * 这里照抄该判据，而不是「非空就发」。
+ *
+ * 企业账号的 org code 是真码（如 `xxxx`），仍要照发，故不能简化成恒空串。
+ */
+function orgCodeOf(credential) {
+  const raw = typeof (credential && credential.office_identity) === 'string'
+    ? credential.office_identity.trim()
+    : '';
+  if (raw.length === 0) return '';
+  // personal 是「个人身份」的标记值，不是组织码；大小写不敏感以防上游变体
+  if (raw.toLowerCase() === 'personal') return '';
+  return raw;
+}
+
+/**
  * 业务端点请求头（依据客户端 `createHeaders()`）。
  *
  * ⚠️ **四个调用点的头集合互不相同，不要图省事统一成一份**（参考实现即如此，
@@ -239,8 +395,9 @@ function headers(credential, opts = {}) {
     Accept: 'application/json',
     'Content-Type': 'application/json',
     Authorization: `Bearer ${credential.access_token}`,
-    // 个人账号为空串；客户端总是发送该头
-    'X-Org-Code': credential.office_identity || '',
+    // 个人账号必须发空串，绝不能发 "personal"（见 {@link orgCodeOf}）；
+    // 客户端总是发送该头，故保留键本身。
+    'X-Org-Code': orgCodeOf(credential),
     'X-Raccoon-Language': 'zh',
   };
   if (opts.platform) h['X-Client-Platform'] = opts.platform;
@@ -264,7 +421,7 @@ function catalogHeaders(credential) {
   return {
     Accept: 'application/json',
     Authorization: `Bearer ${credential.access_token}`,
-    'X-Org-Code': credential.office_identity || '',
+    'X-Org-Code': orgCodeOf(credential),
     'X-Raccoon-Language': 'zh',
   };
 }
@@ -400,6 +557,10 @@ module.exports = {
   QR_STATUS,
   LOGIN_REWARD_EVENT_NAME,
   LOGIN_REWARD_POINTS,
+  DAILY_GRANT_POINTS,
+  DAILY_GRANT_BIZ_TYPE,
+  DAILY_EXPIRE_BIZ_TYPE,
+  summarizeDailyPoints,
   FALLBACK_MODELS,
   IMAGE_CAPABILITY_OVERRIDES,
   decodeJwtExpMs,
@@ -410,6 +571,7 @@ module.exports = {
   encryptPhone,
   generateQrCode,
   buildQrImageUrl,
+  orgCodeOf,
   headers,
   desktopHeaders,
   catalogHeaders,

@@ -2,13 +2,14 @@
  * Raccoon（商汤小浣熊）运营面与对话面接口（`/v1/raccoon/*`）。
  *
  * 真实语义（对照 `src/routes/raccoon.js`）：
- *   - 本机没有官方桌面客户端可读凭据（与 WorkBuddy/ZCode/Qoder 不同），
- *     也**没有「粘贴凭据」这条路**：官方登录靠 `office-raccoon://` 自定义协议
- *     回调，服务端进程收不到。故登录只能由面板承载扫码；
- *   - 二维码由**后端**用零依赖编码器生成（`qr.path` 直接可渲染），
- *     内容是一次性登录票据 —— 绝不交给第三方二维码图片服务；
+ *   - **两条登录入口**（2026-10-15 解包后新增第二条）：
+ *     ① 面板承载扫码 —— 官方那条 `office-raccoon://` 自定义协议回调服务端进程
+ *        收不到，故登录只能由面板承载；二维码由**后端**用零依赖编码器生成
+ *        （`qr.path` 直接可渲染），内容是一次性登录票据，绝不交给第三方图片服务。
+ *     ② 读取本机桌面端 —— 客户端把凭据**明文**写在
+ *        `~/.box-agent/config/auth.json`，零解密成本（与 ZCode/Qoder 的加密存储不同）。
  *   - 每日 300 积分由服务端自动发放（**没有端点**），能领的只有一次性的
- *     「桌面端登录奖励」。
+ *     「桌面端登录奖励」；但每日池**会过期**，故提供只读的 `/daily-usage` 看板。
  */
 import { api } from './http';
 
@@ -149,6 +150,69 @@ export const raccoonRefreshToken = (accountId: string, key: string) =>
   api<{ object: string; account: RaccoonAccount }>(
     `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/refresh`,
     { method: 'POST', body: {}, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
+
+/* ---------- 本机客户端导入 ---------- */
+
+/** 本机桌面端预检：没装客户端时也返回 200（installed:false）。 */
+export interface RaccoonLocalPreview {
+  object: string;
+  installed: boolean;
+  path: string;
+  credentialFile: string;
+  error: string | null;
+  account?: {
+    userId: string | null;
+    hasToken: boolean;
+    hasRefreshToken: boolean;
+    expiresAt: string | null;
+    officeIdentity: string | null;
+  };
+}
+
+export const raccoonLocalPreview = (key: string, signal?: AbortSignal) =>
+  api<RaccoonLocalPreview>('/v1/raccoon/local/preview', { signal }, key);
+
+/** 从本机客户端凭据导入（幂等：同 user_info.id 更新而非重复插入）。 */
+export const raccoonLocalImport = (key: string) =>
+  api<{ object: string; ok: boolean; account: RaccoonAccount } | { ok: false; error: { message: string; type: string } }>(
+    '/v1/raccoon/local/import',
+    { method: 'POST', body: {}, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
+
+/* ---------- 每日积分看板（只读） ---------- */
+
+/**
+ * 每日积分运营视图。
+ *
+ * 每日 300 **不能领**（无端点），但会过期：本视图回答的是「还剩多少 /
+ * 最早何时作废 / 历史作废了多少」，据此在过期前把额度用掉。
+ */
+export interface RaccoonDailyUsage {
+  object: string;
+  accountId: string;
+  /** 恒 false：这个渠道没有可领取的每日端点 */
+  claimable: false;
+  grantPoints: number;
+  /** 每日池当前余额（来自 balance.daily_points） */
+  dailyRemaining: number | null;
+  grantedBatches: number;
+  nextExpiryAt: string | null;
+  nextExpiryHoursLeft: number | null;
+  /** 历史被清零的每日积分总量（daily_expire 绝对值之和） */
+  expiredTotal: number;
+  observedAt: string;
+  /** 账单面是否取到数据（false 表示只是查不到，不是「没有发放」） */
+  billsAvailable: boolean;
+  balanceAvailable: boolean;
+}
+
+export const raccoonDailyUsage = (accountId: string, key: string, signal?: AbortSignal) =>
+  api<RaccoonDailyUsage>(
+    `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/daily-usage`,
+    { signal, timeoutMs: OPS_TIMEOUT_MS },
     key,
   );
 

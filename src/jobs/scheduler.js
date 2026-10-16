@@ -50,6 +50,8 @@ const state = {
   nextProbeAt: null,
   lastRotateAt: null,
   nextRotateAt: null,
+  lastGrowthAt: null,
+  nextGrowthAt: null,
 };
 
 /** 计算「今天/明天 HH:mm」的 Date。 */
@@ -84,8 +86,9 @@ function isExpiringSoon(acct) {
  * ZCode 两侧都为 false：它的 JWT 无 exp、也不返回 refresh_token。
  */
 async function refreshExpiringTokens() {
-  const accounts = store.list().filter((a) => a.enabled
-    && (variant.can(a.edition, 'tokenRefresh') || variant.can(a.edition, 'oauthLogin')));
+  // 与每日兜底轮 runKeepalive 共用 keepaliveCandidates()：两处各写一遍过滤
+  // 条件正是口径分叉的成因（Raccoon 曾被每日轮整号漏掉）。
+  const accounts = keepaliveCandidates();
   let refreshed = 0;
   let failed = 0;
   for (const a of accounts) {
@@ -262,19 +265,50 @@ async function runDailyCheckin() {
   }
 }
 
+/**
+ * 保活候选账号（两条链路的唯一判据，避免口径分叉）。
+ *
+ * tokenRefresh || oauthLogin：
+ * - Trae 两位皆 true；
+ * - Raccoon 只有 tokenRefresh（扫码登录会话、非 OAuth，但 access_token
+ *   约 3 小时且必须续期）—— 此前 runKeepalive 单独用 oauthLogin 过滤，
+ *   把 Raccoon 整号漏掉，每天一次的兜底轮从不覆盖它，也不写保活记录；
+ * - WorkBuddy / Qoder / ZCode 两位皆 false（当前不参与定时保活，
+ *   判据与刷新端点实证见 platform/variant.js 各 capability 注释）。
+ */
+function keepaliveCandidates() {
+  return store.list().filter((a) => a.enabled
+    && (variant.can(a.edition, 'tokenRefresh') || variant.can(a.edition, 'oauthLogin')));
+}
+
 async function runKeepalive() {
   console.log('[scheduler] keepalive token refresh start');
   let failed = 0;
   try {
-    // 无论是否临期，全部 enabled 账号尝试 ensureAuth（内部会按需 refresh）。
-    // 排除 oauthLogin=false 的平台（ZCode）：它没有 refresh_token 也没有换票端点，
-    // 保活只会请求错误端点。
-    const accounts = store.list().filter((a) => a.enabled && variant.can(a.edition, 'oauthLogin'));
+    // 无论是否临期，全部保活候选账号尝试续期（内部按需 refresh）。
+    const accounts = keepaliveCandidates();
     // 账号间加随机间隔：固定 200ms 的整齐节奏是上游易识别的机器化特征
     const gapMin = 800;
     const gapMax = 2500;
     for (const a of accounts) {
       try {
+        // Raccoon：必须走它自己的续期端点（POST /api/web/auth/v1/refresh）。
+        // ensureAuth 没有 raccoon 分支，落到通用 Trae 换票链路会打到
+        // api.trae.cn —— 请求错误端点、还把失败记进保活结果，属假信号。
+        // 临期判据与 refreshExpiringTokens 同用 isExpiringSoon（24h 前置量）；
+        // raccoon 的 access_token 约 3 小时，因此这里实际恒为「临期」。
+        if (variant.isEdition(a.edition, variant.RACCOON)) {
+          const full = store.get(a.id);
+          if (!full) throw new Error('account vanished during keepalive');
+          if (isExpiringSoon(full)) {
+            await require('../raccoon/auth').refreshAccount(full);
+          }
+          store.update(a.id, {
+            lastKeepaliveAt: new Date().toISOString(),
+            lastKeepaliveResult: 'ok',
+          });
+          continue;
+        }
         // ensureAuth 不抛「续期失败」：它吞掉错误后照常返回旧凭据（保证业务可用）。
         // 因此以返回值里的 _refreshError 判定保活结果；只凭「没抛错」记 ok 会把
         // 刷新失败伪装成保活成功（m-35 回归正是这样掩盖了 3 天）。
@@ -501,6 +535,7 @@ function scheduleOnce(hour, minute, label, fn) {
   if (label === 'checkin') state.nextCheckinAt = at.toISOString();
   if (label === 'keepalive') state.nextKeepaliveAt = at.toISOString();
   if (label === 'rotate') state.nextRotateAt = at.toISOString();
+  if (label === 'growth') state.nextGrowthAt = at.toISOString();
   const delay = Math.max(1000, at.getTime() - Date.now());
   const epoch = scheduleEpoch;
   const t = setTimeout(async () => {
@@ -595,32 +630,23 @@ async function runGrowthAuto() {
   }
 }
 
-/** 成长中心独立定时：轮询补签成长活动（可配 interval 小时）。 */
-let growthTimer = null;
+/**
+ * 成长中心独立定时：每天在 growthHour:growthMinute 执行一次
+ * （派猫出发 / 领取旅行奖励 / 任务 / 补登 / 兑换 / 抽奖 / 盲盒）。
+ *
+ * 此前这里是「按进程启动时刻 setInterval 每 N 小时轮询」：间隔锚定在启动时间，
+ * 没有任何墙钟时刻可配（面板只有开关 + 间隔），因此进程一旦在夜里启动或夜间被
+ * 拉起重启，全天所有轮询都落在半夜，派猫与领奖通知连续打扰。现与 checkin /
+ * keepalive / rotate 统一为 scheduleOnce 墙钟排程，时刻可在前台配置（默认 08:00）。
+ * 幂等性由 growth-auto 的 client_token 日粒度种子保证，restart 当天重排不会重复入账。
+ */
 function scheduleGrowthPoll(eff) {
-  if (growthTimer) { clearInterval(growthTimer); growthTimer = null; }
-  // 独立开关 GreenCtrl：growthPollEnabled；时长 30 分~168 小时
-  const hours = Number(eff.growthPollIntervalHours) || 0;
-  const enabled = eff.growthPollEnabled !== false && hours > 0;
+  const enabled = eff.growthPollEnabled !== false && Number(eff.growthPollEnabled) !== 0;
   if (!enabled) {
     console.log('[scheduler] growth poll disabled');
     return;
   }
-  const intervalMs = hours * 3600 * 1000;
-  state.nextGrowthAt = new Date(Date.now() + intervalMs).toISOString();
-  // 首轮延迟 45 秒，避开冷启动与签到流程
-  const firstDelay = 45 * 1000;
-  const first = setTimeout(async () => {
-    await runGrowthAuto().catch(() => {});
-    if (started && eff.growthPollEnabled !== false) {
-      growthTimer = setInterval(() => runGrowthAuto().catch(() => {}), intervalMs);
-      growthTimer.unref?.();
-      state.nextGrowthAt = new Date(Date.now() + intervalMs).toISOString();
-    }
-  }, firstDelay);
-  first.unref?.();
-  timers.push(first);
-  console.log(`[scheduler] growth poll every ${hours}h (first in ${firstDelay / 1000}s)`);
+  scheduleOnce(eff.growthHour, eff.growthMinute, 'growth', runGrowthAuto);
 }
 
 function start() {
@@ -651,6 +677,7 @@ function start() {
   // rotate-settings.enabled 唯一开关判定（m-32）
   scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', () => runRotateAccounts());
   scheduleModelProbe(eff);
+  // 成长中心（WorkBuddy 派猫旅行等）：每天 growthHour:growthMinute 墙钟一次（默认 08:00）
   scheduleGrowthPoll(eff);
   // ZCode 限时套餐探测与领取由 jobs/zcode-rewards.js 自管两个时段
   // （00:30 与 21:30），此处不重复排程，避免两处时刻定义分叉。
@@ -665,10 +692,6 @@ function stop() {
   started = false;
   // 递增代次：所有已注册排程（含回调已触发、仍在 await 的在途排程）就此作废
   scheduleEpoch += 1;
-  if (growthTimer) {
-    clearInterval(growthTimer);
-    growthTimer = null;
-  }
   if (rotateTimer) {
     clearInterval(rotateTimer);
     rotateTimer = null;
@@ -723,7 +746,8 @@ function snapshot() {
     rotateHour: eff.rotateHour,
     rotateMinute: eff.rotateMinute,
     growthPollEnabled: eff.growthPollEnabled,
-    growthPollIntervalHours: eff.growthPollIntervalHours,
+    growthHour: eff.growthHour,
+    growthMinute: eff.growthMinute,
     rotateSettings,
     ...state,
   };

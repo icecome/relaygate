@@ -391,7 +391,8 @@ const VARIANTS = {
     note: 'Raccoon（商汤小浣熊）Work；扫码登录，OpenAI 兼容对话与积分',
     // 登录方式：面板承载二维码 + 轮询。这是本仓库第一种「由管理面板承载登录」
     // 的渠道（其余三家都是读本机客户端或 OAuth 换票）。
-    onboarding: ['login'],
+    // 2026-10-15 解包实证：桌面端凭据是明文 auth.json，追加第二条入口 'local'。
+    onboarding: ['login', 'local'],
     capability: {
       // 对话面：POST /api/web/llm/v2/chat/completions，标准 OpenAI 兼容 + 标准 SSE
       chat: true,
@@ -411,7 +412,9 @@ const VARIANTS = {
       tokenRefresh: true,
       // 一次性「桌面端登录奖励」（每号一次，幂等；不是每日）
       loginReward: true,
-      localImport: false,
+      // 本机桌面端把凭据**明文**写在 ~/.box-agent/config/auth.json，
+      // 可直接导入（2026-10-15 解包实证）。与 ZCode/Qoder 需要解密不同。
+      localImport: true,
     },
     hosts: {
       openapi: 'https://xiaohuanxiong.com',

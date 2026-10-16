@@ -20,9 +20,13 @@ const SPECS = {
   // ROTATE_ENABLED env，存在「面板只开其一」的语义碰撞。时刻字段仍留此处。
   rotateHour: { env: 'ROTATE_HOUR', default: 0, min: 0, max: 23 },
   rotateMinute: { env: 'ROTATE_MINUTE', default: 10, min: 0, max: 59 },
-  // 成长中心独立轮询：0=关闭；与签到流程解耦，用于及时领奖与补派（轮询补签模型）
+  // 成长中心独立定时（与签到链解耦）：growthPollEnabled=0 关闭。
   growthPollEnabled: { env: 'GROWTH_POLL_ENABLED', default: 1, min: 0, max: 1 },
-  growthPollIntervalHours: { env: 'GROWTH_POLL_INTERVAL_HOURS', default: 4, min: 0, max: 168 },
+  // 成长中心执行时刻（墙钟，每天一次）。此前只有 growthPollIntervalHours
+  // （按进程启动时刻每 N 小时轮询），没有可配时刻：进程若半夜启动/重启，
+  // 派猫与领奖通知会整天落在夜间，造成持续打扰。现改为固定时刻，默认早晨 8:00。
+  growthHour: { env: 'GROWTH_HOUR', default: 8, min: 0, max: 23 },
+  growthMinute: { env: 'GROWTH_MINUTE', default: 0, min: 0, max: 59 },
   // 确定性错峰窗口（分钟）：多账号签到与刷余额按（日期, 账号 ID）哈希分散到窗口内，
   // 避免固定时刻批量请求上游；0=关闭（退回原批量行为）
   checkinSpreadMinutes: { env: 'CHECKIN_SPREAD_MINUTES', default: 30, min: 0, max: 720 },

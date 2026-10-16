@@ -143,33 +143,63 @@ async function claimLoginReward(acct) {
 /**
  * 查询「桌面端登录奖励」是否已领。
  *
- * 判据：`GET points/v1/bills` 里已有 `biz_type === 'reward_grant'` 且
+ * 判据：账单里已有 `biz_type === 'reward_grant'` 且
  * `event_name === '桌面端登录奖励'` 的记录。
+ *
+ * ⚠️ **必须用 `type=income` 过滤**（2026-10-15 端到端实测修正的 P1 bug）：
+ * `points/v1/bills` 默认（不带 type，等同 `type=all`）按**时间倒序**返回，
+ * 一个活跃账号最近 50 条几乎全是「桌面端 LLM 对话消耗」（负向 `desktop` 账单），
+ * 而一次性登录奖励是账号早期（注册当天）发的正向账单，会被完全挤出窗口 ——
+ * 于是 `claimed` 恒返回 false，面板错误地一直提示「可领取」。
+ * 加 `type=income` 后服务端只回正向账单（本账号实测仅 4 条，含该奖励记录），
+ * 奖励账单必然在窗口内。
  *
  * ⚠️ **不能靠 balance 推断** —— 余额是多个来源的合计，无法区分某一项是否已领。
  * ⚠️ **不能只按 `biz_type === 'reward_grant'` 判定** ——「新人注册礼包」也是
- * `reward_grant`，把它算作登录奖励会让新用户一开始就显示「已领取」。
+ * `reward_grant`（`event_name` 不同），把它算作登录奖励会让新用户一开始就显示
+ * 「已领取」。故仍须比对 `event_name`。
  * ⚠️ **服务端没有单独的奖励状态端点**（实测），故只能查账单明细。
  * ⚠️ 查询失败时保守返回 `claimed:false` —— 宁可让用户多点一次（服务端幂等、
  * 无害），也不要误报「已领」而让他真的错过。
  */
 async function fetchOnboardingStatus(acct) {
   const credential = client.credentialOf(acct);
-  let r;
-  try {
-    r = await client.request({
-      method: 'GET',
-      path: 'pointsBills',
-      headers: product.desktopHeaders(credential),
-      query: { 'paging.limit': 50, 'paging.offset': 0 },
-    });
-  } catch {
-    return { claimed: false, points: product.LOGIN_REWARD_POINTS, detail: '账单查询失败' };
+  let items = [];
+  // income 账单（发放类）很稀疏；limit 200 覆盖绝大多数账号的全部发放记录。
+  // 若哪天某账号发放账单超过 200 条，登录奖励（账号最早期那条）会落进下一页，
+  // 故这里按需翻页直到取全或到达上限，而不是只取第一页。
+  const limit = 200;
+  const maxPages = 5;
+  let offset = 0;
+  for (let page = 0; page < maxPages; page += 1) {
+    let r;
+    try {
+      r = await client.request({
+        method: 'GET',
+        path: 'pointsBills',
+        headers: product.desktopHeaders(credential),
+        query: { 'paging.limit': limit, 'paging.offset': offset, type: 'income' },
+      });
+    } catch {
+      // 首页就失败 → 保守判未领；已有部分页则用已取到的部分继续判定
+      if (page === 0) {
+        return { claimed: false, points: product.LOGIN_REWARD_POINTS, detail: '账单查询失败' };
+      }
+      break;
+    }
+    if (!r.envelope || r.envelope.code !== 0 || !r.envelope.data) {
+      if (page === 0) {
+        return { claimed: false, points: product.LOGIN_REWARD_POINTS, detail: '账单查询失败' };
+      }
+      break;
+    }
+    const batch = Array.isArray(r.envelope.data.items) ? r.envelope.data.items : [];
+    items = items.concat(batch);
+    // 取到不足一页 = 已到底
+    if (batch.length < limit) break;
+    offset += batch.length;
   }
-  if (!r.envelope || r.envelope.code !== 0 || !r.envelope.data) {
-    return { claimed: false, points: product.LOGIN_REWARD_POINTS, detail: '账单查询失败' };
-  }
-  const items = Array.isArray(r.envelope.data.items) ? r.envelope.data.items : [];
+
   for (const item of items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue;
     if (item.biz_type !== 'reward_grant') continue;
@@ -184,10 +214,69 @@ async function fetchOnboardingStatus(acct) {
   return { claimed: false, points: product.LOGIN_REWARD_POINTS, detail: '账单中暂无登录奖励记录' };
 }
 
+/**
+ * 每日积分运营视图（**只读**：balance + 两页账单）。
+ *
+ * 语义见 `product.summarizeDailyPoints`：每日 300 不能领（无端点），但会过期，
+ * 所以这里回答的是「今天还剩多少 / 什么时候作废 / 历史作废了多少」。
+ *
+ * 用 `type=income` 与 `type=expense` 两次取数（实测 `type` 只接受这三个枚举值：
+ * all/income/expense，其它值回 `100002 params_invalid_error`）。
+ * 任一页失败都**不抛错**：账单只是运营视图，拿不到就把对应字段留空，
+ * 让面板显示「未知」而不是整块报错。
+ */
+async function fetchDailyUsage(acct) {
+  const credential = client.credentialOf(acct);
+  const headers = product.desktopHeaders(credential);
+
+  const balance = await fetchBalanceRaw(acct).catch(() => null);
+
+  // income 页取发放账单；expense 页取作废账单。limit 100 足够覆盖每日发放
+  // （发放类账单很稀疏：本机账号 3 天历史只有 4 条）。
+  const bills = async (type) => {
+    try {
+      const r = await client.request({
+        method: 'GET',
+        path: 'pointsBills',
+        headers,
+        query: { 'paging.limit': 100, 'paging.offset': 0, type },
+      });
+      if (!r.envelope || r.envelope.code !== 0 || !r.envelope.data) return [];
+      return Array.isArray(r.envelope.data.items) ? r.envelope.data.items : [];
+    } catch {
+      return [];
+    }
+  };
+  const [incomeItems, expenseItems] = await Promise.all([bills('income'), bills('expense')]);
+
+  const summary = product.summarizeDailyPoints({
+    balance: balance || {},
+    incomeItems,
+    expenseItems,
+  });
+  // 两页都取空 = 账单面完全不可用（网络或鉴权失败），如实标出来，
+  // 否则面板会把「查不到」显示成「没有发放记录」——那是另一种误导。
+  summary.billsAvailable = incomeItems.length > 0 || expenseItems.length > 0;
+  summary.balanceAvailable = !!balance;
+  return summary;
+}
+
+/** 余额的**原始**响应（不写库、不做 packages 归一），供运营视图复用。 */
+async function fetchBalanceRaw(acct) {
+  const credential = client.credentialOf(acct);
+  const r = await client.request({
+    method: 'GET',
+    path: 'pointsBalance',
+    headers: product.desktopHeaders(credential),
+  });
+  return client.unwrap(r.envelope, { method: 'GET', path: 'pointsBalance', status: r.status }) || null;
+}
+
 module.exports = {
   fetchBalance,
   refreshBalance,
   claimLoginReward,
   fetchOnboardingStatus,
+  fetchDailyUsage,
   readNumber,
 };

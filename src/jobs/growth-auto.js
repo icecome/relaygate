@@ -69,6 +69,22 @@ async function runAccount(a, opts = {}) {
   const seed = `${a.id}|${localDateKey()}`;
 
   // 1) 旅行
+  // 派猫出发（含通知）收敛为一处：idle 分支与「领奖后补派」共用，避免两处文案/通知分叉。
+  async function tryDepart() {
+    const d = await g.depart(info, { location_id: locationId, duration_hours: durationHours });
+    if (d.ok) {
+      actions.push({ seg: 'travel', ok: true, msg: `派猫出发 ${d.location ? d.location.name : ''}（预计 +${d.rewardCredit ?? 0}）` });
+      notify('growth_departed', { accountId: a.id, label, message: `已派猫出发（${d.location ? d.location.name : ''}）` }, 'WorkBuddy 派猫出发').catch(() => {});
+      return true;
+    }
+    if (d.result === 'daily_limit') {
+      actions.push({ seg: 'travel', ok: true, skip: true, msg: '今日旅行次数已达上限' });
+      return true;
+    }
+    actions.push({ seg: 'travel', ok: false, msg: `出发失败：${d.reason || d.result}` });
+    return false;
+  }
+
   try {
     const st = await g.fetchStatus(info);
     if (!st.ok) {
@@ -78,19 +94,19 @@ async function runAccount(a, opts = {}) {
       if (c.ok) {
         actions.push({ seg: 'travel', ok: true, msg: `领取旅行奖励 +${c.rewardCredit ?? 0}` });
         notify('growth_claimed', { accountId: a.id, label, message: `旅行奖励已领取 +${c.rewardCredit ?? 0}` }, 'WorkBuddy 旅行奖励已领取').catch(() => {});
+        // 领奖后同日补派一次：定时改为每天墙钟执行一次后，若只领不派，当天剩余的上游
+        // 旅行次数会整天空转（旧版靠每 4 小时轮询在下一轮自动补派）。
+        const st2 = await g.fetchStatus(info).catch(() => null);
+        if (st2 && st2.ok && st2.state === 'idle' && !st2.dailyLimitReached) {
+          await tryDepart();
+        }
       } else {
         actions.push({ seg: 'travel', ok: false, msg: `领奖失败：${c.reason || c.result}` });
       }
     } else if (st.state === 'traveling') {
       actions.push({ seg: 'travel', ok: true, skip: true, msg: `旅行中（${st.location ? st.location.name : ''}）` });
     } else if (st.state === 'idle' && !st.dailyLimitReached) {
-      const d = await g.depart(info, { location_id: locationId, duration_hours: durationHours });
-      if (d.ok) {
-        actions.push({ seg: 'travel', ok: true, msg: `派猫出发 ${d.location ? d.location.name : ''}（预计 +${d.rewardCredit ?? 0}）` });
-        notify('growth_departed', { accountId: a.id, label, message: `已派猫出发（${d.location ? d.location.name : ''}）` }, 'WorkBuddy 派猫出发').catch(() => {});
-      } else {
-        actions.push({ seg: 'travel', ok: false, msg: `出发失败：${d.reason || d.result}` });
-      }
+      await tryDepart();
     } else {
       actions.push({ seg: 'travel', ok: true, skip: true, msg: '今日旅行已完成' });
     }

@@ -20,6 +20,9 @@ output/
 logs/
 docs/
 
+# Python（抓包脚本运行残留）
+__pycache__/
+
 # Mine temp
 tmp-userdata/
 **/tmp-userdata/

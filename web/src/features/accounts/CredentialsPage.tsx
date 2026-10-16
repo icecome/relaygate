@@ -56,6 +56,7 @@ import { ChannelGrid } from './ChannelGrid';
 import { ChannelOpsDialog } from './ChannelOpsDialog';
 import { GrowthPanel } from './GrowthPanel';
 import { ExpiryChip, expirySummary, keepaliveOf, usablePacksOf, worstExpiry } from './accountPacks';
+import { KeepaliveBoard } from './KeepaliveBoard';
 import { PackDialog } from './PackDialog';
 
 type StateFilter = 'all' | 'ok' | 'cool' | 'off';
@@ -637,35 +638,10 @@ export default function CredentialsPage() {
 
         <Panel
           title="最近操作与保活"
-          description="用于判断凭据是否仍在被调度与保活"
+          description="按账号池分别统计：每个池自己的保活时刻、结果与 token 临期数"
           flush
         >
-          <table className="card-table table-fixed w-full border-collapse text-[13px]">
-            <thead>
-              <tr>
-                <th className="th col-account">账号</th>
-                <th className="th">最近选用</th>
-                <th className="th">最近签到</th>
-                <th className="th">签到结果</th>
-                <th className="th">最近保活</th>
-                <th className="th">保活结果</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.slice(0, 8).map((a) => (
-                <tr key={a.id} className="row-hover">
-                  <td className="td font-mono text-[12px]" data-label="账号">{a.label || a.id}</td>
-                  <td className="td font-mono text-[12px]" data-label="最近选用">{formatTime(a.lastPickedAt)}</td>
-                  <td className="td font-mono text-[12px]" data-label="最近签到">{formatTime(a.lastCheckinAt)}</td>
-                  <td className="td font-mono text-[12px]" data-label="签到结果">{a.lastCheckinResult || '—'}</td>
-                  <td className="td font-mono text-[12px]" data-label="最近保活">{formatTime(a.lastKeepaliveAt)}</td>
-                  <td className="td font-mono text-[12px] truncate" title={a.lastKeepaliveResult || undefined} data-label="保活结果">
-                    {a.lastKeepaliveResult || '—'}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          <KeepaliveBoard accounts={list.data ?? []} channelById={channelById} rows={rows} />
         </Panel>
 
         {growthOpen && <GrowthPanel />}

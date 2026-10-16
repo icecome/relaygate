@@ -29,6 +29,7 @@ const auth = require('../raccoon/auth');
 const credits = require('../raccoon/credits');
 const chat = require('../raccoon/chat');
 const product = require('../raccoon/product');
+const localClient = require('../raccoon/local');
 const qr = require('../lib/qr');
 const { authenticateAdmin, authenticate } = require('../middleware/auth');
 const { keyRateLimit } = require('../middleware/rate-limit');
@@ -84,6 +85,9 @@ function getRaccoonAccount(res, id, action = '操作') {
  *
  * ⚠️ 这里如实声明 `checkin: false`：Raccoon **没有签到端点**，每日 300 积分由
  * 服务端按日自动发放。若把它做成签到按钮，按钮必然失败（见 variant.js 的注释）。
+ * 2026-10-15 对本机客户端 app.asar 的**全量端点穷举**（1597 处 URL 拼接）
+ * 再次证实：`points/v1` 下只有 `balance` 与 `bills` 两个路径，全仓没有任何
+ * daily / checkin / sign_in / claim / tasks 形态的发放端点。
  */
 router.get('/status', admin, (_req, res) => {
   const list = store.list().filter((a) => variant.isEdition(a.edition, variant.RACCOON));
@@ -106,8 +110,42 @@ router.get('/status', admin, (_req, res) => {
       timeoutMs: product.LOGIN_TIMEOUT_MS,
       // 短信路径需要阿里云滑块，本实现**未提供**（见 docs 的边界说明）
       smsAvailable: false,
+      // 第二条入口：本机桌面端凭据是**明文** auth.json，可直接导入
+      localImport: true,
+      localImportEndpoints: ['/v1/raccoon/local/preview', '/v1/raccoon/local/import'],
+    },
+    dailyPoints: {
+      // 每日 300 由服务端自动发放，**没有可调用端点**，故面板不放签到按钮。
+      // 但能观测：账单里 biz_type=daily_grant（+300）与 daily_expire（未用尽
+      // 清零）两条记录，配合 balance 的 daily_points 池可算出「今天还剩多少、
+      // 什么时候作废」—— 见 /daily-usage。
+      claimable: false,
+      grant: 'server-side',
+      observedPoints: product.DAILY_GRANT_POINTS,
     },
   });
+});
+
+/**
+ * 每日积分消耗看板（**只读**，把「自动发放」变成可运营的信息）。
+ *
+ * 为什么值得做：每日 300 不能领（无端点），但它**会过期**。实测账单里
+ * `daily_grant` 带 `grant_at`/`expire_at`，未用尽的部分由 `daily_expire`
+ * 清零 —— 即「每天 300，7 天内不烧完就作废」。用户真正想知道的是
+ * 「今天还剩多少 / 什么时候作废」，而不是一个必然失败的签到按钮。
+ *
+ * 数据来源全部是已实证的只读端点：`points/v1/balance` 与
+ * `points/v1/bills?type=income|expense`。不触碰任何写端点。
+ */
+router.get('/accounts/:id/daily-usage', admin, async (req, res) => {
+  const acct = getRaccoonAccount(res, req.params.id, '查询每日积分');
+  if (!acct) return;
+  try {
+    const usage = await credits.fetchDailyUsage(acct);
+    res.json({ object: 'raccoon.dailyUsage', accountId: acct.id, ...usage });
+  } catch (e) {
+    res.status(502).json({ error: { message: e.message, type: 'raccoon_upstream_error' } });
+  }
 });
 
 // ---- 扫码登录 ----
@@ -230,6 +268,52 @@ router.post('/accounts/:id/refresh', admin, async (req, res) => {
   } catch (e) {
     const status = e.needsRelogin ? 401 : 502;
     res.status(status).json({ error: { message: e.message, type: e.needsRelogin ? 'needs_relogin' : 'raccoon_upstream_error' } });
+  }
+});
+
+// ---- 本机客户端导入 ----
+
+/**
+ * 预检本机小浣熊桌面端的凭据（只读，不入库、不打上游写端点）。
+ *
+ * 与 routes/zcode.js 的 `/local/preview` 同构：**没装客户端时也返回 200**
+ * （`installed:false`），让面板能正常渲染这张卡，而不是弹一个错误。
+ */
+router.get('/local/preview', admin, (_req, res) => {
+  const p = localClient.preview();
+  res.json({
+    object: 'raccoon.local.preview',
+    installed: p.installed,
+    path: p.path,
+    credentialFile: p.credentialFile,
+    error: p.error,
+    ...(p.installed ? {
+      account: {
+        userId: p.userId,
+        hasToken: true,
+        hasRefreshToken: p.hasRefreshToken,
+        expiresAt: p.expiresAt,
+        officeIdentity: p.officeIdentity,
+      },
+    } : {}),
+  });
+});
+
+/**
+ * 从本机客户端凭据导入（幂等：同 user_info.id 更新而非重复插入）。
+ *
+ * 复用 `auth.persistLogin` —— 导入与扫码两条入口必须产出同形状的账号记录，
+ * 否则同一微信账号会在池里出现两次（label 与 userId 判据不一致所致）。
+ */
+router.post('/local/import', admin, async (_req, res) => {
+  try {
+    const saved = await localClient.importFromLocal();
+    res.json({ object: 'raccoon.local.import', ok: true, account: redact(saved) });
+  } catch (e) {
+    res.status(502).json({
+      ok: false,
+      error: { message: e.message, type: 'local_import_error' },
+    });
   }
 });
 

@@ -106,7 +106,7 @@ output/              运行数据（.trae-api/ 数据库与密钥、logs/ 日志
 | `KEY_DEFAULT_RPM` | `60` | 访问密钥默认每分钟请求上限（0=不限，不推荐） |
 | `STATUS_PUBLIC` | `false` | `/status` 是否免鉴权 |
 | `SCHEDULER_ENABLED` | `true` | 定时任务总开关 |
-| `GROWTH_POLL_ENABLED` / `GROWTH_POLL_INTERVAL_HOURS` | `true` / `4` | WorkBuddy 成长任务自动执行 |
+| `GROWTH_POLL_ENABLED` / `GROWTH_HOUR`+`GROWTH_MINUTE` | `true` / `8:00` | WorkBuddy 成长任务（派猫旅行等）每天墙钟执行一次的时刻 |
 
 完整列表与语义见 `.env.example`（每个变量都有注释）。
 
