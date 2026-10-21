@@ -37,11 +37,15 @@ process.env.ADMIN_KEY = 'raccoon-test-admin-key';
 process.env.PORT = String(17000 + (process.pid % 1000));
 process.env.HOST = '127.0.0.1';
 process.env.SCHEDULER_ENABLED = 'false';
+// 2026-10-16 起 .env 里有 RACCOON_KEEPALIVE_ENABLED=true（真机已开启），
+// dotenv 会把它带进测试进程 → 「默认必须关闭」的用例失败。测试显式关掉。
+process.env.RACCOON_KEEPALIVE_ENABLED = 'false';
 require('./isolation-guard')('raccoon');
 
 // app.listen 在 require 时已发起
 require('../index.js');
 const product = require('../raccoon/product');
+const credits = require('../raccoon/credits');
 const raccoonClient = require('../raccoon/client');
 const raccoonAuth = require('../raccoon/auth');
 const raccoonChat = require('../raccoon/chat');
@@ -117,12 +121,19 @@ async function httpTests() {
   assert.strictEqual(st.json.platform.capability.chat, true);
   assert.strictEqual(st.json.platform.capability.tokenRefresh, true);
   assert.strictEqual(st.json.platform.capability.loginReward, true);
+  assert.strictEqual(st.json.platform.capability.localImport, true);
+  assert.strictEqual(st.json.platform.capability.dailyKeepalive, true);
   assert.strictEqual(st.json.chat.inPool, false, 'Raccoon 不进 Trae 转发池');
 
   const s = await req('POST', '/v1/raccoon/login/session', { token: ADMIN, body: {} });
   assert.strictEqual(s.status, 201);
   assert.match(s.json.sessionId, /^[0-9a-f]{24}$/);
-  assert.match(s.json.qrUrl, /^https:\/\/xiaohuanxiong\.com\/login\/mp\?code=[0-9a-f]{32}&appname=/);
+  // 2026-10-18 起 code 由服务端签发（qr-<uuid> 形态），不再自造 32 hex
+  assert.match(
+    s.json.qrUrl,
+    /^https:\/\/xiaohuanxiong\.com\/login\/mp\?code=qr-.+&appname=.+&source=platform$/,
+    '二维码 URL 必须用服务端签发码 + source=platform',
+  );
   // 二维码尺寸必须是合法版本（17 + 4k），且 path 非空
   assert.strictEqual((s.json.qr.size - 17) % 4, 0, '二维码尺寸必须是 17+4k');
   assert.ok(s.json.qr.path.length > 0 && s.json.qr.path.startsWith('M'), 'path 应是非空的 SVG path');
@@ -196,9 +207,41 @@ async function httpTests() {
     assert.strictEqual(dailyForeign.status, 400, '非 Raccoon 账号不能查 Raccoon 的每日积分');
     const dailyNoAuth = await req('GET', `/v1/raccoon/accounts/${foreignAcct.id}/daily-usage`);
     assert.strictEqual(dailyNoAuth.status, 401, '每日积分端点必须鉴权');
+    // 保活端点同样要收口平台与鉴权（keepalive 是写操作，更要防误打别家上游）
+    const kaForeign = await req('POST', `/v1/raccoon/accounts/${foreignAcct.id}/keepalive`, { token: ADMIN, body: {} });
+    assert.strictEqual(kaForeign.status, 400, '非 Raccoon 账号不能做保活');
+    const kaNoAuth = await req('POST', `/v1/raccoon/accounts/${foreignAcct.id}/keepalive`, { body: {} });
+    assert.strictEqual(kaNoAuth.status, 401, '保活端点必须鉴权');
   } finally {
     store.remove(foreignAcct.id);
   }
+
+  // ---- 保活任务快照：默认关闭 + 配置面完整（面板据此渲染）----
+  const ka = await req('GET', '/v1/raccoon/keepalive', { token: ADMIN });
+  assert.strictEqual(ka.status, 200);
+  assert.strictEqual(ka.json.enabled, false, '默认必须关闭：这是写操作，须用户显式开启');
+  assert.strictEqual(ka.json.hour, 9);
+  assert.strictEqual(ka.json.minute, 5);
+  assert.strictEqual(ka.json.retries, 1);
+  assert.ok('nextRunAt' in ka.json && 'lastRunAt' in ka.json, '快照要带排程与结果位');
+
+  // 开启后定时器必须排程（曾出现「开关打开但永不执行」的缺口：save() 只判
+  // started，而 started 在启动时 disabled 的分支下恒为 false → 面板首次开启
+  // 后 nextRunAt 一直为 null）。PUT 必须返回完整快照，让前端立即拿到排程。
+  const kaOn = await req('PUT', '/v1/raccoon/keepalive', { token: ADMIN, body: { enabled: true } });
+  assert.strictEqual(kaOn.status, 200);
+  assert.strictEqual(kaOn.json.enabled, true);
+  assert.ok(kaOn.json.nextRunAt, '开启后必须立即排程（nextRunAt 非空）');
+  const kaBack = await req('GET', '/v1/raccoon/keepalive', { token: ADMIN });
+  assert.strictEqual(kaBack.json.nextRunAt, kaOn.json.nextRunAt, 'GET 与 PUT 返回的排程一致');
+  // 关闭后清空排程（不留幽灵定时器）
+  const kaOff = await req('PUT', '/v1/raccoon/keepalive', { token: ADMIN, body: { enabled: false } });
+  assert.strictEqual(kaOff.json.enabled, false);
+  assert.strictEqual(kaOff.json.nextRunAt, null, '关闭后必须清空排程');
+  // 配置夹紧：非法值不落库
+  const kaClamp = await req('PUT', '/v1/raccoon/keepalive', { token: ADMIN, body: { hour: 99, minute: -5 } });
+  assert.ok(kaClamp.json.hour >= 0 && kaClamp.json.hour <= 23, `hour 应被夹紧，实际 ${kaClamp.json.hour}`);
+  assert.ok(kaClamp.json.minute >= 0 && kaClamp.json.minute <= 59, `minute 应被夹紧，实际 ${kaClamp.json.minute}`);
 
   // 渠道卡片：Raccoon 自动出现，且接入方式是「扫码 + 本机导入」双入口
   const ch = await req('GET', '/v1/admin/channels', { token: ADMIN });
@@ -270,6 +313,20 @@ async function run() {
     assert.strictEqual(Buffer.from(a, 'base64').length, 16 + 11);
   });
 
+  // encryptSecret 与 encryptPhone 同一算法（2026-10-20：login_with_password /
+  // reset_password 的 password 字段实测也用这套 AES-128-CFB）。
+  t('encryptSecret：与 encryptPhone 同算法（密码字段实测同一加密）', () => {
+    const iv = Buffer.alloc(16, 3);
+    assert.strictEqual(
+      product.encryptSecret('My-Passw0rd!', iv),
+      product.encryptPhone('My-Passw0rd!', iv),
+      'password 与 phone 必须走同一加密（固定 IV 下密文逐字节相同）',
+    );
+    // 密码比手机号长：CFB 是流密码，密文长度必须等于明文长度
+    const out = Buffer.from(product.encryptSecret('0123456789abcdefghij', iv), 'base64');
+    assert.strictEqual(out.length, 16 + 20);
+  });
+
   // ===== product：JWT 过期 =====
   t('decodeJwtExpMs：解析 exp（毫秒）；非 JWT 返回 undefined 且不抛错', () => {
     const payload = Buffer.from(JSON.stringify({ exp: 1800000000 })).toString('base64url');
@@ -324,16 +381,33 @@ async function run() {
     assert.notStrictEqual(a, b);
   });
 
-  t('buildQrImageUrl：官方形态，appname 做百分号编码', () => {
-    const code = 'a'.repeat(32);
+  t('buildQrUrl：官方形态，code/appname/source 三参数齐且 appname 做百分号编码', () => {
+    const u = product.buildQrUrl({
+      origin: 'https://xiaohuanxiong.com/',
+      scanPath: '/login/mp',
+      code: 'a'.repeat(32),
+      brand: '商汤小浣熊',
+      source: 'platform',
+    });
     assert.strictEqual(
-      product.buildQrImageUrl(code),
-      `https://xiaohuanxiong.com/login/mp?code=${code}&appname=%E5%95%86%E6%B1%A4%E5%B0%8F%E6%B5%A3%E7%86%8A%E5%AE%98%E7%BD%91`,
+      u,
+      `https://xiaohuanxiong.com/login/mp?code=${'a'.repeat(32)}&appname=%E5%95%86%E6%B1%A4%E5%B0%8F%E6%B5%A3%E7%86%8A&source=platform`,
     );
+    // 新体系比旧的多一个 source=platform（官网 2026-10 起）
+    assert.ok(u.includes('source=platform'), '必须带 source=platform');
+    assert.ok(!u.includes('appname=' + encodeURIComponent('商汤小浣熊官网')), 'appname 已改为品牌名（旧值已废弃）');
   });
 
-  t('登录 URL 能在版本 10 内编码（144 字节 < 213 字节上限）', () => {
-    const shape = qr.renderQrPath(product.buildQrImageUrl('f'.repeat(32)));
+  t('登录 URL 能在版本 10 内编码（签发码 + 品牌名仍 < 213 字节上限）', () => {
+    // 签发码形如 qr-01a14f9e-f95a-7953-bb4e-ae4ada3847c7（46 字符）
+    const url = product.buildQrUrl({
+      origin: 'https://xiaohuanxiong.com/',
+      scanPath: '/login/mp',
+      code: 'qr-01a14f9e-f95a-7953-bb4e-ae4ada3847c7',
+      brand: '商汤小浣熊',
+      source: 'platform',
+    });
+    const shape = qr.renderQrPath(url);
     assert.strictEqual((shape.size - 17) % 4, 0);
     assert.ok(shape.size <= 57, `尺寸 ${shape.size} 超出支持的版本 10`);
   });
@@ -539,6 +613,57 @@ async function run() {
     assert.strictEqual(s2.nextExpiryHoursLeft, null);
   });
 
+  // ===== 每日保活：「当日登录」延长有效期（2026-10-16 新增）=====
+  // 官方口径（i18n dailyGrantRule 三语原文）：当天 24:00 清零 = 1 天；延长 = 7 天。
+  t('validityDaysOf：官方口径（含发放当日）—— 当天=1、延长=7、非法=null', () => {
+    // 账单真实形态：grant 00:00 / expire 当日 23:59:59 → 官方叫「1 天」
+    assert.strictEqual(credits.validityDaysOf({
+      grant_at: '2026-10-16T00:00:00+08:00', expire_at: '2026-10-16T23:59:59+08:00',
+    }), 1, '当天清零应判 1 天（不是 0）');
+    // 延长形态：grant 10-16 00:00 / expire 10-22 23:59:59 → 官方叫「7 天」
+    assert.strictEqual(credits.validityDaysOf({
+      grant_at: '2026-10-16T00:00:00+08:00', expire_at: '2026-10-22T23:59:59+08:00',
+    }), 7, '日历差 6 但官方口径是 7（含发放当日）');
+    // 非法/缺失时间戳
+    assert.strictEqual(credits.validityDaysOf({ grant_at: 'x', expire_at: 'y' }), null);
+    assert.strictEqual(credits.validityDaysOf({}), null);
+    assert.strictEqual(credits.validityDaysOf(null), null);
+    // expire < grant 视为非法（防倒挂数据误判为已延长）
+    assert.strictEqual(credits.validityDaysOf({
+      grant_at: '2026-10-22T00:00:00+08:00', expire_at: '2026-10-16T23:59:59+08:00',
+    }), null);
+  });
+
+  // ===== grantedToday：如实标出「上游今日是否已发放」（2026-10-20 实证）=====
+  // 2026-10-19/10-20 上游连续两天未产生当日 daily_grant，此时保活应报
+  // upstream_not_granted（无可延长对象）而非「签到失败」。
+  t('summarizeDailyPoints.grantedToday：只有 grant_at 落在今天才算今日已发', () => {
+    const now = Date.parse('2026-10-20T09:00:00+08:00');
+    // 只有历史批次（最近一笔 10-18）→ grantedToday=false
+    const hist = product.summarizeDailyPoints({
+      balance: { daily_points: 300 },
+      incomeItems: [
+        { biz_type: 'daily_grant', points: 300, grant_at: '2026-10-18T00:00:00+08:00', expire_at: '2026-10-24T23:59:59+08:00' },
+        { biz_type: 'daily_grant', points: 300, grant_at: '2026-10-17T00:00:00+08:00', expire_at: '2026-10-23T23:59:59+08:00' },
+      ],
+      nowMs: now,
+    });
+    assert.strictEqual(hist.grantedToday, false, '无今日批次时 grantedToday 必须为 false');
+
+    // 含今日批次 → grantedToday=true
+    const today = product.summarizeDailyPoints({
+      balance: { daily_points: 300 },
+      incomeItems: [
+        { biz_type: 'daily_grant', points: 300, grant_at: '2026-10-20T00:00:00+08:00', expire_at: '2026-10-26T23:59:59+08:00' },
+      ],
+      nowMs: now,
+    });
+    assert.strictEqual(today.grantedToday, true, '有今日批次时 grantedToday 必须为 true');
+
+    // 空输入 → grantedToday=false（不是抛错）
+    assert.strictEqual(product.summarizeDailyPoints({ nowMs: now }).grantedToday, false);
+  });
+
   // ===== chat：思考档位与请求体 =====
   t('resolveThinking：只有 extra_body.thinking 是有效载波，且需要明确意图', () => {
     // 客户端什么都不说 → 一个字节都不改
@@ -694,30 +819,297 @@ async function run() {
   });
 
   // ===== auth：登录会话 =====
-  t('扫码会话：创建/查询/取消/过期清理，且每条会话的 code 不同', () => {
-    const a = raccoonAuth.startLoginSession();
-    const b = raccoonAuth.startLoginSession();
-    assert.notStrictEqual(a.sessionId, b.sessionId);
-    assert.notStrictEqual(a.code, b.code);
-    assert.match(a.code, /^[0-9a-f]{32}$/);
-    assert.strictEqual(a.pollIntervalMs, 2000);
-    assert.ok(raccoonAuth.getLoginSession(a.sessionId));
-    assert.strictEqual(raccoonAuth.cancelLoginSession(a.sessionId), true);
-    assert.strictEqual(raccoonAuth.getLoginSession(a.sessionId), null);
+  // 2026-10-18 起扫码走新 IAM：startLoginSession 是**异步**且要打上游拿签发码，
+  // 故这里只测「本地会话生命周期」与「buildQrUrl 白名单」；真链路走 mock HTTP（见下）。
+  t('buildQrUrl：复刻官方白名单 —— 挡跳域 / 协议相对 / hash / 双编码', () => {
+    const ok = product.buildQrUrl({
+      origin: 'https://xiaohuanxiong.com/',
+      scanPath: '/login/mp',
+      code: 'qr-abc',
+      brand: '商汤小浣熊',
+      source: 'platform',
+    });
+    // 官方形态：origin + scan_path + ?code&appname&source
+    assert.strictEqual(
+      ok,
+      'https://xiaohuanxiong.com/login/mp?code=qr-abc&appname=%E5%95%86%E6%B1%A4%E5%B0%8F%E6%B5%A3%E7%86%8A&source=platform',
+    );
+
+    const bad = [
+      { origin: 'http://xiaohuanxiong.com/', scanPath: '/login/mp', why: 'origin 必须 https' },
+      { origin: 'https://user:pass@xiaohuanxiong.com/', scanPath: '/login/mp', why: 'origin 不得带凭据' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: 'login/mp', why: 'scanPath 必须以 / 开头' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '//evil.com/x', why: '协议相对地址' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '/login/mp#x', why: 'hash 注入' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '/login/mp\\x', why: '反斜杠' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '/login/mp %20', why: '空格' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '/login/%2e%2e/x', why: '双编码（%xx）' },
+      { origin: 'https://xiaohuanxiong.com/', scanPath: '//x.com/y', why: '跳域' },
+    ];
+    for (const c of bad) {
+      assert.throws(() => product.buildQrUrl({
+        origin: c.origin, scanPath: c.scanPath, code: 'qr-abc', brand: 'B', source: 'platform',
+      }), /INVALID_QR_PATH/, `应拒绝：${c.why}（${c.scanPath}）`);
+    }
+  });
+
+  t('扫码会话：本地生命周期（创建走上游，故直接注入会话验证查询/取消/过期）', () => {
+    // startLoginSession 现在要打上游；本地语义用 _sessions 直接验证，
+    // 真链路（qrCreate→qrPoll→落库）由 mock 上游的用例覆盖。
+    const id = 'sess-local-test';
+    raccoonAuth._sessions.set(id, {
+      sessionId: id, code: 'qr-x', qrUrl: 'https://x/login/mp?code=qr-x',
+      createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+      pollIntervalMs: 2000, status: 'pending', expiredAt: null, inflight: null, accountId: null,
+    });
+    assert.ok(raccoonAuth.getLoginSession(id));
+    // 过期会话被清理（sweep 在 getLoginSession 内顺带跑）
+    raccoonAuth._sessions.get(id).expiresAtMs = Date.now() - 1;
+    assert.strictEqual(raccoonAuth.getLoginSession(id), null);
     // 未知 id → null（路由层据此返回 404）
     assert.strictEqual(raccoonAuth.getLoginSession('nope'), null);
-    // 过期会话被清理
-    const c = raccoonAuth.startLoginSession();
-    const s = raccoonAuth._sessions.get(c.sessionId);
-    s.expiresAtMs = Date.now() - 1;
-    assert.strictEqual(raccoonAuth.getLoginSession(c.sessionId), null);
-    raccoonAuth.cancelLoginSession(b.sessionId);
-    raccoonAuth.cancelLoginSession(c.sessionId);
+    // 取消不存在的会话返回 false（不再谎报 true）
+    assert.strictEqual(raccoonAuth.cancelLoginSession('nope'), false);
   });
 
   t('轮询不存在的会话返回 expired（不抛错、不打上游）', async () => {
     const r = await raccoonAuth.pollLoginSession('does-not-exist');
     assert.deepStrictEqual(r, { status: 'expired' });
+  });
+
+  // ===== 扫码新 IAM 链路（mock 上游，不打真实接口）=====
+  // 2026-10-18：官方已不接受「客户端自造 code」，扫码改为
+  //   创建 → 服务端签发 qrcode_code → 轮询 → success 落库。
+  // 用本地 HTTP mock 把整条链路钉住，重点验三件事：
+  //   1) 创建拿的是**服务端码**（qr- 前缀），且用它拼 URL
+  //   2) 轮询 pending→success 的完整状态机
+  //   3) 过期码（AUTH_QRCODE_EXPIRED）必须如实回 expired 让前端换新码
+  await t('扫码新 IAM 链路（mock）：签发码 → 轮询 → success 落库 → 过期', async () => {
+    const net = require('node:net');
+    const mock = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const p = req.url.split('?')[0];
+        const reply = (code, data) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ code: 0, message: 'success', data }));
+        };
+        if (p === '/api/iam/v1/auth/mp/qrcode' && req.method === 'POST') {
+          return reply(0, {
+            qrcode_code: 'qr-mock-0001',
+            scan_path: '/login/mp',
+            expires_in: 300,
+            poll_interval: 2,
+            status: 'pending',
+          });
+        }
+        if (p === '/api/iam/v1/auth/mp/qrcode/login' && req.method === 'POST') {
+          const { qrcode_code } = JSON.parse(body || '{}');
+          if (qrcode_code === 'qr-expired') {
+            // 过期：官方回**字符串业务码**（normalizeEnvelope 会把它折成 400，
+            // 故 auth.js 读 raw.code 原文识别）
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ code: 'AUTH_QRCODE_EXPIRED', message: 'qrcode expired', data: null }));
+          }
+          if (qrcode_code === 'qr-mock-0001') {
+            const jwt = [
+              'eyJhbGciOiJIUzI1NiJ9',
+              Buffer.from(JSON.stringify({ sub: 'mock-user', exp: 1794619246 })).toString('base64url'),
+              'sig',
+            ].join('.');
+            return reply(0, {
+              status: 'success',
+              access_token: jwt,
+              refresh_token: jwt,
+            });
+          }
+          return reply(0, { status: 'pending' });
+        }
+        res.writeHead(404).end('{}');
+      });
+    });
+
+    // 把网关的 openapi host 指到 mock：client.urlFor 用的是 V.hosts.openapi，
+    // 而 paths 里的 iamBase 是绝对路径 /api/iam/v1，故 new URL(path, HOST)
+    // 会让 host 变成 mock 的地址。
+    const prevHost = variant.VARIANTS[variant.RACCOON].hosts.openapi;
+    await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+    const port = mock.address().port;
+    variant.VARIANTS[variant.RACCOON].hosts.openapi = `http://127.0.0.1:${port}`;
+    // ⚠️ 落库的账号必须在 finally 里清理：mock 用例会往真实 store 写一条 raccoon 账号，
+    // 若断言中途失败就跳过清理，后续「无账号 → 回退兜底表」的用例会连带失败
+    // （实测踩到：`回退时必须说明原因` 报错）。故 saveId 在 try 外声明。
+    let savedId = null;
+    try {
+      const s = await raccoonAuth.startLoginSession();
+      // 1) 服务端签发的码（不是自造 hex）
+      assert.strictEqual(s.code, 'qr-mock-0001', '必须用服务端签发的 qrcode_code');
+      assert.match(s.code, /^qr-/, '新 IAM 的码形如 qr-<uuid>');
+      // 2) URL 用签发码拼，且带 source=platform。
+      //    ⚠️ origin 用的是 V.identity.qrOrigin（真实站点），不是被 mock 替换的
+      //    api host —— 二维码必须指向用户手机能打开的真实页面，这与上游 API
+      //    走哪台机器无关。故这里断言真实 origin。
+      assert.strictEqual(
+        s.qrUrl,
+        'https://xiaohuanxiong.com/login/mp?code=qr-mock-0001'
+        + '&appname=%E5%95%86%E6%B1%A4%E5%B0%8F%E6%B5%A3%E7%86%8A&source=platform',
+      );
+      // 3) 轮询到 success → 落库
+      const r = await raccoonAuth.pollLoginSession(s.sessionId);
+      assert.strictEqual(r.status, 'success', '轮询应拿到 success');
+      assert.ok(r.account && r.account.id, 'success 后账号必须落库');
+      savedId = r.account.id;
+      // label 规则：mock 上游没有 user_info（会 404），persistLogin 降级为
+      // `raccoon` 或 `raccoon-<userId>`；这里只断言「有 label 且非空」，
+      // 不去钉具体降级形态（那是 persistLogin 的职责，另有用例覆盖）
+      assert.ok(r.account.label && r.account.label.length > 0, 'label 不得为空');
+      // 重复轮询直接复用已落库账号，不再打上游
+      const r2 = await raccoonAuth.pollLoginSession(s.sessionId);
+      assert.strictEqual(r2.status, 'success');
+      assert.strictEqual(r2.accountId, r.account.id);
+
+      // 4) 过期码必须如实回 expired（而不是 pending 卡死）
+      raccoonAuth._sessions.set('sess-exp', {
+        sessionId: 'sess-exp', code: 'qr-expired', qrUrl: 'https://x',
+        createdAtMs: Date.now(), expiresAtMs: Date.now() + 60_000,
+        pollIntervalMs: 2000, status: 'pending', expiredAt: null, inflight: null, accountId: null,
+      });
+      const re = await raccoonAuth.pollLoginSession('sess-exp');
+      assert.strictEqual(re.status, 'expired', 'AUTH_QRCODE_EXPIRED 必须映射为 expired（前端据此换新码）');
+
+      // 清理：删掉 mock 落库的账号，别污染后续用例
+    } finally {
+      if (savedId) {
+        try { store.remove(savedId); } catch { /* 已被删除 */ }
+      }
+      variant.VARIANTS[variant.RACCOON].hosts.openapi = prevHost;
+      mock.close();
+    }
+  });
+
+  // ===== 扫码成功后必须补 refresh 完成 IAM 确认（P0，2026-10-19 线上实证）=====
+  // 现象：扫码登录成功、账号落库，但查积分回
+  //   `400 code=200901 iam_confirm_required`（积分/用户信息/对话全挂）。
+  // 根因：新 IAM 扫码 success **不回 refresh_token**，而未确认的会话打任何
+  //   `/api/web/*` 一律被 IAM 拒绝；确认手段就是**做一次 refresh**
+  //   （access_token 当 refresh_token 提交，服务端补发完整令牌对并标记已确认）。
+  // 对照：Olivia 的凭据来自桌面客户端本地 auth.json（客户端自己完成过确认），
+  //   从未出现 200901 —— 说明这不是账号问题，而是我们登录链漏了这一步。
+  await t('扫码 success 无 refresh_token 时必须自动 refresh 补全（修 iam_confirm_required）', async () => {
+    const seen = [];
+    const jwt = (tag) => [
+      'eyJhbGciOiJIUzI1NiJ9',
+      Buffer.from(JSON.stringify({ sub: 'mock-user', exp: 1794619246, tag })).toString('base64url'),
+      'sig',
+    ].join('.');
+    const mock = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const p = req.url.split('?')[0];
+        const reply = (data) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ code: 0, message: 'success', data }));
+        };
+        if (p === '/api/iam/v1/auth/mp/qrcode' && req.method === 'POST') {
+          return reply({ qrcode_code: 'qr-norefresh', scan_path: '/login/mp', expires_in: 300, poll_interval: 2 });
+        }
+        if (p === '/api/iam/v1/auth/mp/qrcode/login' && req.method === 'POST') {
+          // ⚠️ 关键：只给 access_token，**不给 refresh_token**（线上实测形态）
+          return reply({ status: 'success', access_token: jwt('raw') });
+        }
+        if (p === '/api/web/auth/v1/refresh' && req.method === 'POST') {
+          seen.push(JSON.parse(body || '{}'));
+          return reply({ access_token: jwt('confirmed'), refresh_token: jwt('confirmed') });
+        }
+        res.writeHead(404).end('{}');
+      });
+    });
+
+    const prevHost = variant.VARIANTS[variant.RACCOON].hosts.openapi;
+    await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+    variant.VARIANTS[variant.RACCOON].hosts.openapi = `http://127.0.0.1:${mock.address().port}`;
+    let savedId = null;
+    try {
+      const s = await raccoonAuth.startLoginSession();
+      const r = await raccoonAuth.pollLoginSession(s.sessionId);
+      assert.strictEqual(r.status, 'success');
+      savedId = r.account && r.account.id;
+
+      // 1) 必须发出且只发一次 refresh
+      assert.strictEqual(seen.length, 1, '无 refresh_token 时必须自动 refresh 一次完成 IAM 确认');
+      // 2) 提交的是 access_token（以 access 当 refresh，线上实测可行）
+      assert.ok(String(seen[0].refresh_token).length > 0, 'refresh 必须带上 access_token');
+      // 3) 落库的凭据必须是 refresh 之后那一对，而不是原始的裸 access
+      const saved = store.get(savedId);
+      assert.strictEqual(saved.refreshToken, jwt('confirmed'), '必须落库 refresh 换回的完整令牌对');
+      assert.ok(saved.token && saved.token !== jwt('raw'), 'access_token 应更新为 refresh 后的新值');
+    } finally {
+      if (savedId) { try { store.remove(savedId); } catch { /* 已被删除 */ } }
+      variant.VARIANTS[variant.RACCOON].hosts.openapi = prevHost;
+      mock.close();
+    }
+  });
+
+  // ===== 密码登录（真实登录入口，触发每日发放的正解）=====
+  await t('密码登录：AES 加密 phone+password → 换出完整令牌对并落库', async () => {
+    const jwt = (tag) => [
+      'eyJhbGciOiJIUzI1NiJ9',
+      Buffer.from(JSON.stringify({ sub: 'mock-user', exp: 1794619246, tag })).toString('base64url'),
+      'sig',
+    ].join('.');
+    const seenBodies = [];
+    const mock = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        const p = req.url.split('?')[0];
+        const reply = (data) => {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ code: 0, message: 'success', data }));
+        };
+        if (p === '/api/web/auth/v1/login_with_password' && req.method === 'POST') {
+          seenBodies.push(JSON.parse(body || '{}'));
+          return reply({ access_token: jwt('pwd'), refresh_token: jwt('pwd-rt'), office_identity: '' });
+        }
+        // user_info（persistLogin 会拉一次）
+        if (p === '/api/web/auth/v1/user_info' && req.method === 'GET') {
+          return reply({ id: '7651374', name: 'RaccoonAnthony', phone: '18630893389', office_identity: '' });
+        }
+        res.writeHead(404).end('{}');
+      });
+    });
+
+    const prevHost = variant.VARIANTS[variant.RACCOON].hosts.openapi;
+    await new Promise((r) => mock.listen(0, '127.0.0.1', r));
+    variant.VARIANTS[variant.RACCOON].hosts.openapi = `http://127.0.0.1:${mock.address().port}`;
+    let savedId = null;
+    try {
+      const { account, credential } = await raccoonAuth.loginWithPassword({
+        nationCode: '86', phone: '18630893389', password: 'SecretPass123',
+      });
+      savedId = account && account.id;
+
+      // 1) 发出的 body 里 phone 与 password 都是密文（Base64，非明文）
+      assert.strictEqual(seenBodies.length, 1, '必须恰好调一次 login_with_password');
+      const b = seenBodies[0];
+      assert.strictEqual(b.nation_code, '86');
+      assert.ok(/^[A-Za-z0-9+/=]+$/.test(b.phone) && !b.phone.includes('1863'), 'phone 必须是密文');
+      assert.ok(/^[A-Za-z0-9+/=]+$/.test(b.password) && !b.password.includes('Secret'), 'password 必须是密文');
+      // 2) 返回完整令牌对
+      assert.strictEqual(credential.access_token, jwt('pwd'));
+      assert.strictEqual(credential.refresh_token, jwt('pwd-rt'));
+      // 3) 落库带 userId 与 refreshToken（persistLogin 幂等 + fetchUserInfo 成功）
+      const saved = store.get(savedId);
+      assert.strictEqual(saved.userId, '7651374');
+      assert.strictEqual(saved.refreshToken, jwt('pwd-rt'));
+      assert.strictEqual(saved.label, 'RaccoonAnthony-3389');
+    } finally {
+      if (savedId) { try { store.remove(savedId); } catch { /* 已被删除 */ } }
+      variant.VARIANTS[variant.RACCOON].hosts.openapi = prevHost;
+      mock.close();
+    }
   });
 
   // ===== 平台接线 =====
@@ -735,6 +1127,9 @@ async function run() {
     // 可直接导入（与 ZCode/Qoder 的加密存储不同），能力位翻转为 true。
     assert.strictEqual(cap.localImport, true);
     assert.strictEqual(cap.deviceFingerprint, false);
+    // 2026-10-16：每日积分「无领取端点」与「有等价保活动作」是两件事，
+    // 故 checkin=false 与 dailyKeepalive=true 并存（见 variant 里的说明）。
+    assert.strictEqual(cap.dailyKeepalive, true, '有等价动作可代做，能力位应为 true');
     // 展示顺序在最后（与 CHANNEL_IDS 的约定一致）
     assert.strictEqual(variant.allVariants().map((v) => v.id).pop(), 'raccoon');
   });

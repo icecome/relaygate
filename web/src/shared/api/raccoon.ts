@@ -97,6 +97,8 @@ export interface RaccoonAccount {
   enabled?: boolean;
   hasToken?: boolean;
   hasRefreshToken?: boolean;
+  /** 是否已配置密码登录凭据（布尔值，密码本身永不出网） */
+  hasPasswordLogin?: boolean;
   balance?: number | null;
   expiredAt?: string | null;
   /** 组织码（个人账号为 null） */
@@ -111,6 +113,24 @@ export const raccoonAccounts = (key: string, signal?: AbortSignal) =>
 
 export const raccoonDeleteAccount = (accountId: string, key: string) =>
   api<{ ok: boolean }>(`/v1/raccoon/accounts/${encodeURIComponent(accountId)}`, { method: 'DELETE' }, key);
+
+/**
+ * 为账号配置「密码登录凭据」（供每日保活代做真实登录）。
+ *
+ * 每日积分由**真实登录**触发发放，`login_with_password` 是网关侧唯一可编程复刻的
+ * 真实登录入口，故需要手机号 + 密码。两者在服务端加密存储，接口永不回显明文。
+ * 传空 `phone`/`password` 表示清除凭据。
+ */
+export const raccoonSetPasswordLogin = (
+  accountId: string,
+  body: { phone: string; password: string; nationCode?: string },
+  key: string,
+) =>
+  api<{ object: string; configured: boolean }>(
+    `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/password-login`,
+    { method: 'PUT', body, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
 
 /** 刷新积分余额（只读端点）。 */
 export const raccoonRefreshPoints = (accountId: string, key: string) =>
@@ -203,6 +223,8 @@ export interface RaccoonDailyUsage {
   nextExpiryHoursLeft: number | null;
   /** 历史被清零的每日积分总量（daily_expire 绝对值之和） */
   expiredTotal: number;
+  /** 今日是否已发放 daily_grant（上游状态；false 时保活会报「上游未发放」而非失败） */
+  grantedToday?: boolean;
   observedAt: string;
   /** 账单面是否取到数据（false 表示只是查不到，不是「没有发放」） */
   billsAvailable: boolean;
@@ -213,6 +235,80 @@ export const raccoonDailyUsage = (accountId: string, key: string, signal?: Abort
   api<RaccoonDailyUsage>(
     `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/daily-usage`,
     { signal, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
+
+/* ---------- 每日保活（「当日登录」延长有效期） ---------- */
+
+/**
+ * 保活任务快照。
+ *
+ * 上游规则（客户端 i18n 原文）：「每日积分每天 00:00 发放，默认当日 24:00 清零，
+ * **当天登录后有效期延长至 7 天**」。桌面端每次启动都会 POST
+ * `desktop/v1/login/points/grant`（幂等）；本任务在网关侧代做同一件事，
+ * 避免当天没开客户端时 300 分被整额清零。
+ *
+ * ⚠️ 2026-10-19/20 实证：每日积分由**真实客户端登录**触发发放，网关代打
+ * grant 不会触发。若上游未产生当日 daily_grant 账单，任务报
+ * `upstreamSkipped`（无可延长对象）而不是「失败」。
+ */
+export interface RaccoonKeepalive {
+  enabled: boolean;
+  hour: number;
+  minute: number;
+  spreadMinutes: number;
+  retries: number;
+  retryGapMs: number;
+  accounts: number;
+  lastRunAt: string | null;
+  lastSummary: {
+    total: number; ok: number; notExtended: number; failed: number;
+    /** 上游未发放今日 daily_grant（无可延长对象，非网关故障） */
+    upstreamSkipped?: number;
+    ranAt: string; trigger: string;
+    details?: {
+      accountId: string; label: string; ok: boolean;
+      reason?: string; validityDays?: number | null; expireAt?: string;
+      attempts?: number; message: string;
+    }[];
+  } | null;
+  nextRunAt: string | null;
+  lastError: string | null;
+}
+
+export const raccoonKeepalive = (key: string, signal?: AbortSignal) =>
+  api<RaccoonKeepalive>('/v1/raccoon/keepalive', { signal }, key);
+
+export const raccoonSaveKeepalive = (
+  patch: Partial<Pick<RaccoonKeepalive, 'enabled' | 'hour' | 'minute' | 'spreadMinutes' | 'retries'>>,
+  key: string,
+) => api<RaccoonKeepalive>('/v1/raccoon/keepalive', { method: 'PUT', body: patch }, key);
+
+/** 手动跑一轮保活（写操作，幂等；执行后自校验当日有效期）。 */
+export const raccoonRunKeepalive = (key: string) =>
+  api<NonNullable<RaccoonKeepalive['lastSummary']> & { ranAt: string; trigger: string }>(
+    '/v1/raccoon/keepalive/run',
+    { method: 'POST', body: {}, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
+
+/** 单账号保活结果（含自校验结论）。 */
+export interface RaccoonKeepaliveResult {
+  object: string;
+  accountId: string;
+  ok: boolean;
+  reason?: string;
+  granted?: boolean | null;
+  grantAt?: string;
+  expireAt?: string;
+  validityDays?: number | null;
+  message: string;
+}
+
+export const raccoonKeepaliveAccount = (accountId: string, key: string) =>
+  api<RaccoonKeepaliveResult>(
+    `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/keepalive`,
+    { method: 'POST', body: {}, timeoutMs: OPS_TIMEOUT_MS },
     key,
   );
 

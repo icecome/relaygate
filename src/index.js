@@ -205,6 +205,7 @@ function listen(port, host, fallbacks = []) {
     onShutdown('backup', () => require('./jobs/backup').stop());
     onShutdown('zcode-rewards', () => require('./jobs/zcode-rewards').stop());
     onShutdown('qoder-rewards', () => require('./jobs/qoder-rewards').stop());
+    onShutdown('raccoon-keepalive', () => require('./jobs/raccoon-keepalive').stop());
     onShutdown('sqlite', () => dbModule.close());
 
     scheduler.start();
@@ -218,6 +219,10 @@ function listen(port, host, fallbacks = []) {
     // Qoder 每日积分（100 Credits）领取（默认关闭，需 QODER_REWARDS_ENABLED=true；
     // 上游 UTC+8 10:00 刷新，默认本地 10:15 执行，时区不同时在 /v1/qoder/settings 调整）
     require('./jobs/qoder-rewards').start();
+    // 小浣熊「当日登录」保活（默认关闭，需 RACCOON_KEEPALIVE_ENABLED=true）：
+    // 上游规则「当日登录后每日积分有效期延长至 7 天」，本任务代打一次幂等登录请求
+    // 并自校验当日账单有效期，避免当天 300 分因未登录而在 24:00 被清零。
+    require('./jobs/raccoon-keepalive').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
     // 必须在调度器启动之前执行：先清出干净目录再排程，且它是同步阻塞的
     require('./log/retention').pruneAtStartup();

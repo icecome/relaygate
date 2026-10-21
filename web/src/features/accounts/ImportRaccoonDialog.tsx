@@ -29,15 +29,21 @@ import {
   raccoonClaimReward,
   raccoonDailyUsage,
   raccoonDeleteAccount,
+  raccoonKeepalive,
+  raccoonKeepaliveAccount,
   raccoonLocalImport,
   raccoonLocalPreview,
   raccoonModels,
   raccoonPollLogin,
   raccoonRefreshPoints,
   raccoonRefreshToken,
+  raccoonSetPasswordLogin,
+  raccoonRunKeepalive,
+  raccoonSaveKeepalive,
   raccoonStartLogin,
   type RaccoonAccount,
   type RaccoonDailyUsage,
+  type RaccoonKeepalive,
   type RaccoonLocalPreview,
   type RaccoonLoginSession,
 } from '../../shared/api/raccoon';
@@ -48,6 +54,65 @@ import { useToast } from '../../shared/ui/Toast';
 
 /** 扫码阶段的界面状态。 */
 type Phase = 'idle' | 'waiting' | 'scanned' | 'done' | 'failed';
+
+/**
+ * 密码登录凭据配置表单（内嵌弹层）。
+ *
+ * 每日积分由**真实登录**触发发放，`login_with_password` 是网关侧唯一可编程复刻
+ * 的真实登录入口。这里录手机号 + 密码，服务端会先实地验证登录成功再加密落库，
+ * 失败不保存（避免每天用错密码白跑）。
+ */
+function PasswordLoginForm({
+  busy,
+  targetLabel,
+  onCancel,
+  onSave,
+}: {
+  busy: boolean;
+  targetLabel: string;
+  onCancel: () => void;
+  onSave: (phone: string, password: string) => void;
+}) {
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
+  return (
+    <div className="rounded-lg border p-3 mt-3 flex flex-col gap-2"
+      style={{ borderColor: 'var(--rg-border, #e5e7eb)' }}>
+      <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+        为 <strong>{targetLabel}</strong> 配置密码登录（手机号 + 密码）。保存前网关会先试登录一次，
+        成功才落库。密码在服务端加密存储、永不回显。留空点清除即删除凭据。
+      </div>
+      <div className="flex gap-2 flex-wrap items-center">
+        <input
+          className="rounded border px-2 py-1 text-[12px]"
+          style={{ borderColor: 'var(--rg-border, #e5e7eb)', background: 'transparent', color: 'inherit' }}
+          placeholder="手机号（含国家码默认 86）"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          disabled={busy}
+        />
+        <input
+          className="rounded border px-2 py-1 text-[12px]"
+          style={{ borderColor: 'var(--rg-border, #e5e7eb)', background: 'transparent', color: 'inherit' }}
+          placeholder="登录密码"
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={busy}
+        />
+        <Button size="sm" disabled={busy || !phone || !password} onClick={() => onSave(phone, password)}>
+          保存
+        </Button>
+        <Button size="sm" variant="danger" disabled={busy} onClick={() => onSave('', '')}>
+          清除
+        </Button>
+        <Button size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
+          取消
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export function ImportRaccoonDialog({ open, onClose, onImported }: {
   open: boolean;
@@ -66,6 +131,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
   const [localPreview, setLocalPreview] = useState<RaccoonLocalPreview | null>(null);
   /** 选中账号的每日积分看板（点「每日积分」时加载） */
   const [daily, setDaily] = useState<{ accountId: string; data: RaccoonDailyUsage } | null>(null);
+  /** 保活任务快照（开关 + 上次结果 + 下次执行） */
+  const [keepalive, setKeepalive] = useState<RaccoonKeepalive | null>(null);
+  /** 密码登录凭据配置弹窗的目标账号 id */
+  const [pwTarget, setPwTarget] = useState<string | null>(null);
   /** 在途轮询标记：2 秒一次 + 用户可能开两个标签页，不能并发打上游 */
   const polling = useRef(false);
   const sessionRef = useRef<RaccoonLoginSession | null>(null);
@@ -124,6 +193,101 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
     }
   }, [key, toast]);
 
+  /** 拉保活任务快照。 */
+  const loadKeepalive = useCallback(async () => {
+    if (!key) return;
+    try {
+      setKeepalive(await raccoonKeepalive(key));
+    } catch {
+      setKeepalive(null);
+    }
+  }, [key]);
+
+  /** 开关保活（写配置并立即重排定时器）。 */
+  const toggleKeepalive = useCallback(async (enabled: boolean) => {
+    if (!key) return;
+    setBusy(true);
+    try {
+      setKeepalive(await raccoonSaveKeepalive({ enabled }, key));
+      toast(
+        // 文案必须与后端订正后的语义一致：每日积分由上游在**真实客户端登录**时
+        // 发放，网关代打无法触发发放；保活的真实作用是「对有密码的账号代做一次
+        // 真实登录并如实上报当日有效期」。写成「已帮你延长到 7 天」是在承诺做不到的事。
+        enabled
+          ? '已开启每日保活：每天对有密码的账号代做一次真实登录，并如实上报当日有效期'
+          : '已关闭每日保活：当天未登录桌面端时，300 分将在 24:00 清零',
+        enabled ? 'ok' : 'warn',
+      );
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '保活配置保存失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, toast]);
+
+  /** 立即跑一轮保活（全账号，含自校验）。 */
+  const runKeepaliveNow = useCallback(async () => {
+    if (!key) return;
+    setBusy(true);
+    try {
+      const r = await raccoonRunKeepalive(key);
+      // 上游未发放今日每日积分不是「失败」，是**无可延长对象**（上游状态，网关无法干预）。
+      const upstreamSkipped = (r as unknown as { upstreamSkipped?: number }).upstreamSkipped ?? 0;
+      if (r.ok || r.notExtended || r.failed) {
+        toast(
+          r.ok && !r.notExtended && !r.failed
+            ? `保活完成：${r.ok}/${r.total} 个账号当日积分已延长`
+            : `保活未全部生效：延长 ${r.ok}，未延长 ${r.notExtended}，失败 ${r.failed}`
+              + (upstreamSkipped ? `，上游未发放 ${upstreamSkipped}` : ''),
+          r.ok && !r.notExtended && !r.failed ? 'ok' : 'warn',
+        );
+      } else if (upstreamSkipped) {
+        toast(
+          `保活已执行：${upstreamSkipped} 个账号今日每日积分由上游发放（网关代打不触发发放），本次无可延长对象`,
+          'warn',
+        );
+      } else {
+        toast('保活完成：无有效账号', 'ok');
+      }
+      await loadKeepalive();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '保活执行失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, loadKeepalive, toast]);
+
+  /** 单账号保活（行内按钮）。 */
+  const keepaliveOne = useCallback(async (accountId: string) => {
+    setBusy(true);
+    try {
+      const r = await raccoonKeepaliveAccount(accountId, key);
+      toast(r.message, r.ok ? 'ok' : 'warn');
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '保活失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, toast]);
+
+  /**
+   * 保存密码登录凭据（服务端会先实地验证登录成功才落库）。
+   * phone/password 为空 = 清除。
+   */
+  const savePasswordLogin = useCallback(async (accountId: string, phone: string, password: string) => {
+    setBusy(true);
+    try {
+      const r = await raccoonSetPasswordLogin(accountId, { phone, password }, key);
+      toast(r.configured ? '已配置密码登录：每日保活将代做真实登录以触发发放' : '已清除密码登录凭据', 'ok');
+      setPwTarget(null);
+      await loadAccounts();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '配置失败', 'err');
+    } finally {
+      setBusy(false);
+    }
+  }, [key, loadAccounts, toast]);
+
   /** 开启（或重开）一次扫码会话。 */
   const startSession = useCallback(async () => {
     if (!key) return;
@@ -142,11 +306,12 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
     }
   }, [key]);
 
-  // 打开时：探测账号与本机客户端、拉模型目录，并发起扫码会话；关闭时：取消会话
+  // 打开时：探测账号与本机客户端、拉模型目录与保活状态，并发起扫码会话；关闭时：取消会话
   useEffect(() => {
     if (open) {
       void loadAccounts();
       void loadLocalPreview();
+      void loadKeepalive();
       void startSession();
       if (key) {
         raccoonModels(key)
@@ -163,7 +328,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
       setDaily(null);
     }
     // key 变化（重新登录面板）时也要重来
-  }, [open, key, loadAccounts, loadLocalPreview, startSession]);
+  }, [open, key, loadAccounts, loadLocalPreview, loadKeepalive, startSession]);
 
   /**
    * 轮询循环。
@@ -299,6 +464,51 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
           <Note tone="warn">本机客户端读取失败：{localPreview.error}</Note>
         )}
 
+        {/* ---------- 每日保活（当日登录 → 300 分有效期延长到 7 天） ---------- */}
+        {keepalive && (
+          <div className="flex flex-col gap-2 rounded-lg p-3"
+            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+            <div className="flex items-center gap-2 flex-wrap">
+              <strong className="text-[13px]">每日积分保活</strong>
+              <Chip tone={keepalive.enabled ? 'ok' : 'neutral'} dot={keepalive.enabled ? 'dot-ok' : undefined}>
+                {keepalive.enabled ? '已开启' : '未开启'}
+              </Chip>
+              {keepalive.enabled && keepalive.nextRunAt && (
+                <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  下次 {formatTime(keepalive.nextRunAt)}
+                </span>
+              )}
+              <div className="flex-1" />
+              <Button size="sm" disabled={busy} onClick={() => toggleKeepalive(!keepalive.enabled)}>
+                {keepalive.enabled ? '关闭' : '开启'}
+              </Button>
+              <Button size="sm" variant="primary" disabled={busy} onClick={runKeepaliveNow}>
+                立即保活
+              </Button>
+            </div>
+            <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+              上游规则：每日 300 分默认<strong>当天 24:00 清零</strong>，当天登录后有效期延长至
+              <strong> 7 天</strong>。
+              <br />
+              <strong>注意</strong>：每日积分由上游在<strong>真实客户端登录</strong>时发放，
+              网关代打无法触发发放（2026-10-19/20 实证）。开启后网关对<strong>已配置密码</strong>
+              的账号每天代做一次真实登录（这是唯一可编程复刻的发放载体），并读取当日账单
+              <strong>如实上报</strong>有效期；未配置密码的账号只观测、不伪造成功。
+              若某日上游未产生当日账单，会显示「上游未发放」而非失败 —— 这是上游状态，非网关故障。
+            </div>
+            {keepalive.lastSummary && (
+              <div className="text-[11px] flex gap-3 flex-wrap" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <span>
+                  上次（{formatTime(keepalive.lastSummary.ranAt)}）：
+                  延长 {keepalive.lastSummary.ok} / 未延长 {keepalive.lastSummary.notExtended} / 失败 {keepalive.lastSummary.failed}
+                  {keepalive.lastSummary.upstreamSkipped ? ` / 上游未发放 ${keepalive.lastSummary.upstreamSkipped}` : ''}
+                  （共 {keepalive.lastSummary.total}）
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* ---------- 扫码区 ---------- */}
         <div className="flex flex-col items-center gap-3">
           {phase === 'done' ? (
@@ -429,6 +639,22 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                         <Button
                           size="sm"
                           disabled={busy}
+                          title="代打一次「当日登录」，读取当日账单如实上报（幂等）"
+                          onClick={() => keepaliveOne(a.id)}
+                        >
+                          保活
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busy}
+                          title="配置手机号 + 密码，让网关每天代做真实登录来触发每日发放。"
+                          onClick={() => setPwTarget(a.id)}
+                        >
+                          {a.hasPasswordLogin ? '重设密码' : '配置密码'}
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busy}
                           onClick={() =>
                             act('领登录奖励', () => raccoonClaimReward(a.id, key), '已处理登录奖励')
                           }
@@ -503,6 +729,16 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
           <code>/v1/raccoon/chat/completions</code>，需要通用密钥（platform=all）。
         </Note>
       </div>
+
+      {/* 密码登录凭据配置弹窗 */}
+      {pwTarget && (
+        <PasswordLoginForm
+          busy={busy}
+          targetLabel={accounts?.find((a) => a.id === pwTarget)?.label || pwTarget}
+          onCancel={() => setPwTarget(null)}
+          onSave={(phone, password) => savePasswordLogin(pwTarget, phone, password)}
+        />
+      )}
     </Modal>
   );
 }

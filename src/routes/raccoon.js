@@ -30,6 +30,7 @@ const credits = require('../raccoon/credits');
 const chat = require('../raccoon/chat');
 const product = require('../raccoon/product');
 const localClient = require('../raccoon/local');
+const keepaliveJobs = require('../jobs/raccoon-keepalive');
 const qr = require('../lib/qr');
 const { authenticateAdmin, authenticate } = require('../middleware/auth');
 const { keyRateLimit } = require('../middleware/rate-limit');
@@ -43,13 +44,25 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 
 const V = variant.variantOf(variant.RACCOON);
 
-/** 账号出参脱敏（token/refreshToken 不出网）。 */
+/**
+ * 账号出参脱敏（token / refreshToken / 手机号 / 密码一律不出网）。
+ *
+ * 与 store.safeTok 的关系：safeTok 是 store 写接口返回值的统一口径（已覆盖
+ * token/refreshToken/apiKey/raccoonPhone/raccoonPassword），这里是**本路由层**
+ * 的兜底——因为 redact 的入参可能来自 store.get()（withSecrets=true，字段是
+ * 解密后的明文），也可能来自 store.list()（已脱敏）。两层都剥才不会被
+ * 「上游换了个调用路径」绕过。
+ */
 function redact(acct) {
-  const { token, refreshToken, ...rest } = acct || {};
+  const { token, refreshToken, raccoonPhone, raccoonPassword, hasPasswordLogin, ...rest } = acct || {};
+  void raccoonPhone;
   return {
     ...rest,
     hasToken: !!token,
     hasRefreshToken: !!refreshToken,
+    // 密码/手机号永不出网，只回一个「是否已配置」的布尔值供面板显示按钮态。
+    // store.list() 已按密文列置好该字段；get() 路径这里按解密结果兜底。
+    hasPasswordLogin: hasPasswordLogin !== undefined ? !!hasPasswordLogin : !!raccoonPassword,
   };
 }
 
@@ -148,6 +161,55 @@ router.get('/accounts/:id/daily-usage', admin, async (req, res) => {
   }
 });
 
+// ---- 每日保活（「当日登录」延长每日积分有效期） ----
+
+/**
+ * 保活任务状态（配置 + 上次结果 + 账号数 + 下次执行时刻）。
+ * 与 Qoder/ZCode rewards 的快照同构：面板据此渲染开关、时刻、结果。
+ */
+router.get('/keepalive', admin, (_req, res) => {
+  res.json({ object: 'raccoon.keepalive', ...keepaliveJobs.snapshot() });
+});
+
+/** 保存保活配置（白名单 + 夹紧，立即重排定时器；返回保存后的完整快照）。 */
+router.put('/keepalive', admin, (req, res) => {
+  try {
+    keepaliveJobs.save(req.body || {});
+    res.json({ object: 'raccoon.keepalive', ...keepaliveJobs.snapshot() });
+  } catch (e) {
+    res.status(400).json({ error: { message: e.message, type: 'invalid_request_error' } });
+  }
+});
+
+/**
+ * 手动跑一轮保活（面板「立即保活」）。
+ *
+ * ⚠️ **写操作**：会 POST `desktop/v1/login/points/grant`（幂等）。之所以敢代打，
+ * 是因为它与桌面端每次启动做的是同一个调用、已领过时回 `granted:false`
+ * 不会重复发放；执行后**自校验**当日账单有效期（7 天才算 ok），见
+ * `credits.touchDailyKeepalive`。
+ */
+router.post('/keepalive/run', admin, async (_req, res) => {
+  try {
+    const r = await keepaliveJobs.runKeepalive({ trigger: 'manual' });
+    res.json({ object: 'raccoon.keepalive.run', ...r });
+  } catch (e) {
+    res.status(502).json({ error: { message: e.message, type: 'raccoon_upstream_error' } });
+  }
+});
+
+/** 对单个账号做一次保活（含自校验），供面板行内按钮使用。 */
+router.post('/accounts/:id/keepalive', admin, async (req, res) => {
+  const acct = getRaccoonAccount(res, req.params.id, '每日保活');
+  if (!acct) return;
+  try {
+    const r = await credits.touchDailyKeepalive(acct);
+    res.json({ object: 'raccoon.keepalive.account', accountId: acct.id, ...r });
+  } catch (e) {
+    res.status(502).json({ error: { message: e.message, type: 'raccoon_upstream_error' } });
+  }
+});
+
 // ---- 扫码登录 ----
 
 /**
@@ -157,10 +219,14 @@ router.get('/accounts/:id/daily-usage', admin, async (req, res) => {
  * 面板用 `<svg viewBox="0 0 dim dim"><path d={path}/></svg>` 画出来即可 ——
  * 不需要第三方二维码图片服务（那等于把一次性登录票据送给第三方），
  * 也不需要 `dangerouslySetInnerHTML`（只传一个属性字符串，无注入面）。
+ *
+ * 2026-10-18 起 `startLoginSession` 是**异步**的：需要先调上游
+ * `POST /api/iam/v1/auth/mp/qrcode` 拿服务端签发的码（官方已不接受自造码，
+ * 详见 docs/raccoon-qr-login-repair-2026-10-18.md）。
  */
-router.post('/login/session', admin, (_req, res) => {
+router.post('/login/session', admin, async (_req, res) => {
   try {
-    const s = auth.startLoginSession();
+    const s = await auth.startLoginSession();
     const shape = qr.renderQrPath(s.qrUrl);
     res.status(201).json({
       sessionId: s.sessionId,
@@ -172,7 +238,9 @@ router.post('/login/session', admin, (_req, res) => {
       hint: '用微信「扫一扫」扫描二维码，在微信内完成授权后本页会自动进入下一步',
     });
   } catch (e) {
-    res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
+    // 上游失败（IAM 不可达 / 响应畸形 / scanPath 校验不过）→ 502 而非 500：
+    // 这是网关依赖的外部服务问题，面板据此提示重试
+    res.status(502).json({ error: { message: e.message, type: 'raccoon_upstream_error' } });
   }
 });
 
@@ -213,6 +281,91 @@ router.delete('/accounts/:id', admin, (req, res) => {
   const acct = getRaccoonAccount(res, req.params.id, '删除');
   if (!acct) return;
   res.json({ ok: store.remove(acct.id) });
+});
+
+/**
+ * 为账号配置「密码登录凭据」（供每日保活代做真实登录）。
+ *
+ * ⚠️ 为什么需要这个：每日积分由**真实登录**触发发放（grant/refresh 等端点实测
+ * 无效，见 `credits.touchDailyKeepalive` 注释）。`login_with_password` 是网关侧
+ * 唯一可编程复刻的真实登录入口，故需要手机号 + 密码。两者在 store 里都用
+ * 统一密钥加密存储（与 token 同级），接口返回时永不回显明文。
+ *
+ * body: `{ phone, password, nationCode? }`；传空 password 表示清除凭据。
+ */
+router.put('/accounts/:id/password-login', admin, async (req, res) => {
+  const acct = getRaccoonAccount(res, req.params.id, '配置密码登录');
+  if (!acct) return;
+  const body = req.body && typeof req.body === 'object' ? req.body : {};
+  const phone = typeof body.phone === 'string' ? body.phone.trim() : '';
+  const password = typeof body.password === 'string' ? body.password : '';
+
+  // 清除凭据
+  if (phone.length === 0 && password.length === 0) {
+    store.update(acct.id, { raccoonPhone: null, raccoonPassword: null, raccoonNationCode: null });
+    return res.json({ object: 'raccoon.passwordLogin', configured: false });
+  }
+  if (phone.length === 0 || password.length === 0) {
+    return res.status(400).json({
+      error: { message: '手机号与密码必须同时提供（或同时留空以清除）', type: 'invalid_request_error' },
+    });
+  }
+
+  // 先实地验证一次：能登录成功才落库，避免存一个错密码导致每天白跑
+  try {
+    const { account } = await auth.loginWithPassword({
+      nationCode: typeof body.nationCode === 'string' && body.nationCode ? body.nationCode : '86',
+      phone,
+      password,
+    });
+    // loginWithPassword 已按 userId 幂等落库，这里再把密码存到**同一个**账号上。
+    // 若密码登录落到的账号 id 与目标不同（说明填的手机号不是这个账号的），
+    // 必须拒绝 —— 否则会把 A 的密码写到 B 上，每天用错号登录。
+    //
+    // ⚠️ 这里**绝不能删号**：persistLogin 命中既有账号时走的是
+    // store.update(existing.id, ...)，返回的就是库里**已存在的另一条账号**
+    // （不是「刚创建的多余记录」）。早期实现无条件 store.remove(account.id)，
+    // 实测会把用户合法的另一个账号连带删掉。
+    // 另外 loginWithPassword 已经用新凭据覆盖过那条账号的 token 了，
+    // 这里只能如实上报，不能悄悄回滚（回滚需要旧 token，已丢弃）。
+    if (account && account.id !== acct.id) {
+      return res.status(409).json({
+        error: {
+          message: `该手机号/密码登录到的账号（${account.label}）与目标账号（${acct.label}）不一致，`
+            + '凭据未保存。请确认手机号属于当前账号后重试。',
+          type: 'raccoon_account_mismatch',
+        },
+      });
+    }
+    store.update(acct.id, {
+      raccoonPhone: phone,
+      raccoonPassword: password,
+      raccoonNationCode: typeof body.nationCode === 'string' && body.nationCode ? body.nationCode : '86',
+    });
+    return res.json({ object: 'raccoon.passwordLogin', configured: true });
+  } catch (e) {
+    // 错误分级（原来一律 400 + 「密码登录验证失败」）：
+    //   - ReferenceError/TypeError/SQLite 等内部缺陷 → 500，且不把内部 message
+    //     拼进用户文案（否则「raccoonAuth is not defined」这种会被包装成
+    //     「密码验证失败」，让人反复改密码去追一个代码 bug，实测踩过）
+    //   - RaccoonApiError（上游返回）→ 502：网关依赖的外部服务问题
+    //   - 其余（参数/凭据）→ 400
+    const internal = e instanceof ReferenceError || e instanceof TypeError
+      || typeof e?.code === 'string' && /^(SQLITE|ERR_)/.test(e.code);
+    if (internal) {
+      console.error(`[raccoon] password-login 内部错误 account=${acct.id}:`, e);
+      return res.status(500).json({
+        error: { message: '配置密码登录失败（网关内部错误，详情见服务端日志）', type: 'internal_error' },
+      });
+    }
+    const upstream = e && e.constructor && e.constructor.name === 'RaccoonApiError';
+    return res.status(upstream ? 502 : 400).json({
+      error: {
+        message: `${upstream ? '上游登录失败' : '密码登录验证失败'}，凭据未保存：${e.message}`,
+        type: upstream ? 'raccoon_upstream_error' : 'raccoon_login_failed',
+      },
+    });
+  }
 });
 
 /** 刷新积分余额（只读端点，写回 balance 与隔离的 raccoonPoints 快照）。 */

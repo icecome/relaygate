@@ -15,7 +15,15 @@ const variant = require('../platform/variant');
 const product = require('./product');
 
 const V = variant.variantOf(variant.RACCOON);
-const HOST = V.hosts.openapi;
+
+/**
+ * 上游域名。**每次调用时读取**（而不是模块加载时固化为常量）：
+ * 单测要把上游指到本地 mock（扫码创建/轮询是真实网络请求），
+ * 若加载期固化，测试改 `variant.hosts.openapi` 不会生效，会打到真上游。
+ */
+function HOST() {
+  return V.hosts.openapi;
+}
 
 /** 上游业务错误（带 code/message/details，供上层映射用户文案）。 */
 class RaccoonApiError extends Error {
@@ -73,7 +81,7 @@ function withDispatcher(opts) {
 /** 绝对 URL（路径可以是 variant.paths 的键名，也可以是字面路径）。 */
 function urlFor(path, query) {
   const rel = path.startsWith('/') ? path : (V.paths[path] || path);
-  const url = new URL(rel, HOST);
+  const url = new URL(rel, HOST());
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v != null && v !== '') url.searchParams.set(k, String(v));
@@ -191,7 +199,12 @@ async function accountRequest(acct, { method, path, body, query, extraHeaders, t
 }
 
 module.exports = {
-  HOST,
+  // ⚠️ HOST 是「加载期快照」，仅供不需要跟随测试 mock 的调用方展示/日志用。
+  // 任何**要发请求**的代码请用 hostOf()（每次调用取活值），否则单测把上游指到
+  // 本地 mock 时会打到真上游。当前仓库没有 client.HOST 的消费者，保留只为兼容。
+  HOST: HOST(),
+  /** 上游域名活值（请求路径一律用这个）。 */
+  hostOf: HOST,
   RaccoonApiError,
   RaccoonNetworkError,
   request,

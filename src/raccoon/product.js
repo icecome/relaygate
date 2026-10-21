@@ -170,6 +170,17 @@ function summarizeDailyPoints(input = {}) {
     ? live.reduce((min, g) => (g.expiresAtMs < min.expiresAtMs ? g : min), live[0])
     : null;
 
+  // 今日是否已发放 daily_grant。**如实标出上游状态**（不是我们能不能延长）：
+  // 实测 2026-10-19/10-20 连续两天上游未产生当日 daily_grant（全量账单扫描证实），
+  // 此时「保活未延长」不是失败，而是**无可延长对象**。面板据此显示
+  // 「上游尚未发放今日每日积分」而非「签到失败」。
+  const todayKeyOf = (ms) => {
+    const d = new Date(ms);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const todayKey = todayKeyOf(nowMs);
+  const grantedToday = granted.some((g) => g.grantedAtMs !== null && todayKeyOf(g.grantedAtMs) === todayKey);
+
   return {
     claimable: false,
     grantPoints: DAILY_GRANT_POINTS,
@@ -180,6 +191,7 @@ function summarizeDailyPoints(input = {}) {
       ? Math.max(0, Math.round((nextExpiry.expiresAtMs - nowMs) / 3600_000 * 10) / 10)
       : null,
     expiredTotal,
+    grantedToday,
     observedAt: new Date(nowMs).toISOString(),
   };
 }
@@ -308,32 +320,109 @@ function isRefreshable(credential) {
  * @param {Buffer} [iv] 仅供单测注入固定值；生产路径省略（随机）。
  */
 function encryptPhone(phone, iv) {
+  return encryptSecret(phone, iv);
+}
+
+/**
+ * 通用传输层加密（AES-128-CFB，密钥 `PHONE_CIPHER_SECRET`）。
+ *
+ * ⚠️ 2026-10-20 实证：`login_with_password` / `reset_password` 的 `password` 字段
+ * **用同一套算法加密**（不是只限手机号）：
+ *   - 空/缺 → `100003 params_encryted_error`
+ *   - 用本函数加密错密码 → `100002 params_invalid_error`（说明加密对了、只是密码错）
+ * 故密码字段也走这里。复用 {@link encryptPhone} 的算法（二者等价）。
+ *
+ * @param {string} plaintext 明文（手机号或密码）
+ * @param {Buffer} [iv] 仅供单测注入固定值
+ */
+function encryptSecret(plaintext, iv) {
   const key = Buffer.from(PHONE_CIPHER_SECRET, 'utf8');
   const nonce = iv || crypto.randomBytes(16);
   const cipher = crypto.createCipheriv('aes-128-cfb', key, nonce);
   cipher.setAutoPadding(false);
-  const ciphertext = Buffer.concat([cipher.update(Buffer.from(phone, 'utf8')), cipher.final()]);
+  const ciphertext = Buffer.concat([cipher.update(Buffer.from(plaintext, 'utf8')), cipher.final()]);
   return Buffer.concat([nonce, ciphertext]).toString('base64');
 }
 
-/** 生成一个扫码用的 `qrcode_code`（32 位小写 hex = 16 字节随机）。 */
+/**
+ * 生成一个扫码用的 `qrcode_code`（32 位小写 hex = 16 字节随机）。
+ *
+ * ⚠️ **2026-10-18 起此函数不再用于扫码登录**：官方已把扫码迁移到新 IAM API
+ * （`/api/iam/v1/auth/mp/qrcode`），`qrcode_code` 改由**服务端签发**
+ * （`qr-<uuid>` 形态），客户端自造的 code 在新体系里不被接受 ——
+ * 二维码指向的 `/login/mp` 页面只对签发码生效（实测自造码访问即 404）。
+ * 保留此函数仅供单测与对照；扫码登录走 `auth.js` 的新 `qrCreate` 流程。
+ */
 function generateQrCode() {
   return crypto.randomBytes(16).toString('hex');
 }
 
 /**
- * 构造二维码承载的微信登录页 URL。
+ * 构造二维码承载的登录页 URL（**新 IAM 体系**，2026-10-18 从官网 chunk 309
+ * 逐字复刻，含同源与路径白名单校验）。
  *
- * 依据客户端：`${base}/login/mp?code=${code}&appname=商汤小浣熊官网`。
- * 这是一个**公开页面**，扫码后在微信内完成授权，服务端据此把该 code 置为
- * `success`，我们轮询 `login_with_qrcode_code` 取回 token。
+ * 官方算法（buildQrUrl，变量名对应）：
+ * ```js
+ * let i = new URL(origin);                      // e = qrOrigin（必须 https）
+ * if (i.protocol !== 'https:' || i.username || i.password) throw INVALID_QR_PATH;
+ * if (!scanPath.startsWith('/') || scanPath.startsWith('//') || /[\\\s#]/.test(scanPath)) throw …;
+ * let a = decodeURIComponent(scanPath);
+ * if (/[\\\s#]/.test(a) || a.startsWith('//') || /%[0-9a-f]{2}/i.test(a)) throw …;
+ * let s = new URL(scanPath, origin);
+ * if (s.origin !== i.origin || s.hash) throw …;  // ★ 防跳域
+ * s.search = '';
+ * s.searchParams.set('code', code);
+ * s.searchParams.set('appname', brand);
+ * s.searchParams.set('source', 'platform');
+ * return s.href;
+ * ```
  *
- * ⚠️ 该 URL 含一次性登录票据，**只能由本机面板渲染**——绝不能转给外部二维码
- * 图片服务生成，那等于把票据送给第三方。
+ * ⚠️ `scanPath` 来自**服务端响应**，必须当不可信输入对待：
+ * 白名单挡掉三类攻击 —— 跳到第三方域（`s.origin !== origin`）、协议相对地址
+ * （`//evil.com`）、以及把参数挤进 hash/路径的注入（`#` 与 `%xx`）。
+ * 官方连「decode 后再查一遍」都做了（防双编码绕过），这里照抄。
+ *
+ * @param {{origin:string, scanPath:string, code:string, brand:string, source:string}} p
+ * @returns {string} 二维码内容 URL
+ * @throws Error 当 origin/scanPath 不满足白名单（抛 `INVALID_QR_PATH`，与官方一致）
  */
-function buildQrImageUrl(code) {
-  const params = new URLSearchParams({ code, appname: '商汤小浣熊官网' });
-  return `${V.hosts.qrPage}?${params.toString()}`;
+function buildQrUrl({ origin, scanPath, code, brand, source }) {
+  const base = new URL(origin);
+  if (base.protocol !== 'https:' || base.username || base.password) {
+    throw new Error('INVALID_QR_PATH');
+  }
+  if (typeof scanPath !== 'string'
+    || !scanPath.startsWith('/')
+    || scanPath.startsWith('//')
+    || /[\\\s#]/.test(scanPath)) {
+    throw new Error('INVALID_QR_PATH');
+  }
+  // 官方是「原文查一遍、decode 后再查一遍」：原文挡单编码（%2e%2e），
+  // decode 后挡二次编码与解码后才暴露的 // 注入。两层缺一不可。
+  //
+  // decodeURIComponent 对非法百分号编码（如 '/%zz'）抛 URIError，而本函数的
+  // 错误契约是 INVALID_QR_PATH。不包成同一类型的话，调用方只能靠 try/catch
+  // 兜住任意异常，错误分类就失效了。
+  let decoded;
+  try {
+    decoded = decodeURIComponent(scanPath);
+  } catch {
+    throw new Error('INVALID_QR_PATH');
+  }
+  if (/[\\\s#]/.test(decoded)
+    || decoded.startsWith('//')
+    || /%[0-9a-f]{2}/i.test(scanPath)) {
+    throw new Error('INVALID_QR_PATH');
+  }
+  const u = new URL(scanPath, base);
+  if (u.origin !== base.origin || u.hash) {
+    throw new Error('INVALID_QR_PATH');
+  }
+  u.search = '';
+  u.searchParams.set('code', code);
+  u.searchParams.set('appname', brand);
+  u.searchParams.set('source', source);
+  return u.href;
 }
 
 /**
@@ -569,8 +658,9 @@ module.exports = {
   needsRefresh,
   isRefreshable,
   encryptPhone,
+  encryptSecret,
   generateQrCode,
-  buildQrImageUrl,
+  buildQrUrl,
   orgCodeOf,
   headers,
   desktopHeaders,
