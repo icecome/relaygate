@@ -23,7 +23,11 @@
     "test:concurrency": "node src/test/store-concurrency.test.js",
     "test:shutdown": "node src/test/shutdown.test.js",
     "verify:store": "node scripts/verify-store-encryption.js",
-    "probe:wb-packs": "node scripts/probe-wb-pack-fields.js",
+    "verify:review-fixes": "node scripts/verify-review-fixes.js",
+    "verify:wb-channel": "node scripts/probes/verify-wb-channel.js",
+    "probe:wb-packs": "node scripts/probes/probe-wb-pack-fields.js",
+    "probe:wb-request": "node scripts/probes/dump-wb-request.js",
+    "probe:wb-e2e": "node scripts/probes/e2e-wb-11128.js",
     "check": "npm test && npm run lint"
   },
   "engines": {

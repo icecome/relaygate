@@ -107,6 +107,7 @@ output/              运行数据（.trae-api/ 数据库与密钥、logs/ 日志
 | `STATUS_PUBLIC` | `false` | `/status` 是否免鉴权 |
 | `SCHEDULER_ENABLED` | `true` | 定时任务总开关 |
 | `GROWTH_POLL_ENABLED` / `GROWTH_HOUR`+`GROWTH_MINUTE` | `true` / `8:00` | WorkBuddy 成长任务（派猫旅行等）每天墙钟执行一次的时刻 |
+| `WB_APP_VERSION` / `WB_CLI_VERSION` | `5.8.3` / `2.161.0` | WorkBuddy 客户端身份版本（UA 与 `X-IDE-Version`）。**上游按「像不像官方客户端」做渠道校验（11128）**，桌面端升级后需同步；`WB_UA` 可整体覆盖 User-Agent |
 
 完整列表与语义见 `.env.example`（每个变量都有注释）。
 
