@@ -2,8 +2,10 @@
  * Qoder 运营面与转发面接口（/v1/qoder/*）。
  *
  * 真实语义（对照 src/routes/qoder.js）：
- *   - 凭据只来自本机桌面客户端 auth.v1.dat（双区域），后端不接受请求体传入 token；
- *   - realm 由「扫到哪个客户端目录」确定并随账号持久化，UI 不传 realm 给后端推导；
+ *   - 两条凭据来源：本机桌面客户端 auth.v1.dat 扫描（local，同机 Windows），
+ *     以及手动粘贴 dt- token / 凭据 JSON（manual，跨机或 Linux 部署）；
+ *   - realm 由「扫到哪个客户端目录」确定并随账号持久化；手动导入时由用户在
+ *     弹窗里显式选择（两个区域是独立账号体系，不能按域名猜）；
  *   - 导入为幂等：同 realm+uid 已存在则更新而非重复插入。
  */
 import { api } from './http';
@@ -54,6 +56,32 @@ export const qoderImportRealm = (realm: 'cn' | 'intl', key: string) =>
   api<{ ok?: boolean; account?: { id: string; label: string }; action?: string }>(
     `/v1/qoder/local/import/${realm}`,
     { method: 'POST' },
+    key,
+  );
+
+/**
+ * 手动导入（跨机 / 无桌面客户端）：粘贴 dt- token 或客户端凭据 JSON。
+ *
+ * `realm` 必填——两个区域是完全独立的账号体系，且国际版客户端的 fastEndpoint
+ * 是 .com.cn 域名，后端无法从域名反推（见 src/qoder/manual.js 的注释）。
+ *
+ * `verify` 默认 true：后端用 userinfo 在线验证 token 并取回 uid/昵称/邮箱。
+ * 传 false 可跳过（上游暂不可达时用），与 WorkBuddy 的跨机粘贴同语义。
+ */
+export const qoderImportManual = (
+  body: { realm: 'cn' | 'intl'; credential: string; label?: string; verify?: boolean },
+  key: string,
+) =>
+  api<{
+    ok?: boolean;
+    action?: 'created' | 'updated';
+    verified?: boolean;
+    account?: QoderAccount;
+    message?: string;
+    error?: { message?: string };
+  }>(
+    '/v1/qoder/manual/import',
+    { method: 'POST', body, timeoutMs: 40_000 },
     key,
   );
 

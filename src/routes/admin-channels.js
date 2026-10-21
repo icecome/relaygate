@@ -32,7 +32,11 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 /** 各平台「粘贴导入」时用户手上究竟该有什么东西（文案随平台不同）。 */
 const PASTE_HINT = {
   [variant.TRAE]: '粘贴 Trae 客户端存储中的凭据 JSON（含 refreshToken）',
-  [variant.WORKBUDDY]: '粘贴 workbuddy-desktop.info 文件内容；跨机导入后需补验登录',
+  [variant.WORKBUDDY]: '粘贴 workbuddy-desktop.info 的**明文**内容（需先按 docs/workbuddy-at-rest-crypto.md 解密 envelope）；跨机导入后需补验登录',
+  // Qoder 的粘贴是真的可移植凭据：上游只认纯 Bearer 的 dt- token。
+  // 这与 ZCode 形成对照——ZCode 的 JWT 由「平台+家目录+用户名」派生、
+  // 上游不发放可移植凭据，所以它没有这条入口（见 variant.js 的 onboarding）。
+  [variant.QODER]: '粘贴 dt- access token 或客户端凭据 JSON，需选择国内版 / 国际版；导入时在线验证',
 };
 
 /**
@@ -63,10 +67,37 @@ function accountsByPlatform() {
 function localProbe(platformId) {
   if (platformId === variant.WORKBUDDY) {
     const info = wbAuth.readAuthFile();
+    if (info) {
+      return {
+        available: true,
+        detail: `本机登录态：${info.nickname || info.uid || '已登录'}`,
+      };
+    }
+    // readAuthFile() 返回 null 有两种原因，必须分开：客户端没登录（用户去登录就行），
+    // 与客户端已登录但凭据已加密（2026-09-24 起，去登录也没用，必须走粘贴导入）。
+    // 混成一句「未找到登录态」会让用户反复登录、反复撞墙——这是实测踩过的坑。
+    const dir = variant.clientAuthDir(variant.WORKBUDDY);
+    let encrypted = false;
+    try {
+      const fs = require('fs');
+      const path = require('path');
+      if (dir && fs.existsSync(dir)) {
+        for (const f of fs.readdirSync(dir)) {
+          if (!f.startsWith('workbuddy-desktop') || !f.endsWith('.info')) continue;
+          const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+          if (j && j.auth && j.auth.accessToken && typeof j.auth.accessToken === 'object') {
+            encrypted = true;
+            break;
+          }
+        }
+      }
+    } catch { /* 探测失败按未登录处理，不阻断其余平台 */ }
     return {
-      available: !!info,
-      detail: info
-        ? `本机登录态：${info.nickname || info.uid || '已登录'}`
+      available: false,
+      detail: encrypted
+        ? '客户端已登录但凭据已加密（2026-09-24 起客户端把 token 写成 $wbEncrypted 对象，'
+          + '密钥由客户端进程持有、离线无法解密）。请改用「粘贴凭据导入」，'
+          + '并先按 docs/workbuddy-at-rest-crypto.md 解出明文 JWT。'
         : '未找到本机登录态，需先安装并登录 CodeBuddy / WorkBuddy 桌面端',
     };
   }

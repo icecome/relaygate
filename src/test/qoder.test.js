@@ -824,6 +824,207 @@ await t('modelResourcePath：qoder 独立资源前缀', () => {
     'trae 资源不得匹配 qoder 资源');
 });
 
+// ---------- manual import（跨机粘贴 dt- token） ----------
+console.log('\n[manual]');
+const manual = require('../qoder/manual');
+
+await t('parseCredential：裸 token / Bearer 前缀 / 凭据 JSON 三种形态', () => {
+  const a = manual.parseCredential('dt-abc123');
+  assert.strictEqual(a.token, 'dt-abc123');
+  assert.strictEqual(a.refreshToken, null);
+
+  const b = manual.parseCredential('  Bearer dt-xyz  ');
+  assert.strictEqual(b.token, 'dt-xyz', 'Bearer 前缀与首尾空白必须被剥掉');
+
+  // 桌面端 auth.v1.dat 解密后的结构（crypto.normalizeAuth 的兼容字段）
+  const c = manual.parseCredential(JSON.stringify({
+    schemaVersion: 1,
+    token: 'dt-json',
+    refreshToken: 'drt-json',
+    expiresAt: '2026-11-12T08:02:16Z',
+    refreshTokenExpiresAt: '2026-12-12T08:02:16Z',
+    user: { id: '019f0dea', name: 'Lice', email: 'werrice@outlook.com' },
+  }));
+  assert.strictEqual(c.token, 'dt-json');
+  assert.strictEqual(c.refreshToken, 'drt-json');
+  assert.strictEqual(c.expiresAt, '2026-11-12T08:02:16Z');
+  assert.strictEqual(c.userId, '019f0dea');
+  assert.strictEqual(c.userName, 'Lice');
+  assert.strictEqual(c.userEmail, 'werrice@outlook.com');
+});
+
+await t('parseCredential：非法输入一律 400 且说清要什么', () => {
+  for (const bad of ['', '   ', null, undefined]) {
+    assert.throws(() => manual.parseCredential(bad), (e) => e.status === 400 && /dt-/.test(e.message));
+  }
+  assert.throws(() => manual.parseCredential('{"token":'), (e) => e.status === 400 && /JSON/.test(e.message));
+  assert.throws(() => manual.parseCredential('[]'), (e) => e.status === 400 && /数组/.test(e.message));
+  // 形态不符：JWT（Trae）或空串都不是 Qoder token
+  assert.throws(() => manual.parseCredential('eyJhbGciOi.xxx'), (e) => e.status === 400 && /dt-/.test(e.message));
+});
+
+await t('parseCredential：JSON 里缺 token 时报「未登录」而不是形态不符', () => {
+  assert.throws(() => manual.parseCredential('{"user":{"id":"u"}}'),
+    (e) => e.status === 400 && /无 token/.test(e.message));
+});
+
+await t('importManual：verify=false 直接入库（上游不可达时的逃生门）', async () => {
+  const acct = (await manual.importManual({
+    realm: 'intl',
+    credential: 'dt-offline',
+    label: 'qtest-manual-offline',
+    verify: false,
+  })).account;
+  try {
+    assert.strictEqual(acct.realm, 'intl');
+    assert.strictEqual(acct.mode, 'device', '与本机导入同一 mode（OAuth device flow 凭据）');
+    assert.strictEqual(acct.source, 'manual', 'source 区分来源，便于面板与备份识别');
+    assert.strictEqual(acct.host, 'https://openapi.qoder.sh');
+    assert.strictEqual(acct.hasToken, true, '返回值不带 token 明文，但须标明有凭据');
+    assert.strictEqual(acct.token, undefined, 'token 明文绝不出现在返回值里');
+    const got = store.get(acct.id);
+    assert.strictEqual(got.token, 'dt-offline', '明文应已加密入库');
+    assert.strictEqual(got.qoderRealm, 'intl');
+  } finally { store.remove(acct.id); }
+});
+
+await t('importManual：realm 显式落库（国内版走 .com.cn）', async () => {
+  const acct = (await manual.importManual({
+    realm: 'cn', credential: 'dt-cn', verify: false,
+  })).account;
+  try {
+    assert.strictEqual(acct.realm, 'cn');
+    assert.strictEqual(acct.host, 'https://openapi.qoder.com.cn');
+    assert.strictEqual(store.get(acct.id).qoderRealm, 'cn');
+  } finally { store.remove(acct.id); }
+});
+
+await t('importManual：验证失败不入库，且 401/403 归 400（点明区域可能选错）', async () => {
+  const clientPath = require.resolve('../qoder/client');
+  const orig = require.cache[clientPath].exports.request;
+  require.cache[clientPath].exports.request = async () => {
+    const { QoderApiError } = require.cache[clientPath].exports;
+    throw new QoderApiError('unauthorized', { status: 401 });
+  };
+  try {
+    await assert.rejects(
+      () => manual.importManual({ realm: 'intl', credential: 'dt-bad' }),
+      (e) => e.status === 400 && /区域/.test(e.message),
+    );
+    assert.ok(!store.list().some((a) => a.label && a.label.includes('dt-bad')),
+      '验证失败绝不能留下半条记录');
+  } finally {
+    require.cache[clientPath].exports.request = orig;
+  }
+});
+
+await t('importManual：验证成功取回身份并用作默认标签', async () => {
+  const clientPath = require.resolve('../qoder/client');
+  const orig = require.cache[clientPath].exports.request;
+  require.cache[clientPath].exports.request = async () => ({
+    id: '019f0dea-ce95', name: 'Lice', email: 'werrice@outlook.com',
+  });
+  try {
+    const r = await manual.importManual({ realm: 'intl', credential: 'dt-ok' });
+    assert.strictEqual(r.action, 'created');
+    assert.strictEqual(r.verified, true);
+    assert.strictEqual(r.account.userId, '019f0dea-ce95');
+    assert.strictEqual(r.account.label, 'Lice', '优先用昵称作标签');
+    assert.strictEqual(r.account.userEmail, 'werrice@outlook.com');
+    assert.ok(r.message.includes('国际版'));
+  } finally {
+    require.cache[clientPath].exports.request = orig;
+    for (const a of store.list()) if (a.label === 'Lice') store.remove(a.id);
+  }
+});
+
+await t('importManual：幂等键为 realm+userId（换 token 不产生重复账号）', async () => {
+  const clientPath = require.resolve('../qoder/client');
+  const orig = require.cache[clientPath].exports.request;
+  require.cache[clientPath].exports.request = async () => ({ id: 'uid-same', name: 'Same' });
+  try {
+    const first = await manual.importManual({ realm: 'intl', credential: 'dt-first' });
+    const second = await manual.importManual({ realm: 'intl', credential: 'dt-second', label: '改名' });
+    assert.strictEqual(first.action, 'created');
+    assert.strictEqual(second.action, 'updated');
+    assert.strictEqual(second.account.id, first.account.id, '必须是同一条记录');
+    const all = store.list().filter((a) => a.userId === 'uid-same');
+    assert.strictEqual(all.length, 1, '同 realm+uid 只允许一条');
+    assert.strictEqual(store.get(first.account.id).token, 'dt-second', 'token 应被更新');
+    assert.strictEqual(store.get(first.account.id).label, '改名');
+
+    // 同一 uid 换个区域是另一个账号体系，不得被合并
+    const cn = await manual.importManual({ realm: 'cn', credential: 'dt-cn-same-uid' });
+    assert.strictEqual(cn.action, 'created', 'cn/intl 是独立账号体系，同 uid 也不合并');
+    assert.notStrictEqual(cn.account.id, first.account.id);
+  } finally {
+    require.cache[clientPath].exports.request = orig;
+    for (const a of store.list()) if (a.userId === 'uid-same') store.remove(a.id);
+  }
+});
+
+await t('findExisting 不用 label 当身份键（标签可编辑，误合并会把两个账号并成一个）', async () => {
+  const clientPath = require.resolve('../qoder/client');
+  const orig = require.cache[clientPath].exports.request;
+  require.cache[clientPath].exports.request = async () => ({ id: 'uid-lbl', name: 'A' });
+  try {
+    const a1 = await manual.importManual({ realm: 'intl', credential: 'dt-a', label: '同名账号' });
+    // 改标签不影响身份认定
+    store.update(a1.account.id, { label: '改名了' });
+    const a2 = await manual.importManual({ realm: 'intl', credential: 'dt-a', label: '又一个同名' });
+    assert.strictEqual(a2.action, 'updated', '仍应按 token 认出是同一条记录');
+    // 另一个不同 token、不同 uid 但标签相同的账号不得被合并进来
+    require.cache[clientPath].exports.request = async () => ({ id: 'uid-other', name: 'B' });
+    const b1 = await manual.importManual({ realm: 'intl', credential: 'dt-b', label: '又一个同名' });
+    assert.strictEqual(b1.action, 'created', '标签相同但 uid/token 不同，必须是两个账号');
+    assert.notStrictEqual(b1.account.id, a2.account.id);
+  } finally {
+    require.cache[clientPath].exports.request = orig;
+    for (const a of store.list()) if (a.userId === 'uid-lbl' || a.userId === 'uid-other') store.remove(a.id);
+  }
+});
+
+await t('importManual：无 userId 时按 realm+token 幂等（重复粘贴同一 token 不产生重复账号）', async () => {
+  // verify:false + 裸 token → 没有 userId，若只按 userId 去重，用户每导一次
+  // 就多一条账号，领取任务会对同一账号跑两遍。
+  const first = await manual.importManual({ realm: 'intl', credential: 'dt-nouid', verify: false });
+  const second = await manual.importManual({ realm: 'intl', credential: 'dt-nouid', verify: false });
+  try {
+    assert.strictEqual(first.action, 'created');
+    assert.strictEqual(second.action, 'updated');
+    assert.strictEqual(second.account.id, first.account.id);
+    assert.strictEqual(store.list().filter((a) => a.source === 'manual' && a.qoderRealm === 'intl').length, 1,
+      '同一区域的同一条 token 只允许一条记录');
+  } finally {
+    for (const a of store.list()) if (a.id === first.account.id) store.remove(a.id);
+  }
+});
+
+await t('importManual：不擅自启用既有停用账号（用户的停用决定不被打断）', async () => {
+  const clientPath = require.resolve('../qoder/client');
+  const orig = require.cache[clientPath].exports.request;
+  require.cache[clientPath].exports.request = async () => ({ id: 'uid-off', name: 'Off' });
+  const off = store.add(
+    { label: 'qtest-manual-off', edition: 'qoder', token: 'dt-old', qoderRealm: 'intl', userId: 'uid-off', enabled: false },
+    'manual',
+  );
+  try {
+    const r = await manual.importManual({ realm: 'intl', credential: 'dt-new' });
+    assert.strictEqual(r.action, 'updated');
+    assert.strictEqual(store.get(off.id).enabled, false,
+      '停用是用户的决定，重新导入凭据不应把它翻回启用');
+  } finally {
+    require.cache[clientPath].exports.request = orig;
+    store.remove(off.id);
+  }
+});
+
+await t('variant：Qoder onboarding 含 local + paste（粘贴入口真实可用）', () => {
+  const v = variant.variantOf(variant.QODER);
+  assert.deepStrictEqual(v.onboarding, ['local', 'paste'],
+    '上游只发纯 Bearer 的 dt- token，凭据可移植，故粘贴这条路必须存在');
+});
+
 // ---------- summary ----------
 console.log(`\n=== qoder.test: ${passed} passed, ${failed} failed ===`);
 if (failed) {

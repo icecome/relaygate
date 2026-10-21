@@ -25,6 +25,7 @@ export type WizardKind =
   | 'wb-local'
   | 'zcode-local'
   | 'qoder-local'
+  | 'qoder-manual'
   | 'raccoon-login';
 
 export interface ChannelEntry {
@@ -58,7 +59,11 @@ export const CHANNEL_ENTRY: Record<ChannelId, ChannelEntry> = {
   },
   qoder: {
     accent: 'var(--rg-state-success)',
-    wizards: { local: 'qoder-local' },
+    // Qoder 上游只认纯 Bearer 的 dt- token，凭据本身可移植，因此粘贴这条路
+    // 是真的可用（与 ZCode 相反——它的 JWT 由家目录派生，无可粘贴之物）。
+    // 本机导入要求服务端与客户端同机（DPAPI 密文换机解不开），手动粘贴覆盖
+    // Linux 部署与跨机接入。两者共用同一个弹窗（内部切换方式）。
+    wizards: { local: 'qoder-local', paste: 'qoder-manual' },
   },
   raccoon: {
     // Raccoon 本机没有官方客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），

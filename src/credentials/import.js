@@ -13,6 +13,7 @@ const crypto = require('crypto');
 const store = require('./store');
 const traeDecrypt = require('../lib/trae-decrypt.js');
 const { hashDeviceId } = require('../lib/util');
+const variant = require('../platform/variant');
 
 function pick(obj, keys) {
   const out = {};
@@ -134,7 +135,35 @@ function toAccount(auth, extra = {}) {
     authClientId: extra.authClientId || auth.authClientId || null,
     authHost: extra.authHost || auth.authHost || null,
   };
-  return account;
+  return withTraeExchangeDefaults(account);
+}
+
+/**
+ * Trae 系账号补「换票面」默认值（authHost / authClientId）。
+ *
+ * 2026-10-17 根因修复：refreshToken 与 ClientID 是**绑定关系**，但此前只有
+ * OAuth 登录来源的账号会记 authClientId/authHost（oauth.js 显式传入）。
+ * 粘贴 storage.json / authObject 导入的账号这两列是 null，续期时
+ * scheduler.js 与 auth/index.js 都写成 `acct.authClientId || undefined`，
+ * 于是回落到 lib/auth.js 的默认 ClientID 'ono9krqynydwx5'，
+ * 上游按绑定关系校验后返回 400「refresh token is not matched to the client」。
+ *
+ * 实测：本机 Trae SOLO 线账号的 refreshToken 属于 en1oxy7wnw8j9n
+ * （variant.js 的 identity.oauthClientId），用 ono9krqynydwx5 换必失败。
+ *
+ * 只补 Trae 系账号：其它平台各有自己的续期端点与身份（WorkBuddy 走
+ * codebuddy.cn 的 Keycloak，Raccoon 走扫码 refresh），填 Trae 的 ClientID
+ * 反而会被误用。已显式携带 authClientId 的（OAuth 来源）保持原值不覆盖。
+ */
+function withTraeExchangeDefaults(account) {
+  if (!account || !variant.isTrae(account.edition)) return account;
+  const identity = variant.variantOf(variant.TRAE).identity;
+  const hosts = variant.variantOf(variant.TRAE).hosts;
+  return {
+    ...account,
+    authClientId: account.authClientId || process.env.TRAE_OAUTH_CLIENT_ID || identity.oauthClientId,
+    authHost: account.authHost || hosts.oauthExchange,
+  };
 }
 
 /** 按 userId 查已有账号（列表脱敏够用；命中后再 get 全量）。 */
@@ -322,6 +351,38 @@ function resetAccountDevices(accountId) {
   };
 }
 
+/**
+ * 一次性回填存量 Trae 账号的 authHost / authClientId（2026-10-17 根因修复）。
+ *
+ * 背景：修复前导入的 Trae 账号这两列是 null（见 withTraeExchangeDefaults 注释），
+ * 续期时回落到默认 ClientID，上游按「refreshToken 与 ClientID 绑定」校验拒付
+ * （400 refresh token is not matched to the client），账号池里的 Trae 账号
+ * 全部无法自动续期。存量数据不会被新代码自动修正，故启动时补一次。
+ *
+ * 只补 authHost/authClientId 为空的 Trae 系账号；已显式携带的（OAuth 来源）
+ * 一律不动——那是账号自己的事实，不该被默认值覆盖。
+ * @returns {{total:number, filled:number, ids:string[]}}
+ */
+function backfillTraeExchangeDefaults() {
+  const identity = variant.variantOf(variant.TRAE).identity;
+  const hosts = variant.variantOf(variant.TRAE).hosts;
+  const ids = [];
+  let total = 0;
+  for (const a of store.list()) {
+    total += 1;
+    if (!variant.isTrae(a.edition)) continue;
+    const full = store.get(a.id);
+    if (!full) continue;
+    const patch = {};
+    if (!full.authClientId) patch.authClientId = process.env.TRAE_OAUTH_CLIENT_ID || identity.oauthClientId;
+    if (!full.authHost) patch.authHost = hosts.oauthExchange;
+    if (Object.keys(patch).length === 0) continue;
+    store.update(a.id, patch);
+    ids.push(a.id);
+  }
+  return { total, filled: ids.length, ids };
+}
+
 module.exports = {
   importAccount,
   importMany,
@@ -335,4 +396,5 @@ module.exports = {
   ensureAccountDevices,
   ensureAllMissingDevices,
   resetAccountDevices,
+  backfillTraeExchangeDefaults,
 };

@@ -4,8 +4,8 @@
  * 挂载前缀：/v1/qoder（见 index.js）。
  *
  * 两类端点，鉴权方式不同：
- *   - 运营面（/status、/accounts、/local/*、/campaigns、/quota、/claim、/run、
- *     /settings、/models）：管理鉴权（authenticateAdmin）。
+ *   - 运营面（/status、/accounts、/local/*、/manual/import、/campaigns、/quota、
+ *     /claim、/run、/settings、/models）：管理鉴权（authenticateAdmin）。
  *   - 对话转发（/chat/completions）：转发面鉴权（authenticate + keyRateLimit），
  *     与 /v1/chat/completions 同构。它挂在 /v1/qoder 下是为了让「按模型名前缀
  *     分流到 Qoder」在 routes/openai.js 里只需一处判断，不必为它单独挂根路径。
@@ -29,6 +29,7 @@ const rewards = require('../qoder/rewards');
 const catalog = require('../qoder/catalog');
 const chat = require('../qoder/chat');
 const localClient = require('../qoder/local');
+const manualImport = require('../qoder/manual');
 const qoderJobs = require('../jobs/qoder-rewards');
 const { authenticateAdmin, authenticate } = require('../middleware/auth');
 const { logRequest, usageToLogFields } = require('../log/traffic');
@@ -194,6 +195,43 @@ router.post('/local/import/:realm', admin, (req, res) => {
     res.json({ ok: true, account: redact(saved), action: existing ? 'updated' : 'created' });
   } catch (e) {
     res.status(502).json({ ok: false, error: { message: e.message, type: 'local_import_error' } });
+  }
+});
+
+// ---- 手动导入（跨机 / 无桌面客户端） ----
+
+/**
+ * 手动导入：粘贴 dt- token 或客户端凭据 JSON。
+ *
+ * 与本机导入（/local/*）的分工：本机导入要求服务端跑在装有客户端的同一台
+ * Windows 上（DPAPI 密文换机解不开）；服务端部署在 Linux、或要接入别处机器上的
+ * 账号时，上游只认纯 Bearer 的 dt- token，凭据本身可移植，由用户粘贴进来。
+ *
+ * realm 必须显式指定（body.realm）：两个区域是完全独立的账号体系，且国际版
+ * 客户端的 fastEndpoint 是 .com.cn 域名，按域名猜会把国际版误判成国内版。
+ * 未指定归 intl（variant.qoderRealm 的既有口径）。
+ *
+ * 默认在线验证（body.verify !== false）：用 userinfo 确认 token 有效并取回
+ * uid/昵称/邮箱。不验证就会把无效 token 静默入库，而它要到第一次领积分时才失败。
+ * 上游临时不可达时可传 verify:false 跳过（与 WorkBuddy 跨机粘贴同语义：
+ * 导入后需自行确认）。
+ *
+ * 幂等：realm+userId → realm+相同 token → 新建（见 qoder/manual.js 的 findExisting），
+ * 换 token 不会产生重复账号；`verify:false` 且无 userId 时靠 token 兜底。
+ */
+router.post('/manual/import', admin, async (req, res) => {
+  const body = req.body || {};
+  try {
+    const out = await manualImport.importManual({
+      realm: body.realm,
+      credential: body.credential != null ? body.credential : body.token,
+      label: body.label,
+      verify: body.verify,
+    });
+    res.json({ object: 'qoder.manual.import', ...out });
+  } catch (e) {
+    const status = e.status && e.status >= 400 && e.status < 600 ? e.status : 502;
+    res.status(status).json({ ok: false, error: { message: e.message, type: 'qoder_upstream_error' } });
   }
 });
 

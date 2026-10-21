@@ -188,10 +188,39 @@ export default function CredentialsPage() {
     // 按平台分发：WorkBuddy 走它自己的签到端点（/v1/workbuddy/checkin），Trae 系走通用端点。
     // 此前统一打到 /v1/credentials/:id/checkin，后端平台闸门对 WorkBuddy 直接抛
     // 「not a trae account」，按钮因此不可用（m-39）。
-    if (platformOf(a) === 'workbuddy') {
-      await run(a.id, '签到', () => wbCheckinOne({ accountId: a.id }, key), '签到完成');
-    } else {
-      await run(a.id, '签到', () => checkinOne(a.id, key), '签到完成');
+    //
+    // 文案按结果分级（2026-10-18）：此前一律提示「签到完成」，于是账号停用、
+    // 上游没发分这类 claimed=false 的结果也显示成功——用户以为领到了，
+    // 实际积分没到账。现在三分：领到 / 今日已签 / 未到账（带原因）。
+    const label = a.label || a.id;
+    const fn = platformOf(a) === 'workbuddy'
+      ? () => wbCheckinOne({ accountId: a.id }, key)
+      : () => checkinOne(a.id, key);
+    setBusyId(a.id);
+    try {
+      const r = (await fn()) as {
+        claimed?: boolean;
+        result?: string;
+        note?: string;
+        reason?: string;
+        streakDays?: number | null;
+        checkinCredits?: number | null;
+      };
+      if (r.claimed) {
+        toast(`签到完成：${label} +${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）`, 'ok');
+      } else if (r.result === 'already') {
+        toast(`今日已签到：${label}（连续 ${r.streakDays ?? '-'} 天）`, 'ok');
+      } else {
+        const why = r.result === 'disabled'
+          ? '签到功能未对该账号开启'
+          : (r.note || r.reason || '上游未返回签到结果，积分未到账');
+        toast(`签到未到账：${label} —— ${why}`, 'warn');
+      }
+      list.reload();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : `签到请求失败：${label}`, 'err');
+    } finally {
+      setBusyId(null);
     }
   }
 
@@ -255,6 +284,7 @@ export default function CredentialsPage() {
     else if (kind === 'trae-paste') setShowImport(true);
     else if (kind === 'wb-local') setShowWbImport(true);
     else if (kind === 'qoder-local') setShowQoderImport(true);
+    else if (kind === 'qoder-manual') setShowQoderImport(true);
     else if (kind === 'zcode-local') setShowZcodeImport(true);
     else if (kind === 'raccoon-login') setShowRaccoonLogin(true);
   }

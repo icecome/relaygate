@@ -5,7 +5,7 @@
  */
 const { Router } = require('express');
 const store = require('../credentials/store');
-const { importAccount, importMany, ensureAllMissingDevices, resetAccountDevices } = require('../credentials/import');
+const { importAccount, importMany, ensureAllMissingDevices, resetAccountDevices, backfillTraeExchangeDefaults } = require('../credentials/import');
 const oauth = require('../credentials/oauth');
 const pool = require('../credentials/pool');
 const { checkinAccount, checkinAllEnabled } = require('../upstream/checkin');
@@ -71,6 +71,16 @@ function initCredentials() {
     }
   } catch (e) {
     console.error(`[credentials] backfill devices failed: ${e.message}`);
+  }
+  // Trae 换票面默认值回填（2026-10-17：authClientId/authHost 为空导致
+  // refreshToken 与默认 ClientID 不匹配，续期全失败）。幂等：只填空值。
+  try {
+    const r = backfillTraeExchangeDefaults();
+    if (r.filled) {
+      console.log(`[credentials] backfilled trae auth host/clientId for ${r.filled}/${r.total} accounts`);
+    }
+  } catch (e) {
+    console.error(`[credentials] backfill trae exchange defaults failed: ${e.message}`);
   }
 }
 
@@ -155,31 +165,68 @@ router.post('/checkin-all', admin, async (req, res) => {
 
 // 单账号签到
 router.post('/:id/checkin', admin, async (req, res) => {
+  let r = null;
   try {
-    const r = await checkinAccount(req.params.id);
-    // 手动单账号签到也要推送提醒（m-39）：此前只有调度器签到会通知，
-    // 手动触发收不到反馈，无法确认是否真的领到。
+    r = await checkinAccount(req.params.id);
+  } catch (err) {
+    // 失败也必须推送：此前 notify 只在成功路径上，签到失败时用户只看到前端
+    // toast（文案还是「签到请求失败」这种兜底），收不到任何远程提醒，
+    // 也无法从通知里看出是账号过期、停用还是上游 5xx。
     try {
       const { notify } = require('../notify');
-      const label = r.label || req.params.id;
-      const already = r.result === 'already';
-      notify(already ? 'checkin_ok' : 'checkin_ok', {
-        accountId: r.accountId || req.params.id,
-        label,
-        claimed: r.claimed ? 1 : 0,
-        message: already
-          ? `今日已签到（连续 ${r.streakDays ?? '-'} 天）`
-          : (r.claimed ? `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）` : '未签到成功'),
-      }, already ? `今日已签到：${label}` : `签到完成：${label}`).catch(() => {});
+      notify('checkin_fail', {
+        accountId: req.params.id,
+        label: req.params.id,
+        message: err.message,
+      }, '签到失败').catch(() => {});
     } catch { /* 通知失败不影响签到结果 */ }
-    res.json(r);
-  } catch (err) {
     const status = err.message && /not found/i.test(err.message) ? 404
       : err.message && /disabled/i.test(err.message) ? 400
       : err.status && Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status
       : 500;
-    res.status(status).json({ error: { message: err.message, type: 'internal_error' } });
+    return res.status(status).json({ error: { message: err.message, type: 'internal_error' } });
   }
+  // 手动单账号签到也要推送提醒（m-39）：此前只有调度器签到会通知，
+  // 手动触发收不到反馈，无法确认是否真的领到。
+  //
+  // 分级推送（2026-10-18）：此前一律 notify('checkin_ok')，于是「账号被停用」
+  // 「上游没发分」这类 claimed=false 的结果也报「签到完成」——面板显示失败、
+  // 通知说成功，同一操作两个互相矛盾的结论。现在按 result 三分：
+  //   claimed  → checkin_ok   真领到了
+  //   already  → checkin_ok   「今日已签」也是成功履约，标题区分
+  //   其它     → checkin_warn 请求通了但没拿到分，原因写进正文
+  try {
+    const { notify } = require('../notify');
+    const label = r.label || req.params.id;
+    const already = r.result === 'already' || r.note === 'already checked in';
+    if (r.claimed) {
+      notify('checkin_ok', {
+        accountId: r.accountId || req.params.id,
+        label,
+        claimed: 1,
+        message: `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）`,
+      }, `签到完成：${label}`).catch(() => {});
+    } else if (already) {
+      notify('checkin_ok', {
+        accountId: r.accountId || req.params.id,
+        label,
+        claimed: 0,
+        message: `今日已签到（连续 ${r.streakDays ?? '-'} 天）`,
+      }, `今日已签到：${label}`).catch(() => {});
+    } else {
+      // claimed=false 且不是「已签」：账号停用 / 活动未开 / claim 未确认等。
+      const reason = r.result === 'disabled'
+        ? '签到功能未对该账号开启'
+        : (r.note || '上游未返回签到结果，积分未到账');
+      notify('checkin_warn', {
+        accountId: r.accountId || req.params.id,
+        label,
+        claimed: 0,
+        message: reason,
+      }, `签到未到账：${label}`).catch(() => {});
+    }
+  } catch { /* 通知失败不影响签到结果 */ }
+  res.json(r);
 });
 
 /**
@@ -248,11 +295,24 @@ router.get('/oauth/status', admin, (req, res) => {
 });
 
 // 查看单个账号详情（已脱敏）
+//
+// 凭据类字段一个都不能出网。这里刻意**逐项列出**而不是复用 store.safeTok：
+// safeTok 是「写接口返回值」的脱敏口径，而本路由用的是 store.get()（withSecrets
+// 默认 true，会把 raccoon_phone_enc / raccoon_password_enc 解密成明文）。
+// 2026-10-21 之前这里只解构了 token/refreshToken，于是新增的 raccoonPassword
+// 与 raccoonPhone 直接顺着 `...safe` 泄漏出去——加字段时必须同步这里。
 router.get('/:id', admin, (req, res) => {
   const acct = store.get(req.params.id);
   if (!acct) return res.status(404).json({ error: { message: 'account not found', type: 'not_found' } });
-  const { token, refreshToken, ...safe } = acct;
-  res.json(withExpiry(safe));
+  const {
+    token, refreshToken, apiKey, raccoonPhone, raccoonPassword, version, ...safe
+  } = acct;
+  void token; void refreshToken; void apiKey; void raccoonPhone; void raccoonPassword; void version;
+  res.json(withExpiry({
+    ...safe,
+    // 「是否已配置密码登录」是安全布尔值，前端据此渲染按钮态；密码本身永不回显。
+    hasPasswordLogin: !!raccoonPassword,
+  }));
 });
 
 // 删除账号

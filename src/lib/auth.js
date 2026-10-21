@@ -9,6 +9,7 @@ const { writeFileAtomic } = require('./atomic-write');
 const variant = require('../platform/variant');
 
 const TRAE_HOSTS = variant.variantOf(variant.TRAE).hosts;
+const TRAE_IDENTITY = variant.variantOf(variant.TRAE).identity;
 
 function getTraeDataDir() {
   const envDir = process.env.TRAE_DATA_DIR;
@@ -287,19 +288,27 @@ function getApiHost() {
   }
 }
 
+/**
+ * OAuth 换票面域名（ExchangeToken）。
+ *
+ * 与 getApiHost()（agent 对话面）是**两个面**，域名在变体表里分开声明：
+ *   agentCn/agentSg/agentUs = 对话面；oauthExchange = 换票面。
+ * 2026-10-17 根因修复：此前本函数在拿不到登录态时回落 DEFAULT_HOST_SG
+ * （coresg-normal.trae.ai），而该域是 agent 面、没有换票端点，CN 账号
+ * 全部续期失败（上游返网关 404，报 ExchangeToken failed: 404）。
+ * 同时 TRAE_AUTH_HOST 曾被指向 agent 面镜像域（trae-api-cn.mchost.guru），
+ * 同一个错：换票请求打到了不做换票的域。
+ *
+ * 因此默认值改为变体表的 oauthExchange（api.trae.cn）——换票面与 agent 面
+ * 不得互相顶替，env 覆盖也只应覆盖换票面域名。
+ */
 function getAuthHost() {
   const envHost = process.env.TRAE_AUTH_HOST;
   if (envHost) return envHost;
 
-  try {
-    const authInfo = getAuthInfo();
-    if (authInfo._edition === 'cn') {
-      return DEFAULT_HOST_CN;
-    }
-    return DEFAULT_HOST_SG;
-  } catch (e) {
-    return DEFAULT_HOST_SG;
-  }
+  // 换票面默认值：变体表的 oauthExchange。刻意不按 region 分支——
+  // api.trae.cn 与 api.trae.com.cn 同为换票面且都在白名单内，取 CN 侧即可。
+  return TRAE_HOSTS.oauthExchange;
 }
 
 async function exchangeToken(refreshToken, opts = {}) {
@@ -308,7 +317,11 @@ async function exchangeToken(refreshToken, opts = {}) {
   const url = `${authHost}/cloudide/api/v3/trae/oauth/ExchangeToken`;
 
   const body = {
-    ClientID: opts.clientId || process.env.TRAE_OAUTH_CLIENT_ID || 'ono9krqynydwx5',
+    // refreshToken 与 ClientID 绑定：缺省值必须与变体表 identity.oauthClientId
+    // （SOLO 线 en1oxy7wnw8j9n）一致。此前缺省是 'ono9krqynydwx5'，
+    // 2026-10-17 实测该值与 SOLO 线 refreshToken 不匹配，
+    // 上游返 400「refresh token is not matched to the client」。
+    ClientID: opts.clientId || process.env.TRAE_OAUTH_CLIENT_ID || TRAE_IDENTITY.oauthClientId,
     RefreshToken: refreshToken,
     ClientSecret: process.env.TRAE_OAUTH_CLIENT_SECRET || '-',
     UserID: ''
@@ -321,12 +334,12 @@ async function exchangeToken(refreshToken, opts = {}) {
   const headers = {
     'Content-Type': 'application/json',
     'user-agent': 'TraeClient/TTNet',
-    'x-app-id': process.env.TRAE_APP_ID || '6eefa01c-1036-4c7e-9ca5-d891f63bfcd8',
+    'x-app-id': process.env.TRAE_APP_ID || TRAE_IDENTITY.appId,
     'x-app-version': getAppVersion(ed),
     'x-ide-version': getIdeVersion(ed),
     'x-app-version-code': getIdeVersionCode(),
     'x-ide-version-code': getIdeVersionCode(),
-    'package-type': 'stable_cn',
+    'package-type': TRAE_IDENTITY.packageType,
     'request-traffic-type': 'prod',
   };
 

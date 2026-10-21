@@ -174,7 +174,11 @@ async function run() {
     JSON.stringify(kinds('workbuddy')) === JSON.stringify(['local', 'paste']),
     `实际 ${JSON.stringify(kinds('workbuddy'))}`,
   );
-  check('Qoder 有 local（双区域）', JSON.stringify(kinds('qoder')) === JSON.stringify(['local']), `实际 ${JSON.stringify(kinds('qoder'))}`);
+  check(
+    'Qoder 有 local + paste 两条路（粘贴 = 可移植的 dt- token，覆盖 Linux 部署与跨机接入）',
+    JSON.stringify(kinds('qoder')) === JSON.stringify(['local', 'paste']),
+    `实际 ${JSON.stringify(kinds('qoder'))}`,
+  );
 
   // ---------- 本机探测：可用性 + 可行动的原因 ----------
   for (const c of data) {
@@ -193,6 +197,20 @@ async function run() {
     'ZCode 本机探测回显凭据文件路径（未安装时用户能据此判断该装在哪）',
     zLocal.detail.includes('.zcode') || zLocal.available === true,
     `detail=${zLocal.detail}`,
+  );
+
+  // Qoder 的粘贴入口与 WorkBuddy 不同：它是可移植凭据，不依赖本机客户端，
+  // 因此必须恒可用（available:true），且文案要点明「要选区域」这件必做之事。
+  const qPaste = byId.qoder.onboarding.find((o) => o.kind === 'paste');
+  check(
+    'Qoder 粘贴导入恒可用（dt- token 可移植，不依赖本机客户端）',
+    qPaste && qPaste.available === true,
+    JSON.stringify(qPaste),
+  );
+  check(
+    'Qoder 粘贴导入文案点明需选择国内版 / 国际版（两个区域是独立账号体系）',
+    !!qPaste && (/区域/.test(qPaste.detail || '') || (/国内版/.test(qPaste.detail || '') && /国际版/.test(qPaste.detail || ''))),
+    `detail=${qPaste && qPaste.detail}`,
   );
 
   // ---------- 账号计数与归一口径 ----------
