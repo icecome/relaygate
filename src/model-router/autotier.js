@@ -66,7 +66,7 @@ const DEFAULTS = () => ({
   // 取 4 是「常见低成本模型都有机会被选中、同时不把请求摊到高倍率模型上」的折中；
   // 置 1 即退化为固定命中倍率最低者，置 0 或不声明则完全关闭轮转。
   rotateTopN: 4,
-  failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'other'], cooldownMs: 20000 },
+  failover: { maxAttempts: 3, switchOn: ['rate_limit', 'model', '5xx', 'network', 'channel', 'other'], cooldownMs: 20000 },
 });
 
 /** 请求是否含图片块（OpenAI image_url / Anthropic image / Responses input_image）。 */

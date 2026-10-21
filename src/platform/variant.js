@@ -121,6 +121,12 @@ const VARIANTS = {
     label: 'WorkBuddy',
     edition: WORKBUDDY,
     note: 'CodeBuddy / WorkBuddy 桌面端登录态；含成长中心任务',
+    // 'local' 自 2026-09-24 版客户端起已不可用：凭据写入时即被
+    // {$wbEncrypted:1, envelope} 包裹（AES-256-GCM，密钥由客户端原生模块在进程内持有，
+    // 离线拿不到），readAuthFile() 对这类文件一律返回 null。入口保留只为让探测
+    // 路由（admin-channels.localProbe）能给出明确原因，而非笼统的「未找到登录态」。
+    // 真正可用的接入路径是 'paste'（需先按 docs/workbuddy-at-rest-crypto.md
+    // 第二节解密 envelope 得到明文 JWT）。
     onboarding: ['local', 'paste'],
     capability: {
       chat: true,
@@ -130,12 +136,16 @@ const VARIANTS = {
       billing: true,
       oauthLogin: false,
       deviceFingerprint: false,
-      // ⚠️ 刻意**不给** tokenRefresh：判断依据是现状而非意图。
-      // 保活扫描的旧过滤条件是 `can(edition,'oauthLogin')`，而 workbuddy 的该位
-      // 为 false ⇒ 它从来没被扫描过；scheduler 循环体里那个
-      // `edition === 'workbuddy'` 分支因此是**不可达代码**（见该处注释）。
-      // 顺手打开会让 WB 账号开始产生全新的上游续期请求 —— 那是未经证实的
-      // 行为变更，不属于本次任务范围。要么单独验证后再开，要么保持现状。
+      // 有 refreshToken 且可静默续期（POST https://www.codebuddy.cn/v2/plugin/auth/token/refresh，
+      // X-Refresh-Token 头；实现见 workbuddy/auth.js#refresh）。
+      //
+      // 2026-10-18 事故后开启。此前刻意关闭，理由是「会让 WB 账号产生全新的上游续期请求」；
+      // 但关掉的代价已经实测到了：保活扫描（scheduler.keepaliveCandidates）按
+      // tokenRefresh||oauthLogin 筛账号，WB 两位皆 false ⇒ 它从来没被任何一条续期链路
+      // 覆盖过。上游单方面作废会话时（accessToken 的 JWT exp 还有 3 周，上游已拒绝服务），
+      // 全系统没有任何机制会发现或修复——面板只看到「签到部分失败」。
+      // 端点与响应结构在 workbuddy/auth.js#refresh 里，四账号 401 后实测 8/8 刷新成功。
+      tokenRefresh: true,
     },
     hosts: {
       chat: { cn: 'https://copilot.tencent.com', global: 'https://www.workbuddy.ai' },
@@ -147,10 +157,28 @@ const VARIANTS = {
       domain: { cn: 'copilot.tencent.com', global: 'www.workbuddy.ai' },
       regionPattern: 'workbuddy\\.ai',
     },
+    // 客户端身份（2026-10-21 起按桌面端 5.8.3 实测形态）。
+    //
+    // 旧值 `CLI/2.63.2 CodeBuddy/2.63.2` + `X-Client-Platform: web` 是
+    // 「CodeBuddy 插件（web 端）」的身份，而上游 chat 的渠道校验认的是
+    // **WorkBuddy 桌面端**：UA 必须以 `WorkBuddy/<桌面版本>` 开头，并带
+    // X-IDE-* / X-Private-Data / x-codebuddy-request。取值来源是
+    // resources/app.asar 里 main/server.js 的 buildVlmGatewayHeaders 与
+    // applyGatewayHeaders（见 docs/workbuddy-channel-detection-2026-10-21.md）。
     identity: {
-      userAgent: 'CLI/2.63.2 CodeBuddy/2.63.2',
+      userAgent: 'WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0',
       productCode: 'workbuddy',
       product: 'SaaS',
+      // 桌面端版本：X-IDE-Version 与 UA 的第一段都取它
+      appVersion: '5.8.3',
+      // 随包 CLI 版本：UA 末段，取自 cli/package.json 的 publishConfig.customPackage.version
+      cliVersion: '2.161.0',
+      // 客户端固定带 X-Private-Data: true（关闭「隐私数据通道」）
+      privateData: 'true',
+      // X-IDE-Type / X-IDE-Name 恒为 WorkBuddy（桌面端写死）
+      ideType: 'WorkBuddy',
+      ideName: 'WorkBuddy',
+      // chat 走「官方桌面端」身份；billing/checkin 仍走 web 端（见 authHeaders）
       clientPlatform: 'web',
     },
     paths: {
@@ -166,9 +194,21 @@ const VARIANTS = {
       alreadyText: ['已签到'],
       rateLimitCodes: [6004],
       modelRateLimit: 6004,
+      // 模型在当前账号下不可用：
+      //   11102 model [x] service info not found（目录里有、服务端没有该模型）
+      //   11103 Backend [x] is not supported（模型后端类型不支持）
+      // 两者都是**模型**问题而非账号问题，应换候选而不是冷却账号。
+      modelUnavailable: 11102,
+      modelBackendUnsupported: 11103,
       // 上下文窗口超限。WorkBuddy chat 上游在输入超模型上限时返回 HTTP 400，
       // body {"code":11115,"msg":"prompt is too long: N tokens > MAX maximum"}。
       contextTooLong: 11115,
+      // 渠道校验拒绝（2026-10-21 起上游新增）。HTTP 400，
+      // body {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}，
+      // 客户端文案：「这次调用没通过渠道校验，可能不是官方客户端发出的」。
+      // 语义是「请求形状不像官方客户端」，与模型/账号权益无关：
+      // 换模型无效，换平台（trae）有效；恢复动作是修正请求身份头（见 auth.js#chatHeaders）。
+      channelBlocked: 11128,
     },
     // 桌面客户端凭据文件（导入 / 轮换用）
     clientAuth: {
@@ -277,7 +317,10 @@ const VARIANTS = {
     label: 'Qoder',
     edition: QODER,
     note: 'Qoder 桌面端登录态，双区域（国内版 / 国际版）；对话转发仅国际版',
-    onboarding: ['local'],
+    // 两条接入路：本机客户端扫描（同机 Windows）+ 手动粘贴 token（跨机 / Linux 部署）。
+    // 上游只认纯 Bearer 的 dt- token，凭据本身可移植，故粘贴这条路是真的能用的
+    // （不像 ZCode——它的 JWT 由家目录派生、上游不发放可移植凭据）。
+    onboarding: ['local', 'paste'],
     // 区域相关域名/路径的取值表。realm 由本机客户端目录推导，见 qoder/local.js。
     realms: {
       [QODER_REALM_CN]: {
@@ -396,7 +439,9 @@ const VARIANTS = {
     capability: {
       // 对话面：POST /api/web/llm/v2/chat/completions，标准 OpenAI 兼容 + 标准 SSE
       chat: true,
-      // 无签到端点（见上）
+      // 无签到端点（见上）：每日 300 由服务端自动发，没有「领取」这个动作。
+      // ⚠️ 但**不等于无事可做** —— 上游规则「当天登录后有效期延长至 7 天」，
+      // 故存在每日必须发生一次的等价动作（当日登录），见 dailyKeepalive。
       checkin: false,
       // points/v1/balance 是真实积分口径（单位 credit），不是 token，故可写 balance 列
       balance: true,
@@ -406,8 +451,8 @@ const VARIANTS = {
       // 不是 OAuth 换票：扫码登录会话，凭据由本网关自己保存
       oauthLogin: false,
       deviceFingerprint: false,
-      // access_token 寿命约 3 小时且有 refresh 端点 ⇒ 必须参与定时续期。
-      // 这是新增的独立能力位：scheduler 此前用 oauthLogin 兼作「可续期」判据，
+      // access_token 寿命 30 天（2026-10-15 实测）且有 refresh 端点 ⇒ 参与定时续期。
+      // 这是独立能力位：scheduler 此前用 oauthLogin 兼作「可续期」判据，
       // 而 Raccoon 既不是 OAuth 又必须续期，两者不能再混为一谈。
       tokenRefresh: true,
       // 一次性「桌面端登录奖励」（每号一次，幂等；不是每日）
@@ -415,10 +460,17 @@ const VARIANTS = {
       // 本机桌面端把凭据**明文**写在 ~/.box-agent/config/auth.json，
       // 可直接导入（2026-10-15 解包实证）。与 ZCode/Qoder 需要解密不同。
       localImport: true,
+      // 「当日登录」保活：每日代打一次幂等登录请求，把当日 300 分的有效期
+      // 从「当天 24:00」延长到 7 天，避免未开客户端就整额作废。
+      // 与 checkin 的区别：checkin=false 是「没有领取端点」（事实），
+      // dailyKeepalive=true 是「有等价动作可代做」（能力）。两者并存不矛盾。
+      dailyKeepalive: true,
     },
     hosts: {
       openapi: 'https://xiaohuanxiong.com',
-      // 二维码承载的公开登录页（扫码后在微信内完成授权）
+      // 二维码承载的公开登录页（扫码后在微信内完成授权）。
+      // ⚠️ 2026-10-18 实证：此页在新体系里由**服务端签发的 scan_path** 决定
+      // （当前值是 /login/mp），不再由客户端写死；qrPage 仅作展示兜底。
       qrPage: 'https://xiaohuanxiong.com/login/mp',
     },
     identity: {
@@ -426,18 +478,53 @@ const VARIANTS = {
       // `X-Client-Platform` 对 desktop/v1/login/points/grant 必需
       clientPlatform: 'desktop-windows',
       clientVersion: 'v1.0.35',
-      // 短信路径必需的阿里云滑块（扫码路径不需要）
+      // 短信路径必需的阿里云滑块（扫码路径不需要；2026-10-18 实测 IAM 的
+      // sms/send 也强制 captcha_token，scene/prefix 与旧一致）
       aliyunCaptchaSceneId: '1pkmy0x3',
       aliyunCaptchaPrefix: 'hk1r5l',
+      // 注意：**传输层加密密钥不在这里定义**。它只有一处事实源——
+      // raccoon/product.js 的 PHONE_CIPHER_SECRET（encryptSecret 的实现所在）。
+      // 同一常量两处定义迟早分叉，而那类分叉的表现是上游回
+      // `100003 params_encryted_error`（错误信息完全不指向根因）。
+      // 扫码二维码的 origin（登录页 config.qrOrigin 实测值，带尾斜杠）。
+      // 二维码 URL = qrOrigin + scan_path + ?code=&appname=&source=platform
+      qrOrigin: 'https://xiaohuanxiong.com/',
+      qrSource: 'platform',
+      // 二维码里的 appname（官方网页用品牌名；不再是旧的「商汤小浣熊官网」）
+      qrAppname: '商汤小浣熊',
     },
     paths: {
-      // 认证面
+      // 认证面（旧 /api/web/auth/v1 仍在线，但扫码已迁移）
+      // ⚠️ 2026-10-18：**扫码三件套已迁移到新 IAM API**（/api/iam/v1）：
+      //   旧 login_with_qrcode_code 的「客户端自造 code」语义已失效——
+      //   新体系 code 由**服务端签发**（qr-<uuid> 形态），二维码指向的
+      //   /login/mp 页面只对签发码生效。实测旧接口虽回 200 pending，
+      //   但扫码页 404 ⇒ 永远走不到 success。
+      // ⚠️ 旧端点保留仅为对照/降级，登录面一律走新 IAM 三件套。
       loginWithQrcode: '/api/web/auth/v1/login_with_qrcode_code',
       loginWithSms: '/api/web/auth/v1/login_with_sms',
       sendSms: '/api/web/auth/v1/send_sms',
       loginWithAuthCode: '/api/web/auth/v1/login_with_authorization_code',
+      // 密码登录（真实登录入口之一，2026-10-20 实测可用）。
+      // body {nation_code, phone, password}，phone 与 password 均需 AES-128-CFB 加密。
+      // ⚠️ 这是「每日积分发放」在网关侧唯一可编程复刻的载体：每日积分由**真实登录**
+      // 触发发放，grant/refresh 等端点都无效（见 credits.touchDailyKeepalive 注释）。
+      loginWithPassword: '/api/web/auth/v1/login_with_password',
+      resetPassword: '/api/web/auth/v1/reset_password',
       refresh: '/api/web/auth/v1/refresh',
       userInfo: '/api/web/auth/v1/user_info',
+      // 新 IAM 面基址（相对 openapi host）
+      iamBase: '/api/iam/v1',
+      // 扫码三件套（新 IAM，2026-10-18 实测 200 可用）：
+      //   POST iamBase + qrCreate  {}            → {qrcode_code, scan_path, expires_in, poll_interval, status}
+      //   POST iamBase + qrPoll    {qrcode_code} → {status, access_token?, refresh_token?}
+      //   PUT  iamBase + qrCancel  {qrcode_code, status:'canceled'}
+      qrCreate: '/api/iam/v1/auth/mp/qrcode',
+      qrPoll: '/api/iam/v1/auth/mp/qrcode/login',
+      qrCancel: '/api/iam/v1/auth/mp/qrcode',
+      // 短信面（新 IAM；仍强制滑块 captcha_token，未接入）
+      iamSmsSend: '/api/iam/v1/sms/send',
+      iamSmsLogin: '/api/iam/v1/auth/login/sms',
       // 积分面
       pointsBalance: '/api/web/points/v1/balance',
       pointsBills: '/api/web/points/v1/bills',

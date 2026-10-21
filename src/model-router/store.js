@@ -151,7 +151,7 @@ function normalizeVirtual(id, vm) {
       maxAttempts: Number(failover.maxAttempts) > 0 ? Number(failover.maxAttempts) : 3,
       switchOn: Array.isArray(failover.switchOn) && failover.switchOn.length
         ? failover.switchOn.map(String)
-        : ['rate_limit', 'model', '5xx', 'network', 'other'],
+        : ['rate_limit', 'model', '5xx', 'network', 'channel', 'other'],
       cooldownMs: Number(failover.cooldownMs) > 0 ? Number(failover.cooldownMs) : 20000,
     },
   };

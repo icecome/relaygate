@@ -38,6 +38,10 @@ const ENV_MAP = {
 const EVENTS = [
   'checkin_ok',
   'checkin_fail',
+  // 单账号签到的中间态：请求成功返回、但既没领到分也不是「今日已签」
+  // （账号被停用、上游未发分、claim 未确认）。与 checkin_ok/fail 分开，
+  // 是为了不让「点了签到却什么都没发生」长得跟成功一模一样。
+  'checkin_warn',
   'credits_expiring',
   'balance_low',
   'refresh_fail',
@@ -50,6 +54,10 @@ const EVENTS = [
   'zcode_reward_claimed',
   'zcode_reward_failed',
   'zcode_reward_risk',
+  // Raccoon 每日积分保活：**只有**「我们该做而没做成」（notExtended / 登录失败）
+  // 才发。upstreamSkipped（上游当日未发放 daily_grant）是上游状态、网关无法干预，
+  // 刻意不发 —— 每天一条只会造成「签到坏了」的误判（2026-10-20 实证踩坑）。
+  'raccoon_keepalive_fail',
 ];
 
 /**

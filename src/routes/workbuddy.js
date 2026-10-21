@@ -14,6 +14,7 @@
 const { Router } = require('express');
 const store = require('../credentials/store');
 const wbAuth = require('../workbuddy/auth');
+const variant = require('../platform/variant');
 const { wbCheckinAccount, wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { authenticateAdmin } = require('../middleware/auth');
 const { maskSecret: maskToken } = require('../lib/mask');
@@ -26,7 +27,31 @@ router.get('/local', admin, (req, res) => {
   try {
     const info = wbAuth.readAuthFile();
     if (!info) {
-      return res.json({ found: false, hint: '未找到 WorkBuddy 桌面端登录态（%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info）' });
+      // 2026-09-24 起客户端把 token 写成 {$wbEncrypted, envelope}；readAuthFile 的
+      // plainToken() 只认明文字符串，因此这类文件同样走到这里。一句笼统的「未找到」
+      // 会让用户反复登录反复撞墙，必须把两种情况分开讲。
+      const fs = require('fs');
+      const path = require('path');
+      const dir = variant.clientAuthDir(variant.WORKBUDDY);
+      let encrypted = false;
+      try {
+        if (dir && fs.existsSync(dir)) {
+          for (const f of fs.readdirSync(dir)) {
+            if (!f.startsWith('workbuddy-desktop') || !f.endsWith('.info')) continue;
+            const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+            if (j && j.auth && j.auth.accessToken && typeof j.auth.accessToken === 'object') { encrypted = true; break; }
+          }
+        }
+      } catch { /* 探测失败按未登录处理 */ }
+      return res.json({
+        found: false,
+        code: encrypted ? 'WB_TOKEN_ENCRYPTED' : 'WB_LOCAL_NOT_FOUND',
+        hint: encrypted
+          ? '客户端已登录，但凭据已被客户端加密（2026-09-24 起，token 为 $wbEncrypted 对象，'
+            + '密钥由客户端进程持有、离线无法解密）。请改用「粘贴凭据导入」，'
+            + '并按 docs/workbuddy-at-rest-crypto.md 先解出明文 JWT。'
+          : '未找到 WorkBuddy 桌面端登录态（%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info）',
+      });
     }
     res.json({
       found: true,
@@ -206,21 +231,56 @@ router.post('/checkin-status', admin, async (req, res) => {
 router.post('/checkin', admin, async (req, res) => {
   try {
     if (req.body && req.body.accountId) {
-      const r = await wbCheckinAccount(String(req.body.accountId));
+      let r = null;
+      try {
+        r = await wbCheckinAccount(String(req.body.accountId));
+      } catch (err) {
+        // 失败也要推送（2026-10-18）：此前 notify 只在成功路径上，账号过期
+        // （HTTP 401）时用户只看到前端 toast，收不到远程提醒，也无从判断
+        // 是凭据失效还是上游故障。
+        try {
+          const { notify } = require('../notify');
+          notify('checkin_fail', {
+            accountId: String(req.body.accountId),
+            label: String(req.body.accountId),
+            message: err.message,
+          }, '签到失败').catch(() => {});
+        } catch { /* 通知失败不影响签到结果 */ }
+        throw err;
+      }
       // 手动单账号签到也要推送提醒（m-39）：此前 WorkBuddy 签到从不通知，
       // 用户点了没有任何反馈，也看不出上游是否真的发分。
+      //
+      // 分级推送（2026-10-18）：与 Trae 侧同口径。此前一律 checkin_ok，
+      // claimed=false 时也报「签到完成」，与面板显示的结果自相矛盾。
       try {
         const { notify } = require('../notify');
         const label = r.label || String(req.body.accountId);
-        const already = r.result === 'already';
-        notify('checkin_ok', {
-          accountId: r.accountId,
-          label,
-          claimed: r.claimed ? 1 : 0,
-          message: already
-            ? `今日已签到（连续 ${r.streakDays ?? '-'} 天）`
-            : (r.claimed ? `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）` : '未签到成功'),
-        }, already ? `今日已签到：${label}` : `签到完成：${label}`).catch(() => {});
+        if (r.claimed) {
+          notify('checkin_ok', {
+            accountId: r.accountId,
+            label,
+            claimed: 1,
+            message: `签到成功，+${r.checkinCredits ?? '?'} 分（连续 ${r.streakDays ?? '-'} 天）`,
+          }, `签到完成：${label}`).catch(() => {});
+        } else if (r.result === 'already') {
+          notify('checkin_ok', {
+            accountId: r.accountId,
+            label,
+            claimed: 0,
+            message: `今日已签到（连续 ${r.streakDays ?? '-'} 天）`,
+          }, `今日已签到：${label}`).catch(() => {});
+        } else {
+          const reason = r.result === 'disabled'
+            ? '签到功能未对该账号开启'
+            : (r.note || '上游未返回签到结果，积分未到账');
+          notify('checkin_warn', {
+            accountId: r.accountId,
+            label,
+            claimed: 0,
+            message: reason,
+          }, `签到未到账：${label}`).catch(() => {});
+        }
       } catch { /* 通知失败不影响签到结果 */ }
       return res.json(r);
     }

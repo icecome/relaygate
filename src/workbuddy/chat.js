@@ -4,7 +4,8 @@
  *
  * 上游：POST {chatHost}/v2/chat/completions（SSE，OpenAI 格式）。
  * 请求规范（红线）：
- *   - 统一认证头（见 workbuddy/auth.js），绝不携带 X-Refresh-Token；
+ *   - 认证头走 auth.js#chatHeaders（**桌面端身份**，2026-10-21 渠道校验后切换），
+ *     绝不携带 X-Refresh-Token；
  *   - 强制 stream:true（非流式由本模块聚合）；
  *   - tool_choice 对象 → 'auto'（对象形式上游 400 code=11101）；
  *   - model 剥离 'wb/' 前缀。
@@ -38,22 +39,26 @@ function hasIncompleteToolArgs(toolCalls) {
  * 发起 chat 请求（SSE 流）。
  * @param {object} acct 已解析的账号凭据 {token, userId, host, edition}
  * @param {object} body OpenAI 格式请求体
+ * @param {{conversationId?:string, requestId?:string}} [opts] 会话/请求幂等键（同一会话内复用）
  * @returns {Promise<{status:number, body:ReadableStream|null, text:string}>}
  */
-async function chatStream(acct, body) {
+async function chatStream(acct, body, opts = {}) {
   const host = acct.host || wbAuth.chatHost(acct.region || 'cn');
   const url = host + '/v2/chat/completions';
   const payload = JSON.stringify(normalizeBody(body));
-  const headers = wbAuth.authHeaders(
+  // 桌面端身份头：UA/X-IDE-*/X-Private-Data/x-codebuddy-request/会话与追踪头。
+  // 旧实现用 authHeaders（web/插件身份）在 2026-10-21 被上游 11128 拦截。
+  const headers = wbAuth.chatHeaders(
     { accessToken: acct.token, uid: acct.userId, region: wbAuth.regionOf(host) },
+    { conversationId: opts.conversationId, requestId: opts.requestId },
   );
   const resp = await fetch(url, { method: 'POST', headers, body: payload });
   return { status: resp.status, body: resp.ok ? resp.body : null, text: resp.ok ? '' : await resp.text().catch(() => '') };
 }
 
 /** 非流式：聚合 SSE 为 OpenAI completion 对象。 */
-async function chatAggregate(acct, body) {
-  const r = await chatStream(acct, Object.assign({}, body, { stream: true }));
+async function chatAggregate(acct, body, opts = {}) {
+  const r = await chatStream(acct, Object.assign({}, body, { stream: true }), opts);
   if (r.status !== 200 || !r.body) {
     const e = new Error('WorkBuddy upstream HTTP ' + r.status + ' ' + (r.text || '').slice(0, 200));
     e.status = r.status;

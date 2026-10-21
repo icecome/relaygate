@@ -21,10 +21,24 @@ const RATE_LIMIT_CODES = Array.from(new Set([
 
 /** 模型在当前 function 下不可用。 */
 const CODE_MODEL_UNAVAILABLE = TRAE_ERR.modelUnavailable;
+/** WorkBuddy 侧「模型服务不存在 / 后端类型不支持」的业务码。 */
+const WB_MODEL_UNAVAILABLE_CODES = Array.from(new Set([
+  WB_ERR.modelUnavailable,
+  WB_ERR.modelBackendUnsupported,
+].filter((c) => Number.isFinite(Number(c)))));
 /** 模型级限流（非账号问题，不冷却整号）。 */
 const CODE_MODEL_RATE_LIMIT = WB_ERR.modelRateLimit ?? TRAE_ERR.modelRateLimit;
 /** 套餐额度耗尽（账号级，应换号）。 */
 const CODE_PLAN_LIMIT = TRAE_ERR.planLimit;
+/**
+ * 渠道校验拒绝（WorkBuddy 2026-10-21 起）：HTTP 400，
+ * {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}。
+ *
+ * 语义是「请求形状不像官方客户端」——与账号权益、模型可用性、限流都无关。
+ * 因此：不冷却账号（账号本身健康），不在同平台内换候选（换模型同样是同一个
+ * 渠道校验），但**允许 failover 到其它平台**（Trae 链路有自己的身份体系）。
+ */
+const CODE_CHANNEL_BLOCKED = WB_ERR.channelBlocked;
 /**
  * 上下文窗口超限码（两平台并集）：WorkBuddy 11115；Trae 无独立码（null），
  * 靠 isContextLengthError 的文案正则兜底。
@@ -50,7 +64,7 @@ function isContextLengthError(err) {
 /**
  * 解析上游错误，返回分类标签。
  * @param {Error} err
- * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'context_length'|'other'}
+ * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'context_length'|'channel'|'other'}
  */
 function classifyError(err) {
   if (!err) return 'other';
@@ -60,6 +74,9 @@ function classifyError(err) {
     const m = msg.match(/"code"\s*:\s*(\d{3,5})/);
     if (m) err.upstreamCode = Number(m[1]);
   }
+  // 渠道校验先于一切：它不是账号/模型/窗口问题，判成 'other' 会去逐个候选撞同一
+  // 堵墙并冷却健康账号；判成 'auth' 会触发续期（无效，token 完全正常）。
+  if (isChannelBlockedError(err)) return 'channel';
   // 上下文超限先于其它分类：窗口问题与账号/模型健康度无关，
   // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
   if (isContextLengthError(err)) return 'context_length';
@@ -68,8 +85,9 @@ function classifyError(err) {
   if (err.status === 402 || /quota|积分已耗尽|余额不足|credits.?exhaust/i.test(msg)) return 'quota';
   // 模型级限流须先于泛化 429 判定：模型问题非账号问题，换号/冷却整号无意义
   if (isModelRateLimitError(err)) return 'model';
-  // 模型在当前 function 下不可用（model config is empty）——模型问题非账号问题
-  if (Number(err.upstreamCode) === CODE_MODEL_UNAVAILABLE || /model config is empty/i.test(msg)) return 'model';
+  // 模型在当前 function 下不可用（model config is empty / WorkBuddy 11102、11103）——
+  // 模型问题非账号问题，换候选即可
+  if (isModelConfigError(err)) return 'model';
   if (err.status >= 500 && err.status < 600) return '5xx';
   if (err.status === 401 || err.status === 403) return 'auth';
   // 上游 SSE 内嵌 error 事件（HTTP 200）时，错误码只能靠 err.upstreamCode 携带
@@ -86,14 +104,19 @@ function isRateLimitCode(code) {
 }
 
 /**
- * 是否为模型配置问题（上游业务码 modelUnavailable / "model config is empty"）：
+ * 是否为模型配置问题（上游业务码 modelUnavailable / modelBackendUnsupported /
+ * "model config is empty" / "service info not found"）：
  * 模型在当前 function 下不可用，属模型问题非账号问题。
  */
 function isModelConfigError(err) {
   if (!err) return false;
-  return Number(err.upstreamCode) === CODE_MODEL_UNAVAILABLE
-    || err.status === CODE_MODEL_UNAVAILABLE
-    || /model config is empty/i.test(String(err.message || ''));
+  const code = Number(err.upstreamCode);
+  if (WB_MODEL_UNAVAILABLE_CODES.includes(code)) return true;
+  if (code === CODE_MODEL_UNAVAILABLE || err.status === CODE_MODEL_UNAVAILABLE) return true;
+  const msg = String(err.message || '');
+  return /model config is empty/i.test(msg)
+    || /service info not found/i.test(msg)
+    || /Backend \[[^\]]*\] is not supported/i.test(msg);
 }
 
 /** 是否为套餐额度耗尽（planLimit）。 */
@@ -146,7 +169,23 @@ function parseRateLimitReset(text) {
 }
 
 /**
- * 是否值得重试：限流/网络/5xx 可重试；auth、other、context_length 不重试。
+ * 是否为渠道校验拒绝（11128）。三路判定：业务码、HTTP 状态恰好等于该码（少见）、
+ * 以及文案兜底（上游换码或改文案时仍能识别）。
+ */
+function isChannelBlockedError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '');
+  if (Number(err.upstreamCode) === CODE_CHANNEL_BLOCKED) return true;
+  if (err.status === CODE_CHANNEL_BLOCKED) return true;
+  if (new RegExp(`"code"\\s*:\\s*${CODE_CHANNEL_BLOCKED}\\b`).test(msg)) return true;
+  return /unapproved channel/i.test(msg)
+    || /Illegal API invocation/i.test(msg)
+    || /没通过渠道校验/.test(msg);
+}
+
+/**
+ * 是否值得重试：限流/网络/5xx 可重试；auth、channel、other、context_length 不重试。
+ * 渠道校验是确定性的请求形状判定，同账号同请求重试结果不变，只会白白多打一次上游。
  * 上下文超限属终端错误——换候选与冷却账号都解决不了窗口问题，重试只会
  * 把每个候选都撞一遍同一天花板并污染健康度表。
  */
@@ -194,7 +233,9 @@ module.exports = {
   isModelRateLimitError,
   isContextLengthError,
   isContextLengthErrorKind,
+  isChannelBlockedError,
   parseRateLimitReset,
   RATE_LIMIT_CODES,
   CONTEXT_TOO_LONG_CODES,
+  CODE_CHANNEL_BLOCKED,
 };

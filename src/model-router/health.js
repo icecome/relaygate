@@ -49,6 +49,13 @@ function markFail(virtualId, candidateId, kind, err, cooldownMs) {
   e.fail += 1;
   e.lastError = (err && err.message) ? String(err.message).slice(0, 200) : String(kind || 'error');
   e.lastStatus = err && err.status != null ? err.status : null;
+  // 渠道校验（11128）：账号与模型都健康，是「请求形状不被认可」。
+  // 冷却候选只会让面板显示一片红、并让本可用的候选被跳过——实际恢复靠改请求头。
+  // 因此只记失败次数与末次错误（可观测），不设 coolUntil。
+  if (kind === 'channel') {
+    e.lastChannelBlockAt = Date.now();
+    return { cooledForMs: 0 };
+  }
   // rate_limit 与 model（6004 模型频控）：冷却该候选并允许 failover
   if (kind === 'rate_limit' || kind === 'model') {
     e.lastRateLimitAt = Date.now();

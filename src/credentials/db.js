@@ -74,6 +74,23 @@ function ensureSchema(db) {
   // 刻意**没有**设备标识列：参考实现全链路只读不写 device_id，我们没有它的
   // 生成规则，宁可不发该头也不发明一个假设备号。
   if (!names.has('raccoon_org')) db.exec('ALTER TABLE accounts ADD COLUMN raccoon_org TEXT');
+  // Raccoon 密码登录凭据（仅 raccoon 账号，可选）：手机号 + 密码的**加密**形态。
+  // 每日积分由「真实登录」触发发放（grant/refresh 等端点实测无效），而
+  // login_with_password 是网关侧唯一可编程复刻的真实登录入口；故把加密后的
+  // 手机号与密码持久化，供每日保活任务代登一次。存储前已用
+  // TRAE_API_ENCRYPT_KEY 走 store 的统一加密（与 token 同级保护）。
+  if (!names.has('raccoon_phone_enc')) db.exec('ALTER TABLE accounts ADD COLUMN raccoon_phone_enc TEXT');
+  if (!names.has('raccoon_password_enc')) db.exec('ALTER TABLE accounts ADD COLUMN raccoon_password_enc TEXT');
+  if (!names.has('raccoon_nation_code')) db.exec('ALTER TABLE accounts ADD COLUMN raccoon_nation_code TEXT');
+  // 「最近一次**成功**续期」的时刻，与 last_keepalive_at（最近一次保活**尝试**）分开。
+  //
+  // 为什么必须分两列：WorkBuddy 的周期续期判据是「距上次刷新已超过 N 天」，
+  // 而 last_keepalive_at 由每日保活轮每天无条件写一次（面板「保活」列也读它）。
+  // 两件事共用一列时，每天的保活盖章会把「7 天」窗口永久重置 —— 周期续期永远
+  // 不触发；反过来，续期**失败**也写同一列，又会让一次网络抖动把重试压满 7 天。
+  // 故拆成：last_keepalive_at = 最近一次保活尝试（展示用），
+  //        last_refresh_at  = 最近一次成功续期（判据用）。
+  if (!names.has('last_refresh_at')) db.exec('ALTER TABLE accounts ADD COLUMN last_refresh_at TEXT');
   // 乐观锁版本号（P0-001）：store.update 改为「按 patch 生成 SET + version CAS」后，
   // 每次成功写入 version+1。并发写入方读到旧 version 时 UPDATE 影响 0 行，
   // 重读重试即可避免用陈旧快照覆盖对方刚写的字段这类静默丢更新。

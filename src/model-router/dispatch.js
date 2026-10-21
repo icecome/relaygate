@@ -156,6 +156,23 @@ function attachUpstreamCode(err, text) {
   } catch { /* 非 JSON 体忽略 */ }
 }
 
+/**
+ * WorkBuddy 会话/请求幂等键。
+ *
+ * 上游按 X-Conversation-ID + X-Request-ID 做链路归因与去重（桌面端每个会话固定
+ * conversationId、每次请求新 requestId）。网关没有上游会话概念，这里用
+ * stickyKey（客户端会话键）派生 conversationId：同一客户端会话在多次请求间
+ * 保持同一个 conversationId，符合上游对「会话」的语义；requestId 每次新建。
+ *
+ * 不传 stickyKey（内部探活、测试）时两个都不传，由 auth.js#chatHeaders 各自
+ * 生成 UUID —— 仍然是「每次请求一个新会话」，不会被判成重放。
+ */
+function wbConversationOpts(opts) {
+  const key = opts && typeof opts.stickyKey === 'string' ? opts.stickyKey.trim() : '';
+  if (!key) return {};
+  return { conversationId: require('crypto').createHash('sha256').update('wb-conv:' + key).digest('hex').slice(0, 32) };
+}
+
 /** usage 只保留 OpenAI 官方三字段，避免客户端 Type validation 失败后无限重试。 */
 function sanitizeUsage(u) {
   if (!u || typeof u !== 'object') return null;
@@ -248,11 +265,14 @@ async function dispatchWorkBuddy(provider, remoteModel, body, opts = {}) {
   const pool = require('../credentials/pool');
   const auth = require('../auth');
   const wbChat = require('../workbuddy/chat');
+  // 会话键：同一客户端会话（stickyKey）复用 X-Conversation-ID，单次请求换 X-Request-ID。
+  // 上游按这对头做链路归因与幂等去重，缺失会被当作非客户端直连。
+  const convOpts = wbConversationOpts(opts);
   const { result, accountId } = await pool.run(async (id) => {
     if (typeof opts.onAccount === 'function') opts.onAccount(id);
     const acct = await auth.ensureAuth(id);
     try {
-      return await wbChat.chatAggregate(acct, { ...body, model: remoteModel, stream: true });
+      return await wbChat.chatAggregate(acct, { ...body, model: remoteModel, stream: true }, convOpts);
     } catch (err) {
       attachUpstreamCode(err, err.message || '');
       throw err;
@@ -497,6 +517,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
   const auth = require('../auth');
   const wbChat = require('../workbuddy/chat');
   const shownModel = opts.echoModel || remoteModel;
+  const convOpts = wbConversationOpts(opts);
 
   // outFinish 须存活到 pool.run 回调之外（流结束后返回），故声明在外层作用域
   let outFinish = null;
@@ -505,7 +526,7 @@ async function dispatchWorkBuddyStream(provider, remoteModel, body, res, opts = 
   await pool.run(async (accountId) => {
     if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
     const acct = await auth.ensureAuth(accountId);
-    const up = await wbChat.chatStream(acct, { ...body, model: remoteModel, stream: true });
+    const up = await wbChat.chatStream(acct, { ...body, model: remoteModel, stream: true }, convOpts);
     if (up.status !== 200 || !up.body) {
       const e = new Error('WorkBuddy upstream HTTP ' + up.status + ' ' + (up.text || '').slice(0, 200));
       e.status = up.status;
@@ -615,6 +636,7 @@ module.exports = {
   dispatchStream,
   resolveApiKey,
   attachUpstreamCode,
+  wbConversationOpts,
   sanitizeUsage,
   resolveStreamFinish,
   isTruncatedFinish,

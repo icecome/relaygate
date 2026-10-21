@@ -262,6 +262,9 @@ router.post('/v1/chat/completions', async (req, res) => {
     const wbStickyKey = sticky.stickyKeyFromRequest(req);
     const wbStickyAcct = sticky.lookup(wbStickyKey);
     const wbRunOpts = { stickyKey: wbStickyKey, stickyAccountId: wbStickyAcct, edition: 'workbuddy', model: wbModel };
+    // 会话/请求幂等键：与 model-router 走同一份派生逻辑，保证「同一客户端会话」
+    // 在直连 WB 与虚拟模型两条路径上发出相同的 X-Conversation-ID。
+    const wbConvOpts = require('../model-router/dispatch').wbConversationOpts({ stickyKey: wbStickyKey });
     // 直连 WB 路径的 usage：非流式取聚合结果，流式需从 SSE 旁路提取。
     // 原实现两条路径都不写日志，导致 WB 直连请求的 token 恒为 0。
     let wbUsage = null;
@@ -274,7 +277,7 @@ router.post('/v1/chat/completions', async (req, res) => {
         await pool.run(async (accountId) => {
           const acct = await auth.ensureAuth(accountId);
           req.accountId = accountId;
-          const up = await wbChat.chatStream(acct, Object.assign({ stream: true }, wbBody));
+          const up = await wbChat.chatStream(acct, Object.assign({ stream: true }, wbBody), wbConvOpts);
           if (up.status !== 200 || !up.body) {
             const e = new Error('WorkBuddy upstream HTTP ' + up.status + ' ' + (up.text || '').slice(0, 200));
             e.status = up.status;
@@ -314,7 +317,7 @@ router.post('/v1/chat/completions', async (req, res) => {
           const acct = await auth.ensureAuth(accountId);
           req.accountId = accountId;
           if (wbStickyKey && accountId) sticky.bind(wbStickyKey, accountId);
-          return wbChat.chatAggregate(acct, Object.assign({}, wbBody, { stream: true }));
+          return wbChat.chatAggregate(acct, Object.assign({}, wbBody, { stream: true }), wbConvOpts);
         }, wbRunOpts);
         wbUsage = result && result.usage;
         return res.json(result);

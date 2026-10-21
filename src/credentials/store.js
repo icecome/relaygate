@@ -43,9 +43,15 @@ function bindInt(v, fallback = 0) {
 }
 
 function safeTok(v) {
-  // 对外返回值脱敏：去掉 token / refreshToken / apiKey 明文；
+  // 对外返回值脱敏：去掉 token / refreshToken / apiKey 明文。
+  //
+  // raccoonPassword 与 raccoonPhone 同属凭据：前者是上游登录密码，后者是 PII
+  // 且与密码配对即可复刻一次真实登录。两者一律不外泄——路由层只回
+  // hasPasswordLogin 布尔值表达「是否已配置」。
+  // 注意 safeTok 会被 update()/add() 的返回值复用，而 update() 内部是
+  // safeTok(get(id))、get() 默认解密，所以「漏剥一项」等于所有写接口都泄漏。
   // version 是 update() 的乐观锁内部字段，不属于账号业务数据，不外泄。
-  const { token, refreshToken, apiKey, version, ...rest } = v;
+  const { token, refreshToken, apiKey, raccoonPhone, raccoonPassword, version, ...rest } = v;
   return rest;
 }
 
@@ -85,6 +91,10 @@ const PATCH_COLUMNS = {
   lastCheckinResult: { col: 'last_checkin_result', val: (a) => bindText(a.lastCheckinResult) },
   lastKeepaliveAt: { col: 'last_keepalive_at', val: (a) => bindText(a.lastKeepaliveAt) },
   lastKeepaliveResult: { col: 'last_keepalive_result', val: (a) => bindText(a.lastKeepaliveResult) },
+  // 最近一次**成功**续期的时刻（判据位）。与 lastKeepaliveAt（最近一次保活
+  // **尝试**，展示位）刻意分开：共用一个字段会让每日保活盖章重置周期续期窗口，
+  // 也会让失败把重试压满整个周期。见 db.js 的同名列注释。
+  lastRefreshAt: { col: 'last_refresh_at', val: (a) => bindText(a.lastRefreshAt) },
   entitlementSnapshot: { col: 'entitlement_snapshot', val: (a) => bindText(a.entitlementSnapshot) },
   priority: { col: 'priority', val: (a) => bindInt(a.priority, 0) },
   tags: { col: 'tags', val: (a) => (a.tags ? JSON.stringify(a.tags) : null) },
@@ -105,6 +115,12 @@ const PATCH_COLUMNS = {
   // Raccoon 组织码（仅 raccoon 账号）。个人账号为空串，企业账号是组织码；
   // 每次业务请求都要放进 `X-Org-Code` 头，故必须持久化。
   raccoonOrg: { col: 'raccoon_org', val: (a) => bindText(a.raccoonOrg) },
+  // Raccoon 密码登录凭据（仅 raccoon 账号，可选）。每日积分由**真实登录**触发
+  // 发放，login_with_password 是网关侧唯一可编程复刻的真实登录入口，故持久化
+  // 加密后的手机号与密码供每日保活代登。与 token 同级用统一密钥加密存储。
+  raccoonPhone: { col: 'raccoon_phone_enc', val: (a) => enc(a.raccoonPhone) },
+  raccoonPassword: { col: 'raccoon_password_enc', val: (a) => enc(a.raccoonPassword) },
+  raccoonNationCode: { col: 'raccoon_nation_code', val: (a) => bindText(a.raccoonNationCode) },
 };
 
 /** 写入冲突时的错误标记，供调用方与测试识别（不当作普通异常吞掉）。 */
@@ -140,8 +156,12 @@ function acctToRow(acct) {
     last_checkin_result: bindText(acct.lastCheckinResult),
     last_keepalive_at: bindText(acct.lastKeepaliveAt),
     last_keepalive_result: bindText(acct.lastKeepaliveResult),
+    last_refresh_at: bindText(acct.lastRefreshAt),
     qoder_realm: bindText(acct.qoderRealm),
     raccoon_org: bindText(acct.raccoonOrg),
+    raccoon_phone_enc: enc(acct.raccoonPhone),
+    raccoon_password_enc: enc(acct.raccoonPassword),
+    raccoon_nation_code: bindText(acct.raccoonNationCode),
     entitlement_snapshot: bindText(acct.entitlementSnapshot),
     priority: bindInt(acct.priority, 0),
     tags: acct.tags ? JSON.stringify(acct.tags) : null,
@@ -163,7 +183,13 @@ function acctToRow(acct) {
  */
 function list() {
   const rows = db().prepare('SELECT * FROM accounts').all();
-  return rows.map((r) => safeTok(rowToDecrypted(r, false)));
+  return rows.map((r) => {
+    const acct = safeTok(rowToDecrypted(r, false));
+    // 密码凭据不解密，但「是否已配置」是安全的布尔值，供面板显示按钮态。
+    // 只判密文列是否非空，绝不解密回明文。
+    acct.hasPasswordLogin = !!(r.raccoon_password_enc);
+    return acct;
+  });
 }
 
 function rowToDecrypted(r, withSecrets = true) {
@@ -195,8 +221,14 @@ function rowToDecrypted(r, withSecrets = true) {
     lastCheckinResult: r.last_checkin_result,
     lastKeepaliveAt: r.last_keepalive_at,
     lastKeepaliveResult: r.last_keepalive_result,
+    lastRefreshAt: r.last_refresh_at || null,
     qoderRealm: r.qoder_realm || null,
     raccoonOrg: r.raccoon_org || null,
+    // Raccoon 密码登录凭据（解密回明文供 auth.loginWithPassword 加密后发送；
+    // withSecrets=false 时不给，避免泄漏到面板展示面）
+    raccoonPhone: withSecrets && r.raccoon_phone_enc ? crypto.decrypt(r.raccoon_phone_enc) : null,
+    raccoonPassword: withSecrets && r.raccoon_password_enc ? crypto.decrypt(r.raccoon_password_enc) : null,
+    raccoonNationCode: r.raccoon_nation_code || null,
     entitlementSnapshot: parseSnapshotJson(r.entitlement_snapshot),
     priority: r.priority != null ? Number(r.priority) || 0 : 0,
     tags: parseTagsJson(r.tags),
@@ -257,16 +289,18 @@ function add(cred, source) {
       id, label, edition, token_enc, refresh_token_enc, api_key_enc, expired_at, refresh_expired_at,
       token_release_at, user_id, host, user_region, devices, fingerprint, mode, source, enabled,
       balance, error_count, cool_until, last_picked_at, last_checkin_at, last_checkin_result,
-      last_keepalive_at, last_keepalive_result, qoder_realm, raccoon_org,
+      last_keepalive_at, last_keepalive_result, last_refresh_at, qoder_realm, raccoon_org,
+      raccoon_phone_enc, raccoon_password_enc, raccoon_nation_code,
       entitlement_snapshot, priority, tags, group_name, device_gen, auth_client_id, auth_host, cost_tier,
       model_cooldowns, rate_streak, model_cool_streak
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(r.id, r.label, r.edition, r.token_enc, r.refresh_token_enc, r.api_key_enc, r.expired_at,
     r.refresh_expired_at, r.token_release_at, r.user_id, r.host, r.user_region,
     r.devices, r.fingerprint, r.mode, r.source, r.enabled, r.balance, r.error_count, r.cool_until,
     r.last_picked_at, r.last_checkin_at, r.last_checkin_result,
-    r.last_keepalive_at, r.last_keepalive_result, r.qoder_realm, r.raccoon_org, r.entitlement_snapshot,
-    r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
+    r.last_keepalive_at, r.last_keepalive_result, r.last_refresh_at, r.qoder_realm, r.raccoon_org,
+    r.raccoon_phone_enc, r.raccoon_password_enc, r.raccoon_nation_code,
+    r.entitlement_snapshot, r.priority, r.tags, r.group_name, r.device_gen, r.auth_client_id, r.auth_host, r.cost_tier,
     r.model_cooldowns, r.rate_streak, r.model_cool_streak);
   return safeTok(acct);
 }

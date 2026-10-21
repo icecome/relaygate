@@ -240,7 +240,10 @@ function shouldSwitch(kind, vm) {
   // 上下文超限属终端错误：换候选/冷却账号都解决不了窗口问题，绝不切换
   // （否则会把每个候选都撞一遍同一天花板，并错误冷却健康的低窗口模型）。
   if (kind === 'context_length') return false;
-  const set = new Set((vm.failover && vm.failover.switchOn) || ['rate_limit', 'model', '5xx', 'network', 'other']);
+  // 渠道校验：同平台换候选无效（请求形状相同），但**允许跨平台**降级。
+  // 真正的平台级熔断在 handleChat 的 blockedProviders 里做，这里只放行。
+  if (kind === 'channel') return true;
+  const set = new Set((vm.failover && vm.failover.switchOn) || ['rate_limit', 'model', '5xx', 'network', 'channel', 'other']);
   return set.has(kind);
 }
 
@@ -353,9 +356,18 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
    */
   const gate = ctx.stream !== false ? createStreamGate(res) : null;
   let switched = 0;
+  /**
+   * 渠道校验拒绝（11128）后**整平台**熔断本次请求的候选。
+   *
+   * 该错误是「请求身份不被上游认可」的确定性判定：同一个 provider 下换模型、
+   * 换账号都会撞同一堵墙（失败现场 12 次 11128 横跨 6 个模型 3 次尝试即为证据）。
+   * 因此只允许跨平台降级（workbuddy → trae），同平台不再重试。
+   */
+  const blockedProviders = new Set();
 
   for (let i = 0; i < maxAttempts; i++) {
     let candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
+    if (blockedProviders.size) candidates = candidates.filter((c) => !blockedProviders.has(c.provider));
     // 候选级窗口守门：只把「装得下当前输入」的候选视为可用（有候选声明窗口时才启用）
     if (hasCandidateWindows) candidates = candidates.filter((c) => fittingAll.some((f) => f.id === c.id));
     // 候选级模态守门：发图请求排掉明确不支持多模态的候选
@@ -500,6 +512,13 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
       lastErr = err;
       const kind = classifyError(err);
       const cooled = health.markFail(virtualId, cand.id, kind, err, vm.failover.cooldownMs);
+      // 渠道校验拒绝：整平台熔断本次请求（换模型/换号在同一平台上都是同一堵墙），
+      // 但保留跨平台降级能力（workbuddy → trae）。账号本身健康，markFail 不冷却它。
+      if (kind === 'channel') {
+        blockedProviders.add(cand.provider);
+        console.log(`[model-router] channel blocked on provider ${cand.provider} (code ${err.upstreamCode ?? '?'}), `
+          + 'skipping its remaining candidates for this request');
+      }
       // 可切换判据：答案（content/tool_call 的完整帧）是否已交付客户端。
       // 不能用 res.headersSent：dispatchTraeStream 在上游第一个增量（可能只是
       // reasoning）就会 flushHeaders，用它当判据会让「只思考过、随后上游失败」
@@ -544,28 +563,37 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
   const err = lastErr || new Error(`virtual model "${virtualId}": all candidates failed`);
   if (gate) gate.dispose();
   if (res.writableEnded) return { ok: false, error: err.message, attempts };
+  // 渠道校验全灭时给可执行的提示：原始报文（Illegal API invocation…）对使用者
+  // 没有任何指向性，而真正的动作是「更新客户端身份版本」或「改用其它平台」。
+  const channelBlocked = classifyError(err) === 'channel';
+  const errMessage = channelBlocked
+    ? `${err.message}\n\n上游按渠道校验拒绝了本平台的请求形状（code 11128）。`
+      + `这不是账号、模型或上下文问题：请核对 WorkBuddy 桌面端版本与 CLI 版本`
+      + `（platform/variant.js#identity.appVersion / cliVersion，或 WB_APP_VERSION / WB_CLI_VERSION），`
+      + `或在虚拟模型里保留至少一个非 workbuddy 候选以便跨平台降级。`
+    : err.message;
   // 走同一个 sink：若闸门里还扣着未成行的残片，必须先丢弃，
   // 否则错误帧会被拼到半行后面，客户端解析整行失败、连错误都看不到。
   const sink = gate || res;
   if (sink.headersSent) {
     try {
       if (gate) gate.discardHeld();
-      sink.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error', code: err.upstreamCode ?? err.code ?? (err.status === 429 ? 429 : null) } })}\n\n`);
+      sink.write(`data: ${JSON.stringify({ error: { message: errMessage, type: 'upstream_error', code: err.upstreamCode ?? err.code ?? (err.status === 429 ? 429 : null) } })}\n\n`);
       sink.write('data: [DONE]\n\n');
     } catch { /* ignore */ }
     if (!res.writableEnded) res.end();
-    return { ok: false, error: err.message, attempts };
+    return { ok: false, error: errMessage, attempts };
   }
   res.status(err.status && err.status >= 400 ? err.status : 500).json({
     // code 原样带出：客户端要能区分「窗口装不下」「没有能读图的候选」「池里没可用账号」，
     // 否则只能拿到一句 message，无法程序化处理（上游错误码走 upstreamCode）。
     error: {
-      message: err.message,
+      message: errMessage,
       type: 'upstream_error',
       ...(err.code ?? err.upstreamCode) != null ? { code: err.code ?? err.upstreamCode } : {},
     },
   });
-  return { ok: false, error: err.message, attempts };
+  return { ok: false, error: errMessage, attempts };
 }
 
 module.exports = {

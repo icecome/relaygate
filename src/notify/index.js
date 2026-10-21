@@ -199,6 +199,7 @@ async function sendPushPlus(token, title, text) {
 const EVENT_TITLES = {
   checkin_ok: '签到完成',
   checkin_fail: '签到部分失败',
+  checkin_warn: '签到未到账',
   credits_expiring: '积分临期提醒',
   balance_low: '余额过低提醒',
   refresh_fail: 'Token 刷新失败',
@@ -210,6 +211,9 @@ const EVENT_TITLES = {
   zcode_reward_claimed: 'ZCode 套餐领取成功',
   zcode_reward_failed: 'ZCode 套餐领取失败',
   zcode_reward_risk: 'ZCode 账号风控告警',
+  // Raccoon 每日积分保活：只在「我们该做而没做成」时发
+  // （upstreamSkipped = 上游当日未发放，属上游状态，刻意不告警）
+  raccoon_keepalive_fail: '小浣熊每日积分未延长',
 };
 
 function humanTitle(event, payload = {}, fallback) {
@@ -227,6 +231,11 @@ function humanTitle(event, payload = {}, fallback) {
   }
   // 签到：成功/失败数
   if (event === 'checkin_ok' && payload.ok != null) return `${base}：${payload.ok} 个账号`;
+  if (event === 'checkin_warn') {
+    // 单账号中间态：把账号标签带进标题，否则同一事件多个账号的标题完全一样，
+    // 用户收到十条通知也分不出是哪个头像出的问题。
+    return payload.label ? `${base}：${payload.label}` : base;
+  }
   if (event === 'checkin_fail' && (payload.ok != null || payload.failed != null)) {
     const ok = payload.ok != null ? `成功 ${payload.ok}` : '';
     const failed = payload.failed != null ? `失败 ${payload.failed}` : '';

@@ -104,19 +104,20 @@ async function refreshExpiringTokens() {
         console.log(`[scheduler] refreshed raccoon token for ${full.label || full.id}`);
         continue;
       }
-      // WorkBuddy 与 Trae 刷新端点不同，统一走 ensureAuth（按 edition 分支）
+      // WorkBuddy 与 Trae 刷新端点不同，统一走 ensureAuth（按 edition 分支）。
       //
-      // ⚠️ 本分支**当前不可达**：过滤条件是 `tokenRefresh || oauthLogin`，而
-      // workbuddy 的两位都为 false（见 variant.js 的说明）。保留它是为了不改变
-      // 既有行为；若要真正启用 WB 保活，需先单独验证 ensureAuth 对 WB 账号的效果，
-      // 不要顺手给它加 tokenRefresh。
+      // 2026-10-18：variant 已为 WorkBuddy 声明 tokenRefresh，本分支从不可达变为
+      // 可达——WB 账号自此同时进入本函数与 runKeepalive 两条续期链路。
       if (full.edition === 'workbuddy') {
         await auth.ensureAuth(full.id);
         refreshed += 1;
         console.log(`[scheduler] refreshed workbuddy token for ${full.label || full.id}`);
         continue;
       }
-      // OAuth 账号必须用自身 ClientID/authHost 换新，否则会请求全局默认主机
+      // OAuth 账号必须用自身 ClientID/authHost 换新，否则会请求全局默认主机。
+      // 账号没记（历史导入账号）时走换票面默认值：authHost 已由
+      // lib/auth.getAuthHost() 收敛到变体表 oauthExchange；clientId 仍按
+      // lib/auth.exchangeToken 内的默认取 SOLO 线值（与 Trae SOLO 账号绑定）。
       const refreshedTok = await legacy.exchangeToken(full.refreshToken, {
         clientId: full.authClientId || undefined,
         host: full.authHost || undefined,
@@ -273,7 +274,9 @@ async function runDailyCheckin() {
  * - Raccoon 只有 tokenRefresh（扫码登录会话、非 OAuth，但 access_token
  *   约 3 小时且必须续期）—— 此前 runKeepalive 单独用 oauthLogin 过滤，
  *   把 Raccoon 整号漏掉，每天一次的兜底轮从不覆盖它，也不写保活记录；
- * - WorkBuddy / Qoder / ZCode 两位皆 false（当前不参与定时保活，
+ * - WorkBuddy 只有 tokenRefresh（2026-10-18 起。此前两位皆 false，WB 账号
+ *   从未被任何续期链路覆盖，上游作废会话时表现为「签到部分账号 401」且无法自愈）；
+ * - Qoder / ZCode 两位皆 false（当前不参与定时保活，
  *   判据与刷新端点实证见 platform/variant.js 各 capability 注释）。
  */
 function keepaliveCandidates() {

@@ -11,9 +11,15 @@
  *   - chat:        POST {chatHost}/v2/chat/completions（OpenAI 兼容 SSE）
  *   - 刷新:        POST https://www.codebuddy.cn/v2/plugin/auth/token/refresh（X-Refresh-Token 头，空体 {}）
  *   - 余额/验证:   POST {billingBase}/billing/meter/get-user-resource-summary
- *   统一认证头：Authorization Bearer + UA "CLI/2.63.2 CodeBuddy/2.63.2" + X-Requested-With +
- *   X-User-Id + X-Enterprise-Id + X-Domain + X-Product: SaaS + X-Client-Platform: web
+ *   统一认证头：Authorization Bearer + 桌面端身份（UA "WorkBuddy/5.8.3 … CLI/2.161.0"、
+ *   X-IDE-Type/Name/Version、X-Private-Data、x-codebuddy-request）+ X-User-Id +
+ *   X-Enterprise-Id + X-Domain + X-Product: SaaS
  *   红线：chat 请求绝不携带 X-Refresh-Token。
+ *
+ * 2026-10-21 渠道校验事故（HTTP 400 code=11128「Illegal API invocation from an
+ * unapproved channel」）后，chat 面不再用 `CLI/… CodeBuddy/…` + `X-Client-Platform: web`
+ * 这套「插件」身份，改为桌面端身份 + 会话/追踪头。取证与逐项验证见
+ * docs/workbuddy-channel-detection-2026-10-21.md 与 scripts/probes/probe-wb-*.js。
  *
  * SSRF 防御：所有上游 URL 由「区域枚举（cn|global）→ 常量映射」生成，
  * 用户输入最多选择区域，永不直接参与 URL 拼接。
@@ -21,6 +27,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const crypto = require('crypto');
 const variant = require('../platform/variant');
 
 const WB_HOSTS = variant.variantOf(variant.WORKBUDDY).hosts;
@@ -30,6 +37,8 @@ const WB_ERR = variant.variantOf(variant.WORKBUDDY).errors;
 const DEFAULT_AUTH_DIR = path.join(process.env.LOCALAPPDATA || '', 'CodeBuddyExtension', 'Data', 'Public', 'auth');
 const AUTH_FILE_NAME = 'workbuddy-desktop.info';
 const UA = process.env.WB_UA || WB_IDENTITY.userAgent;
+const APP_VERSION = process.env.WB_APP_VERSION || WB_IDENTITY.appVersion;
+const CLI_VERSION = process.env.WB_CLI_VERSION || WB_IDENTITY.cliVersion;
 const REFRESH_URL = WB_HOSTS.tokenRefresh;
 
 // 常量映射表（全部字面量；region 仅允许 'cn' | 'global'）
@@ -98,7 +107,38 @@ function billingBase(region) {
   return variant.hostFor(BILLING_BASES, validRegion(region));
 }
 
-/** 统一认证头。extra 用于追加（如 X-Refresh-Token）。 */
+/** 32 位十六进制随机串（追踪 id）。 */
+function traceHex(bytes) {
+  return crypto.randomBytes(bytes).toString('hex');
+}
+
+/**
+ * 追踪头组：桌面端每次请求都带 W3C traceparent + B3 多段。
+ * 缺失这些头不影响鉴权，但它们是「官方客户端发出的请求」的形状特征之一，
+ * 渠道校验恢复后仍应保持（见 app.asar main/server.js#applyTraceHeaders）。
+ */
+function traceHeaders() {
+  const traceId = traceHex(16);
+  const spanId = traceHex(8);
+  const parentId = traceHex(8);
+  return {
+    'traceparent': `00-${traceId}-${spanId}-01`,
+    'b3': `${traceId}-${spanId}-1-${parentId}`,
+    'X-B3-TraceId': traceId,
+    'X-B3-SpanId': spanId,
+    'X-B3-ParentSpanId': parentId,
+    'X-B3-Sampled': '1',
+    'X-Trace-ID': traceId,
+  };
+}
+
+/**
+ * 计费/签到面的认证头（web 身份）。
+ *
+ * billing/checkin/catalog 这些是**网页端**接口，上游按 web 端校验；
+ * 把它们改成桌面端身份反而会掉进另一套校验，故保持原样。
+ * extra 用于追加（如 X-Refresh-Token）。
+ */
 function authHeaders(info, extra) {
   const r = validRegion(info.region);
   const domain = variant.hostFor(DOMAINS, r);
@@ -116,6 +156,56 @@ function authHeaders(info, extra) {
     'Origin': base,
     'Referer': base + '/',
   }, extra || {});
+}
+
+/**
+ * chat 面的认证头（桌面端身份）—— 这是 11128 的核心修复点。
+ *
+ * 与 authHeaders 的差异（逐项都有取证，见 docs/workbuddy-channel-detection-2026-10-21.md）：
+ *   1. UA 以 `WorkBuddy/<appVersion>` 开头（原来只有 CLI/CodeBuddy，属插件身份）；
+ *   2. 带 X-IDE-Type/Name/Version（桌面端写死 WorkBuddy + 桌面版本）；
+ *   3. 带 X-Private-Data: true（关闭隐私数据通道，桌面端默认值）；
+ *   4. 带 x-codebuddy-request: 1（桌面端对自家后端的请求标记）；
+ *   5. 带 X-Conversation-（ID / Request-ID / Message-ID）与 X-Request-ID、X-Agent-Intent、
+ *      X-Agent-Purpose（会话级幂等键，上游按它做去重与链路归因；缺失时部分通道会
+ *      判为非客户端直连）；
+ *   6. 带 traceparent/B3 追踪头；
+ *   7. **不带** X-Client-Platform: web —— 那是插件/网页身份，与桌面端互斥；
+ *   8. **不带** Origin/Referer 指向 codebuddy.cn —— 桌面端 chat 不走浏览器同源策略，
+ *      带网页 Origin 反而暴露「非桌面端」。
+ *
+ * 红线不变：绝不携带 X-Refresh-Token。
+ *
+ * @param {object} info {accessToken, uid, region}
+ * @param {{conversationId?:string, requestId?:string, intent?:string, purpose?:string, extra?:object}} [opts]
+ */
+function chatHeaders(info, opts = {}) {
+  const r = validRegion(info.region);
+  const domain = variant.hostFor(DOMAINS, r);
+  const conversationId = String(opts.conversationId || crypto.randomUUID());
+  const requestId = String(opts.requestId || crypto.randomUUID());
+  const base = {
+    'Accept': 'application/json',
+    'Content-Type': 'application/json',
+    'Authorization': 'Bearer ' + String(info.accessToken || '').slice(0, 4096),
+    'User-Agent': UA,
+    'x-requested-with': 'XMLHttpRequest',
+    'X-User-Id': String(info.uid || '').slice(0, 64),
+    'X-Domain': domain,
+    'X-Product': WB_IDENTITY.product || 'SaaS',
+    'X-IDE-Type': WB_IDENTITY.ideType,
+    'X-IDE-Name': WB_IDENTITY.ideName,
+    'X-IDE-Version': APP_VERSION,
+    'X-Private-Data': WB_IDENTITY.privateData,
+    'x-codebuddy-request': '1',
+    'X-Conversation-ID': conversationId,
+    'X-Conversation-Request-ID': requestId,
+    'X-Conversation-Message-ID': crypto.randomUUID(),
+    'X-Request-ID': requestId,
+    'X-Agent-Intent': opts.intent || 'craft',
+    'X-Agent-Purpose': opts.purpose || 'conversation',
+  };
+  return Object.assign(base, traceHeaders(), opts.extra || {});
 }
 
 /** 底层请求（仅 https），返回 {status, json, text}。 */
@@ -297,7 +387,7 @@ function parseCycleTime(ts) {
  * 包的到期时刻（ms）：取「周期边界」与「扣费截止」中**较晚**者。
  *
  * 上游同时给 `CycleEndTime`（计量周期边界）与 `DeductionEndTime`（额度真正作废时刻）。
- * 用脚本 `scripts/probe-wb-pack-fields.js` 实测某个真实账号的 70 条包：
+ * 用脚本 `scripts/probes/probe-wb-pack-fields.js` 实测某个真实账号的 70 条包：
  *   - 69 条两者**完全相等**（单周期包，积分确实在周期边界失效）；
  *   - 唯一不同的是「CodeBuddy个人体验版」：`CycleEndTime=2026-10-31`（17 天后）
  *     而 `DeductionEndTime=2034-12-12`（8.1 年后），且该包 `CycleCapacityRemain=500`
@@ -421,6 +511,8 @@ module.exports = {
   regionOf,
   validRegion,
   authHeaders,
+  chatHeaders,
+  traceHeaders,
   chatHost,
   billingBase,
   verify,
@@ -432,4 +524,6 @@ module.exports = {
   packExpireMs,
   CHECKIN_CODE_ALREADY,
   UA,
+  APP_VERSION,
+  CLI_VERSION,
 };
