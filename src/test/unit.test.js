@@ -1855,6 +1855,167 @@ t('scheduler.runKeepalive 纳入 Raccoon 账号并走其自有续期端点', asy
   }
 });
 
+// ---- 2026-10-18 WorkBuddy 401 事故回归 ----
+// 根因：variant 未给 WB 声明 tokenRefresh，keepaliveCandidates() 按
+// tokenRefresh||oauthLogin 筛账号 ⇒ WB 从未进入任何续期链路；上游单方面作废
+// 会话（JWT exp 还有 3 周但已拒绝服务）时，全系统无机制发现与修复。
+t('WorkBuddy 声明 tokenRefresh 能力位', () => {
+  const variant = require('../platform/variant');
+  assert.strictEqual(variant.can(variant.WORKBUDDY, 'tokenRefresh'), true,
+    'WB 有 refresh 端点（workbuddy/auth.js#refresh 实测 8/8 成功），必须声明该能力位');
+});
+
+t('scheduler.runKeepalive 纳入 WorkBuddy 账号', async () => {
+  // 回归：能力位补齐前，WB 账号被 keepaliveCandidates() 过滤掉，
+  // 每日兜底轮与临期扫描都覆盖不到它，401 后无法自愈。
+  const scheduler = require('../jobs/scheduler');
+  const authMod = require('../auth');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origEnsure = authMod.ensureAuth;
+  let ensureCalls = [];
+  store.list = () => [
+    { id: 'acct_wb_ka', edition: 'workbuddy', enabled: true, label: 'wb-ka' },
+    { id: 'acct_zc_ka', edition: 'zcode', enabled: true, label: 'zc-ka' },
+  ];
+  authMod.ensureAuth = async (id) => { ensureCalls.push(id); return { id, token: 't' }; };
+  try {
+    const r = await scheduler.runKeepalive();
+    assert.deepStrictEqual(ensureCalls, ['acct_wb_ka'], 'WB 账号应经 ensureAuth 保活');
+    assert.strictEqual(r.total, 1, 'ZCode 不声明 tokenRefresh/oauthLogin，不得进入保活');
+  } finally {
+    store.list = origList;
+    authMod.ensureAuth = origEnsure;
+  }
+});
+
+t('wbNeedsRefresh：临期或距上次**成功刷新**超过 7 天都要续期', () => {
+  // 回归：原判据只有「30 分钟内到期」。上游会单方面作废会话（JWT 未到期但已拒服），
+  // 那种状态下旧判据永不触发，账号卡在「看起来没过期、实际已失效」。
+  //
+  // 2026-10-21 二次回归：判据位从 lastKeepaliveAt 改为 lastRefreshAt。
+  // 与 lastKeepaliveAt 共用会同时坏掉两件事：
+  //   1) scheduler.runKeepalive 每天写 lastKeepaliveAt ⇒ 「7 天」窗口被永久重置；
+  //   2) 续期失败也写 lastKeepaliveAt ⇒ 一次抖动把重试压满 7 天。
+  const { wbNeedsRefresh } = require('../auth');
+  const DAY = 86400000;
+  const now = Date.now();
+  const future = new Date(now + 20 * DAY).toISOString();     // token 远未到期
+  const recent = new Date(now - 2 * DAY).toISOString();       // 2 天前成功刷新
+  const stale = new Date(now - 8 * DAY).toISOString();        // 8 天前成功刷新
+
+  assert.strictEqual(wbNeedsRefresh({ expiredAt: future, lastRefreshAt: recent }), false,
+    'token 未临期且近期成功刷新过 ⇒ 不必续期');
+  assert.strictEqual(wbNeedsRefresh({ expiredAt: future, lastRefreshAt: stale }), true,
+    'token 未临期但距上次成功刷新已超 7 天 ⇒ 必须续期（防上游作废会话）');
+  assert.strictEqual(wbNeedsRefresh({ expiredAt: future, lastRefreshAt: null }), true,
+    '从未成功刷新过 ⇒ 必须续期（存量账号升级后的首次）');
+  // 关键不变量：每日保活盖章（lastKeepaliveAt=今天）不得压制周期续期
+  assert.strictEqual(
+    wbNeedsRefresh({
+      expiredAt: future,
+      lastKeepaliveAt: new Date().toISOString(),
+      lastRefreshAt: stale,
+    }),
+    true,
+    'lastKeepaliveAt 再新也不能顶替 lastRefreshAt —— 否则每日保活会让 7 天规则永不触发',
+  );
+  // 关键不变量：一次续期失败（只写 lastKeepaliveAt + fail 结果）不得压满 7 天
+  assert.strictEqual(
+    wbNeedsRefresh({
+      expiredAt: future,
+      lastKeepaliveAt: new Date().toISOString(),
+      lastKeepaliveResult: 'fail: 网络不可达',
+      lastRefreshAt: stale,
+    }),
+    true,
+    '续期失败后必须仍判为需要续期（不能把重试压满一个周期）',
+  );
+  assert.strictEqual(wbNeedsRefresh({ expiredAt: new Date(now + 60000).toISOString() }), true,
+    '30 分钟内到期 ⇒ 必须续期');
+});
+
+t('auth.ensureAuth 对 WB 账号刷新成功时落库 lastRefreshAt（判据位）+ lastKeepaliveAt（展示位）', async () => {
+  // 续期成功必须写两个时间：
+  //   lastRefreshAt  —— 周期续期的判据位（只认成功刷新）
+  //   lastKeepaliveAt —— 面板「保活」列的展示位
+  // 只写后者会让「7 天周期续期」被每日保活盖章永久压制（2026-10-21 实测）。
+  const authMod = require('../auth');
+  const credStore = require('../credentials/store');
+  const wbAuth = require('../workbuddy/auth');
+  const origList = credStore.list;
+  const origGet = credStore.get;
+  const origUpdate = credStore.update;
+  const origRefresh = wbAuth.refresh;
+  const updates = [];
+  credStore.list = () => [{ id: 'acct_wb_ok', edition: 'workbuddy', enabled: true }];
+  credStore.get = () => ({
+    id: 'acct_wb_ok', edition: 'workbuddy', refreshToken: 'rt-old',
+    expiredAt: new Date(Date.now() + 20 * 86400000).toISOString(),
+    lastKeepaliveAt: new Date(Date.now() - 8 * 86400000).toISOString(),
+    lastRefreshAt: new Date(Date.now() - 8 * 86400000).toISOString(),
+  });
+  credStore.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  wbAuth.refresh = async () => ({
+    accessToken: 'tok-new',
+    refreshToken: 'rt-new',
+    expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(),
+  });
+  try {
+    const r = await authMod.ensureAuth('acct_wb_ok');
+    assert.strictEqual(r.token, 'tok-new');
+    const u = updates.find((x) => x.patch.token === 'tok-new');
+    assert.ok(u, '刷新结果应落库');
+    assert.strictEqual(u.patch.refreshToken, 'rt-new');
+    assert.ok(u.patch.lastRefreshAt, '续期成功应写 lastRefreshAt（周期续期判据位）');
+    assert.ok(u.patch.lastKeepaliveAt, '续期成功应写 lastKeepaliveAt（面板展示位）');
+    assert.strictEqual(u.patch.lastKeepaliveResult, 'ok');
+  } finally {
+    credStore.list = origList;
+    credStore.get = origGet;
+    credStore.update = origUpdate;
+    wbAuth.refresh = origRefresh;
+  }
+});
+
+t('auth.ensureAuth 对 WB 账号刷新失败时把原因落库（不再只 console.error）', async () => {
+  // 原实现只 console.error 后照常返回旧 token，面板「保活」列永远显示正常，
+  // 续期断了 3 天都没人发现（m-35 同类问题）。失败原因必须逐账号落库。
+  const authMod = require('../auth');
+  const credStore = require('../credentials/store');
+  const wbAuth = require('../workbuddy/auth');
+  const origList = credStore.list;
+  const origGet = credStore.get;
+  const origUpdate = credStore.update;
+  const origRefresh = wbAuth.refresh;
+  const updates = [];
+  credStore.list = () => [{ id: 'acct_wb_fail', edition: 'workbuddy', enabled: true }];
+  credStore.get = () => ({
+    id: 'acct_wb_fail', edition: 'workbuddy', refreshToken: 'rt-old', token: 'tok-old',
+    expiredAt: new Date(Date.now() + 20 * 86400000).toISOString(),
+    lastKeepaliveAt: new Date(Date.now() - 8 * 86400000).toISOString(),
+  });
+  credStore.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  wbAuth.refresh = async () => { throw new Error('刷新失败 HTTP 401 refresh_expired'); };
+  try {
+    const r = await authMod.ensureAuth('acct_wb_fail');
+    assert.ok(r._refreshError, '失败必须透传给调用方');
+    assert.strictEqual(r.token, 'tok-old', '失败时仍返回旧 token（业务可用性不变）');
+    const u = updates.find((x) => x.patch.lastKeepaliveResult);
+    assert.ok(u, '失败结果应落库');
+    assert.ok(u.patch.lastKeepaliveResult.startsWith('fail:'), `应记失败: ${u.patch.lastKeepaliveResult}`);
+    assert.ok(u.patch.lastKeepaliveAt, '失败也应写时间戳（面板可看到最近尝试）');
+    // 关键：失败**不得**推进判据位，否则一次抖动会把 7 天周期续期的重试压满
+    assert.strictEqual(u.patch.lastRefreshAt, undefined,
+      '续期失败不得写 lastRefreshAt（判据位只认成功）');
+  } finally {
+    credStore.list = origList;
+    credStore.get = origGet;
+    credStore.update = origUpdate;
+    wbAuth.refresh = origRefresh;
+  }
+});
+
 console.log('jobs.balance-refresh');
 t('余额刷新配置：默认关闭，间隔夹紧到 5-1440', () => {
   const fs = require('fs');
@@ -3162,11 +3323,29 @@ t('手动签到会推送通知（m-39 用户明确要求）', () => {
   assert.ok(/notifyOnDone[\s\S]{0,600}?notify\(/.test(all), '聚合签到应支持完成通知');
   const cred = fs.readFileSync(path.join(__dirname, '..', 'routes', 'credentials.js'), 'utf-8');
   assert.ok(/checkin-all[\s\S]{0,900}?notifyOnDone: true/.test(cred), '手动全部签到应开启通知');
-  assert.ok(/const r = await checkinAccount\(req\.params\.id\);[\s\S]{0,900}?notify\(/.test(cred),
+  assert.ok(/r = await checkinAccount\(req\.params\.id\);[\s\S]{0,900}?notify\(/.test(cred),
     '手动单账号签到（Trae）应推送通知');
   const wb = fs.readFileSync(path.join(__dirname, '..', 'routes', 'workbuddy.js'), 'utf-8');
-  assert.ok(/wbCheckinAccount\(String\(req\.body\.accountId\)\)[\s\S]{0,900}?notify\(/.test(wb),
+  assert.ok(/r = await wbCheckinAccount\(String\(req\.body\.accountId\)\);[\s\S]{0,900}?notify\(/.test(wb),
     '手动单账号签到（WorkBuddy）应推送通知');
+});
+
+t('手动签到通知按结果分级，失败也推送（2026-10-18）', () => {
+  // 回归：此前单账号签到一律 notify('checkin_ok')，claimed=false 时也报「签到完成」
+  // ——面板显示失败、通知说成功，同一操作两个互相矛盾的结论；且 notify 在
+  // checkinAccount() 之后，签到抛错（401/超时）时通知被整体跳过，失败完全静默。
+  const cred = fs.readFileSync(path.join(__dirname, '..', 'routes', 'credentials.js'), 'utf-8');
+  const wb = fs.readFileSync(path.join(__dirname, '..', 'routes', 'workbuddy.js'), 'utf-8');
+  for (const [name, src] of [['trae', cred], ['workbuddy', wb]]) {
+    assert.ok(/checkin_warn/.test(src), `${name} 签到应有 checkin_warn 事件（领到分之外的结果）`);
+    assert.ok(/checkin_fail/.test(src), `${name} 签到失败应推送 checkin_fail`);
+    // try 之外捕获：失败通知必须在 catch 里，而不是成功路径上
+    assert.ok(/catch \(err\)[\s\S]{0,800}?checkin_fail/.test(src),
+      `${name} 的 checkin_fail 应在 catch 分支（签到抛错时也要提醒）`);
+  }
+  // 事件必须登记进可开关表，否则 isEventEnabled 一律放行、面板也给不出开关
+  const settings = fs.readFileSync(path.join(__dirname, '..', 'notify', 'settings.js'), 'utf-8');
+  assert.ok(/'checkin_warn'/.test(settings), 'checkin_warn 应登记进 notify EVENTS');
 });
 
 t('全库无双向依赖（静态扫描）', () => {
@@ -4589,6 +4768,86 @@ t('stats-cache：local 计数与逐日口径一致，桶版本已递增', () => 
   assert.strictEqual(got.unmetered, 0, 'local 不得落进 unmetered');
   fs.rmSync(dir, { recursive: true, force: true });
   sc.clearCache();
+});
+
+t('workbuddy chat 身份：桌面端头集齐全，且不含插件/网页身份', () => {
+  const wbAuth = require('../workbuddy/auth');
+  const h = wbAuth.chatHeaders({ accessToken: 'tok', uid: 'u1', region: 'cn' });
+  // 11128 的核心修复：UA 首段必须是桌面端产品名，不是 CLI/CodeBuddy 插件名
+  assert.ok(/^WorkBuddy\//.test(h['User-Agent']), `UA 应以 WorkBuddy/ 开头，实际 ${h['User-Agent']}`);
+  assert.ok(/CLI\/\d/.test(h['User-Agent']), 'UA 末段仍应带 CLI 版本');
+  assert.strictEqual(h['X-IDE-Type'], 'WorkBuddy');
+  assert.strictEqual(h['X-IDE-Name'], 'WorkBuddy');
+  assert.ok(/^\d+\.\d+\.\d+$/.test(h['X-IDE-Version']), 'X-IDE-Version 应为语义化版本');
+  assert.ok(h['X-Private-Data'] != null, 'X-Private-Data 必带（桌面端默认）');
+  assert.strictEqual(h['x-codebuddy-request'], '1');
+  assert.ok(h['X-Conversation-ID'] && h['X-Request-ID'], '会话/请求幂等键必带');
+  assert.strictEqual(h['X-Agent-Intent'], 'craft');
+  assert.ok(/^00-[0-9a-f]{32}-[0-9a-f]{16}-01$/.test(h.traceparent), 'traceparent 形态必须合规');
+  assert.ok(h['X-B3-TraceId'] && h['X-B3-SpanId'] && h['X-B3-ParentSpanId']);
+  // 插件/网页身份与桌面端身份互斥：带上就是自相矛盾的指纹
+  assert.strictEqual(h['X-Client-Platform'], undefined, '桌面端 chat 不带 X-Client-Platform');
+  assert.strictEqual(h.Origin, undefined, '桌面端 chat 不带浏览器 Origin');
+  assert.strictEqual(h.Referer, undefined, '桌面端 chat 不带 Referer');
+  assert.strictEqual(h['X-Refresh-Token'], undefined, '红线：chat 绝不带 X-Refresh-Token');
+});
+
+t('workbuddy billing 身份：authHeaders 保持 web 形态（未被 chat 改动污染）', () => {
+  const wbAuth = require('../workbuddy/auth');
+  const h = wbAuth.authHeaders({ accessToken: 'tok', uid: 'u1', region: 'cn' });
+  assert.strictEqual(h['X-Client-Platform'], 'web', 'billing/checkin 仍走 web 端');
+  assert.ok(h.Origin, 'billing 需要 Origin');
+  assert.strictEqual(h['X-IDE-Type'], undefined, 'billing 不该带桌面端 IDE 头');
+});
+
+t('workbuddy 会话键：conversationId 可跨请求复用，requestId 每次新建', () => {
+  const wbAuth = require('../workbuddy/auth');
+  const info = { accessToken: 't', uid: 'u', region: 'cn' };
+  const a = wbAuth.chatHeaders(info, { conversationId: 'conv-1', requestId: 'req-1' });
+  const b = wbAuth.chatHeaders(info, { conversationId: 'conv-1', requestId: 'req-2' });
+  assert.strictEqual(a['X-Conversation-ID'], 'conv-1');
+  assert.strictEqual(b['X-Conversation-ID'], 'conv-1');
+  assert.notStrictEqual(a['X-Request-ID'], b['X-Request-ID'], '同会话内 requestId 必须不同');
+  // 不传时各自生成，不能变成常量（常量会被上游当成重放）
+  const c = wbAuth.chatHeaders(info);
+  const d = wbAuth.chatHeaders(info);
+  assert.notStrictEqual(c['X-Conversation-ID'], d['X-Conversation-ID']);
+});
+
+t('11128 分类为 channel：不重试、不冷却、可跨平台降级', () => {
+  const { classifyError, isRetryable, isChannelBlockedError } = require('../upstream/errors');
+  const health = require('../model-router/health');
+  const e = new Error('WorkBuddy upstream HTTP 400 {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}');
+  e.status = 400;
+  assert.strictEqual(classifyError(e), 'channel');
+  assert.strictEqual(e.upstreamCode, 11128, '业务码必须回填，供日志与前端判据使用');
+  assert.strictEqual(isRetryable('channel'), false, '确定性判定，重试同账号无意义');
+  assert.strictEqual(isChannelBlockedError(e), true);
+  assert.strictEqual(isChannelBlockedError(new Error('upstream: Illegal API invocation from an unapproved channel')), true,
+    '上游换码时文案兜底仍要识别');
+  // 不冷却：账号与模型都健康，冷却只会让面板一片红并跳过可用候选
+  const r = health.markFail('vm/__test-channel__', 'wb/x', 'channel', e, 20000);
+  assert.strictEqual(r.cooledForMs, 0, 'channel 不得冷却候选');
+  assert.strictEqual(health.cooldownRemaining('vm/__test-channel__', 'wb/x'), 0);
+  health.clearAllCooldowns();
+});
+
+t('switchOn 默认值含 channel（store 与 autotier 两处口径一致）', () => {
+  const fs = require('fs');
+  const storeSrc = fs.readFileSync(path.join(__dirname, '..', 'model-router', 'store.js'), 'utf-8');
+  assert.ok(/switchOn:[\s\S]{0,200}?'channel'/.test(storeSrc), 'store.js 的默认 switchOn 必须含 channel');
+  const autoSrc = fs.readFileSync(path.join(__dirname, '..', 'model-router', 'autotier.js'), 'utf-8');
+  assert.ok(/switchOn:[\s\S]{0,200}?'channel'/.test(autoSrc), 'autotier.js 的默认 switchOn 必须含 channel');
+});
+
+t('11102/11103 归入 model（模型问题，不冷却账号）', () => {
+  const { classifyError } = require('../upstream/errors');
+  const a = new Error('WorkBuddy upstream HTTP 400 {"code":11102,"msg":"model [glm-5.0] service info not found"}');
+  a.status = 400;
+  assert.strictEqual(classifyError(a), 'model', '11102 是模型不存在，不是账号问题');
+  const b = new Error('WorkBuddy upstream HTTP 400 {"code":11103,"msg":"Backend [hunyuan-stream] is not supported"}');
+  b.status = 400;
+  assert.strictEqual(classifyError(b), 'model', '11103 是模型后端不支持，不是账号问题');
 });
 
 main();
