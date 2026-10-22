@@ -13,6 +13,7 @@
 const wbAuth = require('./auth');
 const { isTruncatedFinish } = require('../transform/finish');
 const { createLineFeeder } = require('../lib/sse-lines');
+const identityScrub = require('../transform/identity-scrub');
 
 /** 请求体规范化（红线项）。 */
 function normalizeBody(body) {
@@ -20,6 +21,16 @@ function normalizeBody(body) {
   out.model = String(out.model || '').replace(/^wb\//, '');
   out.stream = true; // 强制流式（非流式由本地聚合）
   if (out.tool_choice && typeof out.tool_choice === 'object') out.tool_choice = 'auto';
+  // 内容层渠道检测应对（opt-in，WB_IDENTITY_SCRUB=true 开）：中和 system 里
+  // 第三方 harness 的身份声明（2026-10-20 起上游内容检测的实锤暴露面）。
+  // 只动 system、只动命中句，未启用时零行为差异。
+  if (identityScrub.scrubEnabled() && Array.isArray(out.messages)) {
+    const scrubbed = identityScrub.scrubMessages(out.messages);
+    if (scrubbed.changed) {
+      out.messages = scrubbed.messages;
+      console.log(`[wb-chat] identity scrub: ${scrubbed.hits} identity sentence(s) neutralized in system prompt`);
+    }
+  }
   return out;
 }
 

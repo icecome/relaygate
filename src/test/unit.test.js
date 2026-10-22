@@ -4850,4 +4850,64 @@ t('11102/11103 归入 model（模型问题，不冷却账号）', () => {
   assert.strictEqual(classifyError(b), 'model', '11103 是模型后端不支持，不是账号问题');
 });
 
+t('11140 归入 account：先于 403/auth 判定，长冷却，续期无效', () => {
+  const { classifyError, isRetryable, isAccountRestrictedError } = require('../upstream/errors');
+  const health = require('../model-router/health');
+  const e = new Error('WorkBuddy upstream HTTP 403 {"code":11140,"msg":"request illegal"}');
+  e.status = 403;
+  assert.strictEqual(classifyError(e), 'account', '11140 是账号受限，不得落到 auth（会触发无效续期）');
+  assert.strictEqual(e.upstreamCode, 11140, '业务码必须回填');
+  assert.strictEqual(isAccountRestrictedError(e), true);
+  assert.strictEqual(isAccountRestrictedError(new Error('上游返回：账号受限')), true, '文案兜底');
+  assert.strictEqual(isRetryable('account'), false, '受限账号同号重试只会加重画像');
+  // 冷却：account 必须长冷却（≥1h），与 auth 的 20s 短冷却区分
+  const r = health.markFail('vm/__test-acct__', 'wb/x', 'account', e, 20000);
+  assert.ok(r.cooledForMs >= 3600_000, `account 冷却应 ≥1h，实际 ${r.cooledForMs}ms`);
+  assert.ok(health.cooldownRemaining('vm/__test-acct__', 'wb/x') > 0);
+  const snap = health.snapshot().find((s) => s.virtualId === 'vm/__test-acct__');
+  assert.ok(snap && snap.lastAccountRestrictedAt > 0, '快照必须暴露 lastAccountRestrictedAt');
+  health.clearAllCooldowns();
+});
+
+t('identity-scrub：中和 system 里的 harness 身份声明，不碰其余内容', () => {
+  const scrub = require('../transform/identity-scrub');
+  // Codex 标准开头
+  const a = scrub.scrubMessages([
+    { role: 'system', content: "You are Codex, a coding agent based on GPT-5. You help with code." },
+    { role: 'user', content: '帮我写个快排' },
+  ]);
+  assert.strictEqual(a.changed, true, 'Codex 自述必须被改写');
+  assert.ok(!/codex/i.test(a.messages[0].content), '改写后不得残留 Codex 字样');
+  assert.ok(/coding assistant/i.test(a.messages[0].content), '改写必须是等义替换而非删除');
+  assert.strictEqual(a.messages[1].content, '帮我写个快排', 'user 消息一字不动');
+  // Claude Code 标准开头
+  const b = scrub.scrubMessages([
+    { role: 'system', content: "You are Claude Code, Anthropic's official CLI for Claude." },
+  ]);
+  assert.strictEqual(b.changed, true);
+  assert.ok(!/claude|anthropic/i.test(b.messages[0].content));
+  // 官方放行身份（WorkBuddy/CodeBuddy/Hermes/OpenCode）整条跳过
+  const c = scrub.scrubMessages([
+    { role: 'system', content: 'You are the WorkBuddy desktop assistant.' },
+  ]);
+  assert.strictEqual(c.changed, false, '官方客户端身份自述不得改写');
+  // 普通提及不是自述，不动：「用 claude code 打开这个项目」
+  const d = scrub.scrubMessages([
+    { role: 'system', content: '用户可能用 claude code 打开这个项目，注意路径格式。' },
+  ]);
+  assert.strictEqual(d.changed, false, '非自述句式的提及不得改写');
+  // 非 system 消息不动
+  const e = scrub.scrubMessages([
+    { role: 'user', content: 'I am running in Codex CLI, help me' },
+  ]);
+  assert.strictEqual(e.changed, false, 'user 消息一律不动');
+  // 未启用时 normalizeBody 零行为差异
+  delete process.env.WB_IDENTITY_SCRUB;
+  const { normalizeBody } = require('../workbuddy/chat');
+  const body = { model: 'wb/glm-5.3', messages: [{ role: 'system', content: 'You are Codex.' }] };
+  const nb = normalizeBody(body);
+  assert.ok(/codex/i.test(nb.messages[0].content), '默认关闭时请求体必须原样');
+  assert.strictEqual(nb.stream, true, '强制流式红线不受影响');
+});
+
 main();
