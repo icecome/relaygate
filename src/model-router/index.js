@@ -240,6 +240,10 @@ function shouldSwitch(kind, vm) {
   // 上下文超限属终端错误：换候选/冷却账号都解决不了窗口问题，绝不切换
   // （否则会把每个候选都撞一遍同一天花板，并错误冷却健康的低窗口模型）。
   if (kind === 'context_length') return false;
+  // 账号受限（11140）：账号级处置，同平台换候选通常=换门牌撞同一面墙（同账号
+  // 被多个候选引用时），但不禁止——同平台其他账号仍可用，故放行走通用 failover
+  // 白名单逻辑；'account' 不在默认 switchOn 里时由这里的显式放行兜底。
+  if (kind === 'account') return true;
   // 渠道校验：同平台换候选无效（请求形状相同），但**允许跨平台**降级。
   // 真正的平台级熔断在 handleChat 的 blockedProviders 里做，这里只放行。
   if (kind === 'channel') return true;
@@ -364,10 +368,18 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
    * 因此只允许跨平台降级（workbuddy → trae），同平台不再重试。
    */
   const blockedProviders = new Set();
+  /**
+   * 账号受限（11140）后**同账号**熔断本次请求的候选。受限是账号级处置：
+   * 同账号挂在多个候选（同一上游账号可被多个虚拟模型引用）时，换候选只是
+   * 换个门牌撞同一面墙。平台不整体熔断——受限只落在单个账号上，同平台
+   * 其他账号照常可用。
+   */
+  const restrictedCandidates = new Set();
 
   for (let i = 0; i < maxAttempts; i++) {
     let candidates = orderCandidates(virtualId, vm, keyPlatform).filter((c) => !tried.has(c.id));
     if (blockedProviders.size) candidates = candidates.filter((c) => !blockedProviders.has(c.provider));
+    if (restrictedCandidates.size) candidates = candidates.filter((c) => !restrictedCandidates.has(c.id));
     // 候选级窗口守门：只把「装得下当前输入」的候选视为可用（有候选声明窗口时才启用）
     if (hasCandidateWindows) candidates = candidates.filter((c) => fittingAll.some((f) => f.id === c.id));
     // 候选级模态守门：发图请求排掉明确不支持多模态的候选
@@ -519,6 +531,15 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
         console.log(`[model-router] channel blocked on provider ${cand.provider} (code ${err.upstreamCode ?? '?'}), `
           + 'skipping its remaining candidates for this request');
       }
+      // 账号受限（11140）：本请求内跳过该候选；跨请求靠 health 的 2h 冷却
+      // （orderCandidates 会把冷却中的候选排掉）。受限账号续期无效，
+      // 不改 'auth' 的续期路径——这里已提前分流，不会走到那里。
+      if (kind === 'account') {
+        restrictedCandidates.add(cand.id);
+        console.log(`[model-router] account restricted on candidate ${cand.id} (code ${err.upstreamCode ?? '?'}), `
+          + `cooling it for ${Math.round((health.cooldownRemaining(virtualId, cand.id) || 0) / 60000)}min; `
+          + 'use another account or wait — refreshing the token will NOT lift this');
+      }
       // 可切换判据：答案（content/tool_call 的完整帧）是否已交付客户端。
       // 不能用 res.headersSent：dispatchTraeStream 在上游第一个增量（可能只是
       // reasoning）就会 flushHeaders，用它当判据会让「只思考过、随后上游失败」
@@ -565,13 +586,21 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
   if (res.writableEnded) return { ok: false, error: err.message, attempts };
   // 渠道校验全灭时给可执行的提示：原始报文（Illegal API invocation…）对使用者
   // 没有任何指向性，而真正的动作是「更新客户端身份版本」或「改用其它平台」。
-  const channelBlocked = classifyError(err) === 'channel';
+  const lastKind = classifyError(err);
+  const channelBlocked = lastKind === 'channel';
+  // 账号受限全灭：动作是「换账号/等冷却」，而不是重试或续期——受限不在
+  // 调用方能解，继续打只会加重账号画像。
+  const accountRestricted = lastKind === 'account';
   const errMessage = channelBlocked
     ? `${err.message}\n\n上游按渠道校验拒绝了本平台的请求形状（code 11128）。`
       + `这不是账号、模型或上下文问题：请核对 WorkBuddy 桌面端版本与 CLI 版本`
       + `（platform/variant.js#identity.appVersion / cliVersion，或 WB_APP_VERSION / WB_CLI_VERSION），`
       + `或在虚拟模型里保留至少一个非 workbuddy 候选以便跨平台降级。`
-    : err.message;
+    : accountRestricted
+      ? `${err.message}\n\n上游已限制本平台账号（code 11140，账号级风控处置）。`
+        + `这不是请求形状或模型问题：换一个账号（面板导入新凭据），或等待冷却后探测是否解除；`
+        + `续期 token 与重试都无效。若账号持续受限并伴随积分清零，该账号大概率已被处置。`
+      : err.message;
   // 走同一个 sink：若闸门里还扣着未成行的残片，必须先丢弃，
   // 否则错误帧会被拼到半行后面，客户端解析整行失败、连错误都看不到。
   const sink = gate || res;

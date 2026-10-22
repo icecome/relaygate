@@ -6,10 +6,17 @@
  * 记录：成功率、平均延迟、连续失败、冷却截止、最近错误。
  */
 
-/** @typedef {{ok:number, fail:number, totalMs:number, lastError:string|null, lastStatus:number|null, coolUntil:number, lastRateLimitAt:number|null}} Entry */
+/** @typedef {{ok:number, fail:number, totalMs:number, lastError:string|null, lastStatus:number|null, coolUntil:number, lastRateLimitAt:number|null, lastChannelBlockAt:number|null, lastAccountRestrictedAt:number|null}} Entry */
 
 /** @type {Map<string, Entry>} */
 const stats = new Map();
+
+/**
+ * 账号受限（11140）冷却时长。取 2 小时：受限大概率是账号级风控处置，
+ * 几分钟内恢复无先例（社区案例按小时/天计）；又不至于 24h——若上游是
+ * 临时限制（限流升级形态），2h 后放一次探测请求，成功即由 markOk 清零。
+ */
+const ACCOUNT_RESTRICT_COOLDOWN_MS = 2 * 3600_000;
 
 /** 本地 maxRpm 滑窗：key → number[]（请求起点时间戳） */
 const rpmWindow = new Map();
@@ -30,6 +37,8 @@ function entry(virtualId, candidateId) {
       lastStatus: null,
       coolUntil: 0,
       lastRateLimitAt: null,
+      lastChannelBlockAt: null,
+      lastAccountRestrictedAt: null,
     };
     stats.set(k, e);
   }
@@ -61,6 +70,15 @@ function markFail(virtualId, candidateId, kind, err, cooldownMs) {
     e.lastRateLimitAt = Date.now();
     const ms = resolveCooldownMs(err, cooldownMs);
     e.coolUntil = Date.now() + ms;
+    return { cooledForMs: ms };
+  }
+  // 账号受限（11140）：账号被上游风控处置。短冷却会在到期后反复撞墙（每撞一次
+  // 都是在被风控的账号上继续打请求，只会加重画像）；长冷却（默认 2h）把它排到
+  // 候选队尾，同虚拟模型有其他候选时自然切走，没有时也把重试频率压到风控友好档。
+  if (kind === 'account') {
+    const ms = ACCOUNT_RESTRICT_COOLDOWN_MS;
+    e.coolUntil = Date.now() + ms;
+    e.lastAccountRestrictedAt = Date.now();
     return { cooledForMs: ms };
   }
   if (kind === 'auth' || kind === 'quota' || kind === '5xx') {
@@ -145,6 +163,8 @@ function snapshot() {
       cooling: e.coolUntil > now,
       cooldownRemainingMs: e.coolUntil > now ? e.coolUntil - now : 0,
       lastRateLimitAt: e.lastRateLimitAt,
+      lastChannelBlockAt: e.lastChannelBlockAt,
+      lastAccountRestrictedAt: e.lastAccountRestrictedAt,
     };
   });
 }

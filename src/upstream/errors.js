@@ -40,6 +40,13 @@ const CODE_PLAN_LIMIT = TRAE_ERR.planLimit;
  */
 const CODE_CHANNEL_BLOCKED = WB_ERR.channelBlocked;
 /**
+ * 账号受限（WorkBuddy 11140，HTTP 403）。语义是「账号被风控处置」，
+ * 与请求形状无关：换号有效，改请求/续期无效。与 11128 的关键差别：
+ * 11128 是请求问题（号是好的），11140 是账号问题（号不能用）。
+ * 社区案例显示它是封号/积分清零的前置信号，需要强冷却 + 提醒换号。
+ */
+const CODE_ACCOUNT_RESTRICTED = WB_ERR.accountRestricted;
+/**
  * 上下文窗口超限码（两平台并集）：WorkBuddy 11115；Trae 无独立码（null），
  * 靠 isContextLengthError 的文案正则兜底。
  */
@@ -64,7 +71,7 @@ function isContextLengthError(err) {
 /**
  * 解析上游错误，返回分类标签。
  * @param {Error} err
- * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'context_length'|'channel'|'other'}
+ * @returns {'rate_limit'|'auth'|'network'|'5xx'|'quota'|'model'|'context_length'|'channel'|'account'|'other'}
  */
 function classifyError(err) {
   if (!err) return 'other';
@@ -77,6 +84,9 @@ function classifyError(err) {
   // 渠道校验先于一切：它不是账号/模型/窗口问题，判成 'other' 会去逐个候选撞同一
   // 堵墙并冷却健康账号；判成 'auth' 会触发续期（无效，token 完全正常）。
   if (isChannelBlockedError(err)) return 'channel';
+  // 账号受限（11140）先于泛化 403：判成 'auth' 会触发续期 + 短冷却后反复撞墙，
+  // 但受限账号续不了期也等不好——正确动作是长冷却 + 尽快换号。
+  if (isAccountRestrictedError(err)) return 'account';
   // 上下文超限先于其它分类：窗口问题与账号/模型健康度无关，
   // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
   if (isContextLengthError(err)) return 'context_length';
@@ -170,6 +180,21 @@ function parseRateLimitReset(text) {
 }
 
 /**
+ * 是否为账号受限（11140）。三路判定：业务码、HTTP 状态恰好等于该码（少见）、
+ * 以及文案兜底（上游换码或改文案时仍能识别）。
+ */
+function isAccountRestrictedError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '');
+  if (Number(err.upstreamCode) === CODE_ACCOUNT_RESTRICTED) return true;
+  if (err.status === CODE_ACCOUNT_RESTRICTED) return true;
+  if (new RegExp(`"code"\\s*:\\s*${CODE_ACCOUNT_RESTRICTED}\\b`).test(msg)) return true;
+  // 上游 403 body：{"code":11140,"msg":"request illegal"}，客户端文案「服务出现异常请重试」。
+  // 不用「服务异常」做正则——太宽，会吞掉真正的 5xx 文案。
+  return /账号受限/.test(msg);
+}
+
+/**
  * 是否为渠道校验拒绝（11128）。三路判定：业务码、HTTP 状态恰好等于该码（少见）、
  * 以及文案兜底（上游换码或改文案时仍能识别）。
  */
@@ -235,8 +260,10 @@ module.exports = {
   isContextLengthError,
   isContextLengthErrorKind,
   isChannelBlockedError,
+  isAccountRestrictedError,
   parseRateLimitReset,
   RATE_LIMIT_CODES,
   CONTEXT_TOO_LONG_CODES,
   CODE_CHANNEL_BLOCKED,
+  CODE_ACCOUNT_RESTRICTED,
 };
