@@ -16,15 +16,25 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { discoverAsar } = require('./lib/wb-install');
 
-const ASAR = process.env.WB_ASAR || 'C:\\opt\\software\\Tencent\\WorkBuddy\\resources\\app.asar';
+/**
+ * 惰性探测安装路径（require 本模块时不跑注册表查询，测试与工具链无副作用）。
+ * 探测顺序见 scripts/lib/wb-install.js：WB_ASAR → 注册表 DisplayIcon/
+ * UninstallString → 常见安装路径 → 本项目开发机历史路径。
+ */
+let _discovered;
+function asarPath() {
+  if (_discovered === undefined) _discovered = discoverAsar();
+  return _discovered;
+}
 const VARIANT = path.join(__dirname, '..', 'src', 'platform', 'variant.js');
 
 /** 从 asar/unpacked 读版本。app 版本在根 package.json；CLI 版本官方取值链是
  *  cli/package.json 的 publishConfig.customPackage.version（fallback 顶层 version），
  *  见 app.asar.unpacked/cli/bin/codebuddy 的 CLIENT_INFO_PRODUCT_VERSION 兜底逻辑。 */
 function asarVersion() {
-  if (!fs.existsSync(ASAR)) return null;
+  if (!asarPath()) return null;
   const app = readAsarJson('package.json');
   const cli = readAsarJson('cli/package.json');
   const appVersion = app && app.version ? String(app.version) : null;
@@ -32,14 +42,15 @@ function asarVersion() {
     ? String(cli.publishConfig.customPackage.version)
     : (cli && cli.version && cli.version !== '0.0.0' ? String(cli.version) : null);
   if (!appVersion && !cliVersion) return null;
-  return { appVersion, cliVersion, source: ASAR };
+  return { appVersion, cliVersion, source: asarPath().asar };
 }
 
 /** 读 asar 内 JSON（自动跟随 unpacked 标记）；失败返回 null。 */
 function readAsarJson(rel) {
   try {
-    if (!fs.existsSync(ASAR)) return null;
-    const buf = fs.readFileSync(ASAR);
+    const asar = asarPath() && asarPath().asar;
+    if (!asar) return null;
+    const buf = fs.readFileSync(asar);
     // asar（Chrome pickle）布局：u32@0=4，u32@4=header pickle 总长，
     // 数据区基点 = 8 + u32@4（4 字节对齐）。header JSON 本体在 16..16+jsonLen，
     // 但文件偏移的参照系是**对齐后的基点**——直接用 16+jsonLen 会差出
@@ -53,7 +64,7 @@ function readAsarJson(rel) {
     }
     if (node.files) return null;
     if (node.unpacked) {
-      const p = path.join(ASAR + '.unpacked', rel);
+      const p = path.join(asar + '.unpacked', rel);
       if (!fs.existsSync(p)) return null;
       return JSON.parse(fs.readFileSync(p, 'utf8'));
     }
@@ -86,10 +97,14 @@ function declaredVersions() {
 
 function main() {
   const wantUpdate = process.argv.includes('--update');
+  const discovered = asarPath();
   const real = asarVersion() || registryVersion();
   const decl = declaredVersions();
   if (!real) {
-    console.log('[wb-fingerprint] 本机未找到 WorkBuddy 安装（asar 与注册表都不可用），跳过检查');
+    // 探测来源要一起打出来：区分「本机真没装」与「装了但没探测到」，
+    // 后者正是硬编码路径时代的典型故障（换台机器就静默跳过）。
+    const why = discovered ? `已探测到 ${discovered.asar}（${discovered.source}）但读不出版本` : '未探测到安装目录（env/注册表/常见路径均未命中）';
+    console.log(`[wb-fingerprint] 本机未找到可用的 WorkBuddy 安装：${why}`);
     console.log(`  声明指纹保持：app=${decl.app} cli=${decl.cli}`);
     return 0;
   }
@@ -99,6 +114,7 @@ function main() {
     ['cliVersion', decl.cli, real.cliVersion, real.cliVersion != null],
   ].filter(([, , , have]) => have);
   console.log('[wb-fingerprint] 客户端指纹对比（声明 vs 本机真实安装）：');
+  if (discovered) console.log(`  安装来源：${discovered.asar}（${discovered.source}）`);
   let drift = false;
   for (const [k, declared, actual] of rows) {
     const ok = declared === actual;

@@ -4910,4 +4910,35 @@ t('identity-scrub：中和 system 里的 harness 身份声明，不碰其余内�
   assert.strictEqual(nb.stream, true, '强制流式红线不受影响');
 });
 
+t('wb-install 探测：env 优先、失效回退、候选兜底、全空返回 null', () => {
+  const { discoverAsar } = require('../../scripts/lib/wb-install');
+  // 1) WB_ASAR 命中 → 直接采用（最高优先级）
+  const a = discoverAsar({
+    env: { WB_ASAR: 'X:\\custom\\app.asar' },
+    exists: (p) => p === 'X:\\custom\\app.asar',
+    registry: () => ({ asar: 'Y:\\reg\\app.asar', source: 'registry:test' }),
+  });
+  assert.strictEqual(a.asar, 'X:\\custom\\app.asar');
+  assert.strictEqual(a.source, 'env:WB_ASAR');
+  // 2) WB_ASAR 指向缺失文件 → 告警并回退注册表（不能静默停摆）
+  const b = discoverAsar({
+    env: { WB_ASAR: 'D:\\nope\\app.asar' },
+    exists: () => false,
+    registry: () => ({ asar: 'Y:\\reg\\app.asar', source: 'registry:test' }),
+  });
+  assert.strictEqual(b.asar, 'Y:\\reg\\app.asar');
+  assert.strictEqual(b.source, 'registry:test');
+  // 3) 无 env、注册表落空 → 常见路径候选兜底（NSIS 默认布局）
+  const c = discoverAsar({
+    env: {},
+    exists: () => false,
+    registry: () => null,
+    candidates: () => ({ asar: 'C:\\Users\\u\\AppData\\Local\\Programs\\WorkBuddy\\resources\\app.asar', source: 'path-candidate' }),
+  });
+  assert.strictEqual(c.source, 'path-candidate');
+  // 4) 全部落空 → null（调用方跳过检查并说明原因）
+  const d = discoverAsar({ env: {}, exists: () => false, registry: () => null, candidates: () => null, legacy: () => null });
+  assert.strictEqual(d, null);
+});
+
 main();

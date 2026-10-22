@@ -14,12 +14,22 @@
 const fs = require('fs');
 const path = require('path');
 
-const ASAR = process.env.WB_ASAR || 'C:\\opt\\software\\Tencent\\WorkBuddy\\resources\\app.asar';
+// 安装路径探测：WB_ASAR → 注册表 DisplayIcon/UninstallString → 常见安装路径
+// （不写死开发机路径，换机器也能用；见 scripts/lib/wb-install.js）。
+const { discoverAsar } = require('../lib/wb-install');
+const found = discoverAsar();
+if (!found) {
+  console.error('[wb-asar] 未探测到 WorkBuddy 安装（可设置 WB_ASAR 指向 app.asar）');
+  process.exit(1);
+}
+const ASAR = found.asar;
 
 const buf = fs.readFileSync(ASAR);
 const jsonLen = buf.readUInt32LE(12);
 const hdr = JSON.parse(buf.slice(16, 16 + jsonLen).toString('utf8'));
-const DATA = 16 + jsonLen;
+// asar（Chrome pickle）数据区基点 = 8 + u32@4（4 字节对齐）；用 16+jsonLen
+// 会差 1~3 字节填充，读出的内容错位。
+const DATA = 8 + buf.readUInt32LE(4);
 
 const index = new Map();
 (function walk(node, dir) {

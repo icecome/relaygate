@@ -50,10 +50,11 @@
    - 只动 system 消息、只动命中身份声明指纹的句子，改写为等义的「coding assistant」；官方客户端身份（WorkBuddy/CodeBuddy/Hermes/OpenCode/Pi）整条跳过；user 消息一律不动。
    - 局限：只处理已知指纹句式；上游可随时换检测词——这是折衷而非完备解。
 3. **指纹版本跟进**（`scripts/check-wb-fingerprint.js`）
+   - 安装路径自动探测（`scripts/lib/wb-install.js`）：`WB_ASAR` 环境变量 → 注册表卸载条目的 `DisplayIcon`/`UninstallString`（自定义安装位置也能定位）→ 常见安装路径（`%LOCALAPPDATA%\Programs`、`%ProgramFiles%`）→ 开发机历史路径兜底；无硬编码开发机路径。
    - 读本机真实 asar（app 版本 = 根 package.json；CLI 版本 = `cli/package.json` 的 `publishConfig.customPackage.version`，与官方 `codebuddy` 启动器取值链一致）对比 variant.js 声明。
    - 漂移时退出码 1（供 cron/CI 报警）；`--update` 自动改 variant.js（只动 `[WORKBUDDY]` 块）。
    - 注意：UA 模板 `identity.userAgent` 内嵌版本号需手动同步核对（或 `WB_UA` 临时覆盖）。
-4. 测试：unit 套件新增 2 例（11140 分类 + identity-scrub 行为矩阵），302 全绿；全套件 exit 0；biome 相对 HEAD 零新增诊断。
+4. 测试：unit 套件新增 3 例（11140 分类、identity-scrub 行为矩阵、wb-install 路径探测），303 全绿；全套件 exit 0；biome 相对 HEAD 零新增诊断。
 
 ## 5. 运维清单
 
