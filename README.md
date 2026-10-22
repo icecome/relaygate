@@ -1,6 +1,6 @@
 # RelayGate
 
-多平台账号池网关：把 Trae / WorkBuddy / ZCode 账号聚合为一个稳定的
+多平台账号池网关：把 Trae / WorkBuddy  账号聚合为一个稳定的
 OpenAI / Anthropic / Codex 兼容接口，自动维护账号可用性（token 续期、每日
 签到、额度刷新），自带 Web 管理面板。
 
@@ -73,7 +73,7 @@ curl http://127.0.0.1:19900/v1/chat/completions \
 | `npm start` | 启动服务（`start.bat` 同） |
 | `npm run dev` | watch 模式启动（改代码自动重启） |
 | `npm run build:web` | 构建管理面板（`web/dist`） |
-| `npm test` | 全部后端测试（9 个套件，349 断言） |
+| `npm test` | 全部后端测试（16 个套件，`src/test/`，无网络） |
 | `npm run lint` | web eslint + 后端 biome |
 | `npm run check` | test + lint 一起跑（提交前建议） |
 | `node scripts/login-key.js create` | CLI 创建登录密钥（面板进不去时的救援通道） |
@@ -83,16 +83,32 @@ curl http://127.0.0.1:19900/v1/chat/completions \
 ```
 src/                 Node 后端
   routes/            HTTP 端点（薄层）
-  transform/         请求归一化 / SSE 流解析 / 双协议输出（纯函数）
+  middleware/        鉴权、模型 ACL、限流
   credentials/       账号存储（SQLite）、导入、OAuth、调度池
   model-router/      虚拟模型解析与转发
+  transform/         请求归一化 / SSE 流解析 / 双协议输出（纯函数）
+  upstream/          Trae / WorkBuddy 的转发与签到原语
+  workbuddy/ zcode/ qoder/ raccoon/   各渠道专有协议
   jobs/              定时任务（签到/保活/余额/备份/成长/轮换）
   log/               traffic / audit / task / crash 落盘
-  middleware/        鉴权、限流
+  lib/               加密、路径、SSE、token 估算等基础件
+  test/              后端测试套件
 web/                 React 管理面板（Vite + TS + Tailwind）
-docs/                设计与审查文档
-output/              运行数据（.trae-api/ 数据库与密钥、logs/ 日志）——勿提交
+scripts/             运维与验证脚本（不属于运行链路，索引见 scripts/README.md）
+docs/                文档体系（唯一入口 docs/README.md）
+  01-architecture/   架构与边界
+  02-technical/      技术方案（含 channels/ 各渠道）
+  03-development/    开发进展、计划与变更记录
+  04-reviews/        审查与审计
+  05-incidents/      问题记录与错误追踪
+  06-deliverables/   交付成果（对标、分析、预览）
+output/              运行数据（.trae-api/ 凭据库与密钥、路由运行态）——勿提交
+logs/                运行期日志（按日 traffic/audit/crash + 服务 stdout/stderr）——勿提交
+backups/             产品备份输出目录（jobs/backup.js 写入）——勿提交
 ```
+
+`node_modules/`、`output/`、`logs/`、`backups/`、`design/` 与各类密钥文件都在
+`.gitignore` 中忽略；`docs/` 与 `scripts/` 属于项目资产，正常入库。
 
 ## 配置
 
@@ -113,11 +129,21 @@ output/              运行数据（.trae-api/ 数据库与密钥、logs/ 日志
 
 ## 已知限制
 
-见 [docs/known-limitations.md](docs/known-limitations.md)（安全边界、Windows
+见 [docs/01-architecture/known-limitations.md](docs/01-architecture/known-limitations.md)（安全边界、Windows
 服务形态、多进程约束等）。
 
 ## 文档
 
-- `docs/` — 架构设计、审查报告（含两轮独立审查与整改方案）
-- `.env.example` — 全部环境变量
-- `docs/known-limitations.md` — 设计边界与接受理由
+文档已按软件开发生命周期分类，**唯一入口是 [`docs/README.md`](docs/README.md)**：
+
+| 目录 | 内容 |
+|---|---|
+| [`docs/01-architecture/`](docs/01-architecture/) | 架构总览、已知限制与设计取舍、计量口径 |
+| [`docs/02-technical/`](docs/02-technical/) | 渠道接入、密钥、模型路由，各渠道协议方案（`channels/`） |
+| [`docs/03-development/`](docs/03-development/) | 升级路线、前端重构方案、整改总方案、变更记录 |
+| [`docs/04-reviews/`](docs/04-reviews/) | 代码审查、UI 审查、产品审计、存在性裁决 |
+| [`docs/05-incidents/`](docs/05-incidents/) | 事故复盘与上游行为变化取证 |
+| [`docs/06-deliverables/`](docs/06-deliverables/) | 对标报告、分析报告、界面预览 |
+
+另见：[`CHANGELOG.md`](CHANGELOG.md)（版本变更）、[`.env.example`](.env.example)（全部环境变量）、
+[`docs/01-architecture/known-limitations.md`](docs/01-architecture/known-limitations.md)（设计边界与接受理由）。

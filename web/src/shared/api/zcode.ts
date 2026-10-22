@@ -8,7 +8,7 @@
  *     上游不发放可移植凭据，所以本模块也不提供粘贴入口；
  *   - 额度单位是 **token**（单包量级 1e8），与 RelayGate 的积分口径
  *     （单位 credit，量级 1e3）是两套计量，UI 必须单独标注单位、
- *     **不得并入积分汇总**（见 docs/zcode-integration.md 的「计量口径隔离」）；
+ *     **不得并入积分汇总**（见 docs/02-technical/channels/zcode-integration.md 的「计量口径隔离」）；
  *   - `capability.chat=false`：ZCode 账号不参与对话转发，只做账号运营面。
  *
  * 超时口径：领取要现解阿里云无感验证码（单次 2–8 秒，内置重试），

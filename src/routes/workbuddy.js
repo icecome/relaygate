@@ -49,7 +49,7 @@ router.get('/local', admin, (req, res) => {
         hint: encrypted
           ? '客户端已登录，但凭据已被客户端加密（2026-09-24 起，token 为 $wbEncrypted 对象，'
             + '密钥由客户端进程持有、离线无法解密）。请改用「粘贴凭据导入」，'
-            + '并按 docs/workbuddy-at-rest-crypto.md 先解出明文 JWT。'
+            + '并按 docs/02-technical/workbuddy-at-rest-crypto.md 先解出明文 JWT。'
           : '未找到 WorkBuddy 桌面端登录态（%LOCALAPPDATA%\\CodeBuddyExtension\\Data\\Public\\auth\\workbuddy-desktop.info）',
       });
     }

@@ -9,7 +9,7 @@
  *     挂在 /v1/raccoon 下而不是并入 /v1/chat/completions，是为了让「Raccoon 是
  *     独立账号池、不进 Trae 转发池」这件事在路由层就成立，不必在分派里加判断。
  *
- * ## 对话面边界（2026-10 实测，见 docs/raccoon-integration.md）
+ * ## 对话面边界（2026-10 实测，见 docs/02-technical/channels/raccoon-integration.md）
  *
  *   - `POST /api/web/llm/v2/chat/completions` 是**标准 OpenAI 兼容 + 标准 SSE**
  *     （`chat.completion.chunk` + `data: [DONE]`），故这里**逐字透传**，
@@ -18,7 +18,7 @@
  *     在正文里臆造 XML 工具调用）——这里不裁剪任何字段。
  *   - **不做图片缩放**：参考项目有一套按「请求体字节」目标的缩放链路
  *     （上游对请求体总量卡 10MB）。本实现原图直发，超限时上游回 413，
- *     错误如实透传；现状记入 docs/known-limitations.md。
+ *     错误如实透传；现状记入 docs/01-architecture/known-limitations.md。
  *   - 上游没有任何「身份块」准入要求（那是 ZCode 的 3012 判据），
  *     故这里不需要构造 system 身份块，也不改调用方的 system。
  */
@@ -222,7 +222,7 @@ router.post('/accounts/:id/keepalive', admin, async (req, res) => {
  *
  * 2026-10-18 起 `startLoginSession` 是**异步**的：需要先调上游
  * `POST /api/iam/v1/auth/mp/qrcode` 拿服务端签发的码（官方已不接受自造码，
- * 详见 docs/raccoon-qr-login-repair-2026-10-18.md）。
+ * 详见 docs/05-incidents/raccoon-qr-login-repair-2026-10-18.md）。
  */
 router.post('/login/session', admin, async (_req, res) => {
   try {

@@ -13,7 +13,7 @@
  *   8. chat：国际版对话面的可调用模型清单 / realm 拒绝 / usage 窥探
  *   9. model-access：Qoder 模型的密钥平台边界
  *
- * 真实上游与真实客户端的验证在 scripts/test-qoder-integration.js。
+ * 真实上游与真实客户端的验证在 scripts/verify/test-qoder-integration.js。
  */
 const assert = require('node:assert');
 const crypto = require('node:crypto');

@@ -19,7 +19,7 @@
  * 2026-10-21 渠道校验事故（HTTP 400 code=11128「Illegal API invocation from an
  * unapproved channel」）后，chat 面不再用 `CLI/… CodeBuddy/…` + `X-Client-Platform: web`
  * 这套「插件」身份，改为桌面端身份 + 会话/追踪头。取证与逐项验证见
- * docs/workbuddy-channel-detection-2026-10-21.md 与 scripts/probes/probe-wb-*.js。
+ * docs/05-incidents/workbuddy-channel-detection-2026-10-21.md 与 scripts/probes/probe-wb-*.js。
  *
  * SSRF 防御：所有上游 URL 由「区域枚举（cn|global）→ 常量映射」生成，
  * 用户输入最多选择区域，永不直接参与 URL 拼接。
@@ -161,7 +161,7 @@ function authHeaders(info, extra) {
 /**
  * chat 面的认证头（桌面端身份）—— 这是 11128 的核心修复点。
  *
- * 与 authHeaders 的差异（逐项都有取证，见 docs/workbuddy-channel-detection-2026-10-21.md）：
+ * 与 authHeaders 的差异（逐项都有取证，见 docs/05-incidents/workbuddy-channel-detection-2026-10-21.md）：
  *   1. UA 以 `WorkBuddy/<appVersion>` 开头（原来只有 CLI/CodeBuddy，属插件身份）；
  *   2. 带 X-IDE-Type/Name/Version（桌面端写死 WorkBuddy + 桌面版本）；
  *   3. 带 X-Private-Data: true（关闭隐私数据通道，桌面端默认值）；

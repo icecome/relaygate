@@ -5,7 +5,7 @@
  * `/accounts/:id/fingerprint/rotate` 一直只有 API，没有任何界面入口——
  * 参考项目在这一点上是「渠道页面一键领取」，而本项目的用户只能去翻文档打 curl。
  *
- * 三条必须遵守的口径（违反会静默出错，见 docs/zcode-integration.md）：
+ * 三条必须遵守的口径（违反会静默出错，见 docs/02-technical/channels/zcode-integration.md）：
  *   1. **额度单位是 token**（单包量级 1e8），与积分（credit，量级 1e3）是两套计量，
  *      这里只做展示，绝不并入任何积分汇总；
  *   2. 领取要现解阿里云无感验证码（单次 2–8 秒），故这些请求用 180 秒超时

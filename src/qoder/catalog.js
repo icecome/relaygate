@@ -18,7 +18,7 @@
  *   2. `mmodel` 同名不同值：国际版 MiniMax-M3，国内版 MiniMax-M2.7。
  *      目录必须按 realm 分开存，不能合并成一张全局表。
  *
- * COSY 实现要点（错一个就 101，详见 docs/qoder-integration-analysis-v2.md 附录 A.4）：
+ * COSY 实现要点（错一个就 101，详见 docs/02-technical/channels/qoder-integration-analysis-v2.md 附录 A.4）：
  *   - cosyVersion = "1.1.64"（官方客户端内置常量，不是桌面版版本号）
  *   - ideVersion = ""，version = "v1"
  *   - identity 9 键：name/aid/uid/yx_uid/organization_id/organization_name/

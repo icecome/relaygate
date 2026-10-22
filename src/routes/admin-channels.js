@@ -32,7 +32,7 @@ const admin = (req, res, next) => authenticateAdmin(req, res, next);
 /** 各平台「粘贴导入」时用户手上究竟该有什么东西（文案随平台不同）。 */
 const PASTE_HINT = {
   [variant.TRAE]: '粘贴 Trae 客户端存储中的凭据 JSON（含 refreshToken）',
-  [variant.WORKBUDDY]: '粘贴 workbuddy-desktop.info 的**明文**内容（需先按 docs/workbuddy-at-rest-crypto.md 解密 envelope）；跨机导入后需补验登录',
+  [variant.WORKBUDDY]: '粘贴 workbuddy-desktop.info 的**明文**内容（需先按 docs/02-technical/workbuddy-at-rest-crypto.md 解密 envelope）；跨机导入后需补验登录',
   // Qoder 的粘贴是真的可移植凭据：上游只认纯 Bearer 的 dt- token。
   // 这与 ZCode 形成对照——ZCode 的 JWT 由「平台+家目录+用户名」派生、
   // 上游不发放可移植凭据，所以它没有这条入口（见 variant.js 的 onboarding）。
@@ -97,7 +97,7 @@ function localProbe(platformId) {
       detail: encrypted
         ? '客户端已登录但凭据已加密（2026-09-24 起客户端把 token 写成 $wbEncrypted 对象，'
           + '密钥由客户端进程持有、离线无法解密）。请改用「粘贴凭据导入」，'
-          + '并先按 docs/workbuddy-at-rest-crypto.md 解出明文 JWT。'
+          + '并先按 docs/02-technical/workbuddy-at-rest-crypto.md 解出明文 JWT。'
         : '未找到本机登录态，需先安装并登录 CodeBuddy / WorkBuddy 桌面端',
     };
   }

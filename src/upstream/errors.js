@@ -80,7 +80,8 @@ function classifyError(err) {
   // 上下文超限先于其它分类：窗口问题与账号/模型健康度无关，
   // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
   if (isContextLengthError(err)) return 'context_length';
-  // 套餐额度耗尽（账号级额度问题）：应换号；见 TRADEWORK-ASSISTANT-COMPARISON §1.4
+  // 套餐额度耗尽（账号级额度问题）：应换号；额度与扣费口径对比见
+  // docs/06-deliverables/comparisons/workbuddy-comparison-report.md
   if (Number(err.upstreamCode) === CODE_PLAN_LIMIT || /PlanLimit|plan.?limit/i.test(msg)) return 'quota';
   if (err.status === 402 || /quota|积分已耗尽|余额不足|credits.?exhaust/i.test(msg)) return 'quota';
   // 模型级限流须先于泛化 429 判定：模型问题非账号问题，换号/冷却整号无意义

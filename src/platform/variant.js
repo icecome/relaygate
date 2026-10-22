@@ -125,7 +125,7 @@ const VARIANTS = {
     // {$wbEncrypted:1, envelope} 包裹（AES-256-GCM，密钥由客户端原生模块在进程内持有，
     // 离线拿不到），readAuthFile() 对这类文件一律返回 null。入口保留只为让探测
     // 路由（admin-channels.localProbe）能给出明确原因，而非笼统的「未找到登录态」。
-    // 真正可用的接入路径是 'paste'（需先按 docs/workbuddy-at-rest-crypto.md
+    // 真正可用的接入路径是 'paste'（需先按 docs/02-technical/workbuddy-at-rest-crypto.md
     // 第二节解密 envelope 得到明文 JWT）。
     onboarding: ['local', 'paste'],
     capability: {
@@ -164,7 +164,7 @@ const VARIANTS = {
     // **WorkBuddy 桌面端**：UA 必须以 `WorkBuddy/<桌面版本>` 开头，并带
     // X-IDE-* / X-Private-Data / x-codebuddy-request。取值来源是
     // resources/app.asar 里 main/server.js 的 buildVlmGatewayHeaders 与
-    // applyGatewayHeaders（见 docs/workbuddy-channel-detection-2026-10-21.md）。
+    // applyGatewayHeaders（见 docs/05-incidents/workbuddy-channel-detection-2026-10-21.md）。
     identity: {
       userAgent: 'WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0',
       productCode: 'workbuddy',
@@ -416,7 +416,7 @@ const VARIANTS = {
     omitMachineHeaders: true,
   },
 
-  // Raccoon（商汤小浣熊 / Raccoon Work）。移植来源与协议细节见 docs/raccoon-integration.md。
+  // Raccoon（商汤小浣熊 / Raccoon Work）。移植来源与协议细节见 docs/02-technical/channels/raccoon-integration.md。
   //
   // 接入范围：**扫码登录 + 积分 + 模型目录 + 对话转发**。
   // 本机没有官方桌面客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），

@@ -34,7 +34,7 @@ const ANSWER_RESERVE = 2048;
 /**
  * OpenAI 风格 `reasoning_effort` → 输出总预算。
  *
- * 数值取本项目的实测档位（`docs/model-parameters-report-2026-10-06.md`：
+ * 数值取本项目的实测档位（`docs/06-deliverables/analysis/model-parameters-report-2026-10-06.md`：
  * Trae dev 档 max_tokens 32000、max 档 64000），而不是照抄参照项目的 2048/8192
  * （那是它免费车道的调参）。
  *

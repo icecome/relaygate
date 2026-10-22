@@ -25,7 +25,7 @@
  * 参考项目把图片按字节目标缩放后再发（其网关按**请求体字节**卡，10MB 上限，
  * 两张 2560×1600 截图即 413）。本实现**不做图片缩放**：那需要一套独立的图像
  * 处理与预算逻辑，而 RelayGate 的客户端是否发图、发多大由调用方决定。
- * 现状记入 docs/known-limitations.md；超限时上游回 413，错误会如实透传。
+ * 现状记入 docs/01-architecture/known-limitations.md；超限时上游回 413，错误会如实透传。
  */
 const client = require('./client');
 const product = require('./product');

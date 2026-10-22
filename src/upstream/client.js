@@ -172,7 +172,7 @@ function buildBody(messages, model, stream, options, authInfo) {
     const wantMax = /@max$/i.test(String(cfgName));
     const baseCfgName = wantMax ? cfgName.replace(/@max$/i, '') : cfgName;
     body.model = baseCfgName;
-    // 请求体增强：与官方客户端指纹统一（文档见 docs/TRADEWORK-ASSISTANT-COMPARISON.md §2.2）。
+    // 请求体增强：与官方客户端指纹统一（对比分析见 docs/06-deliverables/comparisons/workbuddy-comparison-report.md §1.3 风控与指纹）。
     // 保留 model 字段（chat_v3 通道依赖），额外补充 config_name/model_name 及会话/设备字段。
     if (process.env.TRAE_BODY_ENRICH !== 'off') {
       body.config_name = baseCfgName;

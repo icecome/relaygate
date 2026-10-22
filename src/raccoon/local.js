@@ -4,7 +4,7 @@
  *
  * ## 为什么这条链路值得做（2026-10-15 解包实证）
  *
- * 本网关此前的 Raccoon 登录只有「面板承载扫码」一条路（见 docs/raccoon-integration.md
+ * 本网关此前的 Raccoon 登录只有「面板承载扫码」一条路（见 docs/02-technical/channels/raccoon-integration.md
  * 开头「本机没有官方桌面客户端可读凭据」的论断）。那个论断在客户端装上之后**被推翻**：
  * 桌面端把凭据**明文**写在磁盘上，可直接读取，与 ZCode（AES-256-GCM）/
  * Qoder（Chromium os_crypt + DPAPI）都要解密不同 —— Raccoon 零解密成本。

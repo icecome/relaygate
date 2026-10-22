@@ -4,7 +4,7 @@
  *
  * 本目录是一次性取证/排障探针，**不属于产品运行路径**，也不会被 npm scripts
  * 或服务启动引用。它们的价值是「可复跑的证据」——结论见
- * docs/workbuddy-channel-detection-2026-10-21.md。
+ * ../../docs/05-incidents/workbuddy-channel-detection-2026-10-21.md。
  *
  * ⚠️ 两类探针的副作用不同，跑之前先看这里：
  *
