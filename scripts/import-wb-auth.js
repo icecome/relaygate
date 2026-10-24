@@ -122,6 +122,10 @@ async function chatProbe(p) {
       errorCount: 0,
       coolUntil: 0,
       lastRefreshAt: new Date(now).toISOString(),
+      // 网关会因连续 401 自动禁用账号（enabled=false）。换到有效新 token 后
+      // 必须同步重新启用，否则写回了 token 账号仍不参与轮换——实测踩过：
+      // 5 个号 token 全量恢复后仍只有 3 个在跑。
+      enabled: true,
     };
     const upd = store.update(hit.id, patch);
     if (upd) { written += 1; console.log(`    → 已写回账号 ${hit.id}（${hit.label}），余额=${b.balance}`); }

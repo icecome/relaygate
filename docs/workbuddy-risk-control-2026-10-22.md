@@ -56,11 +56,13 @@
    - 漂移时退出码 1（供 cron/CI 报警）；`--update` 自动改 variant.js（只动 `[WORKBUDDY]` 块）。
    - 注意：UA 模板 `identity.userAgent` 内嵌版本号需手动同步核对（或 `WB_UA` 临时覆盖）。
 4. 测试：unit 套件新增 3 例（11140 分类、identity-scrub 行为矩阵、wb-install 路径探测），303 全绿；全套件 exit 0；biome 相对 HEAD 零新增诊断。
-5. **凭据导入（2026-10-24 新增）**：`scripts/import-wb-auth.js`
-   - 新版客户端把 token 加密成 `$wbEncrypted` 信封（AES-GCM，keyblob 在 `~/.workbuddy/keyblob`，包裹它的 protector key 由 Electron 主进程持有）——普通 Node 读不了。实证：直接用官方 CLI 跑会报 `Authentication required`。
-   - 官方开关：`WORKBUDDY_AT_REST_ENCRYPTION=off`（取值 off/fields/files，代码证据：`ProtectedWholeFileCodec#encode` 在 `mode==='disabled'` 时直接写明文）。设为 off 并重启客户端后，`workbuddy-desktop.info` 以明文重写。
-   - 流程：设开关 → 退出并重启客户端 → 逐账号登录（每切一次号文件重写一次）→ `node scripts/import-wb-auth.js` 检测（billing 校验 + 余额）→ `--apply` 写回池（userId 优先、手机号 label 兜底）；`--chat` 额外打一次 chat 面。
-   - 安全提示：明文模式期间 token 明文落盘，导入完成后建议把开关恢复为默认并重启客户端。
+5. **凭据恢复链路（2026-10-24/25 落地）**
+   - 客户端把 token/nickname/phoneNumber 加密为 `{$wbEncrypted:1, envelope}`（AES-256-GCM）。信封 keyId = `sha256(密钥)[:16]`，密钥为 32 字节 at-rest 保护密钥；AAD 由 `buildAuthenticatedContextAad` 按 `WB-AAD\0 | ver | framingTag | scheme | suite | keyId | framingId | seq | final` 构造（framing=field → `WBEV1`）。
+   - **实测结论：`WORKBUDDY_AT_REST_ENCRYPTION=off` 对写文件的进程无效**（env 被 `buildCliProcessEnv` 前缀白名单过滤；主进程不从它取策略）。不要再走这条路。
+   - 密钥获取：`scripts/wb-mem-scan.py`（Python + ctypes）扫描运行中客户端的可读内存，按 `sha256(候选32B)[:16]==信封keyId` 验证，命中即得密钥（实测 569MB 内几分钟内命中）。前提：客户端已登录并运行。
+   - 解密：`WB_ATREST_KEY=<base64> node scripts/wb-decrypt-auth.js` → 输出明文 `.info` 到 `logs/_wb-plain`（同 uid 取最新登录的备份）。
+   - 导入：`WB_AUTH_DIR=logs/_wb-plain node scripts/import-wb-auth.js --apply`（billing 校验 + 余额；写回 token/refreshToken/有效期，清零错误计数并**重新启用**被自动禁用的账号）。
+   - 安全：密钥与明文 token 仅存本机（`.env` 的 `WB_ATREST_KEY` 与 `logs/` 均在 gitignore）；换机器需重新扫描。
 
 ## 5. 运维清单
 
