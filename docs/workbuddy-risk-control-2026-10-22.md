@@ -48,6 +48,7 @@
 2. **内容层身份声明中和（opt-in）**（`src/transform/identity-scrub.js`，接入 `src/workbuddy/chat.js#normalizeBody`）
    - `WB_IDENTITY_SCRUB=true` 启用；默认**关闭**（默认改模型所见内容不可接受）。
    - 只动 system 消息、只动命中身份声明指纹的句子，改写为等义的「coding assistant」；官方客户端身份（WorkBuddy/CodeBuddy/Hermes/OpenCode/Pi）整条跳过；user 消息一律不动。
+   - **只认自述句式**（`You are X` / `I am X` / `你是 X`）：2026-10-24 修正——裸 token 匹配会把环境描述误判成身份声明（实测对 ARMOR 提示词误伤 2 句），现在句中提及不再命中；对真实提示词复验零改写。E2E 验收：`You are Claude Code…` 经 scrub 后上游 200 放行。
    - 局限：只处理已知指纹句式；上游可随时换检测词——这是折衷而非完备解。
 3. **指纹版本跟进**（`scripts/check-wb-fingerprint.js`）
    - 安装路径自动探测（`scripts/lib/wb-install.js`）：`WB_ASAR` 环境变量 → 注册表卸载条目的 `DisplayIcon`/`UninstallString`（自定义安装位置也能定位）→ 常见安装路径（`%LOCALAPPDATA%\Programs`、`%ProgramFiles%`）→ 开发机历史路径兜底；无硬编码开发机路径。

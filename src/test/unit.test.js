@@ -4901,6 +4901,26 @@ t('identity-scrub：中和 system 里的 harness 身份声明，不碰其余内�
     { role: 'user', content: 'I am running in Codex CLI, help me' },
   ]);
   assert.strictEqual(e.changed, false, 'user 消息一律不动');
+  // 自述形态的 DeepSeek Harness 必须命中
+  const f = scrub.scrubMessages([
+    { role: 'system', content: 'You are the DeepSeek Harness, an agent that runs tools.' },
+  ]);
+  assert.strictEqual(f.changed, true, '自述形态必须改写');
+  assert.ok(!/deepseek/i.test(f.messages[0].content));
+  // 环境描述不是身份声明：句中提及不得触发（2026-10-24 误伤修正的回归锚）
+  const g = scrub.scrubMessages([
+    { role: 'system', content: 'The runtime context names the DeepSeek Harness implementation checkout.' },
+  ]);
+  assert.strictEqual(g.changed, false, '环境描述句不得被当成身份声明');
+  const h = scrub.scrubMessages([
+    { role: 'system', content: 'You are interacting with the user through the DeepSeek Harness Web GUI whose URL the runtime context names.' },
+  ]);
+  assert.strictEqual(h.changed, false, '含 You are 但非身份自述（web GUI 描述）不得改写');
+  // 中文自述
+  const i = scrub.scrubMessages([
+    { role: 'system', content: '你是 Claude Code，负责编写代码。' },
+  ]);
+  assert.strictEqual(i.changed, true, '中文自述必须命中');
   // 未启用时 normalizeBody 零行为差异
   delete process.env.WB_IDENTITY_SCRUB;
   const { normalizeBody } = require('../workbuddy/chat');

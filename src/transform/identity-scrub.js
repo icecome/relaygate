@@ -27,29 +27,32 @@ const SENTENCE_SPLIT = /(?<=[。！？；;.!?\n])/;
  * 后果是这一次请求可能被拦，滥改的后果是静默污染所有对话内容。
  */
 const IDENTITY_PATTERNS = [
-  // Codex：OpenAI Codex CLI / Codex agent…
-  /\b(?:i am|this is|i'm)\s+(?:running (?:in|within|inside)\s+)?(?:openai\s+)?codex\b/i,
-  /\bcodex\s+(?:cli|agent|code|powered|models?|engine)\b/i,
-  /(?:你是|你是)?(?:openai\s+)?codex\s*(?:命令行|代码助手|智能体|代理|模型)/i,
-  // 系统提示标准开头（Codex 官方 system prompt 的第一句就是「You are Codex…」）：
-  /\byou(?:'re| are)\s+(?:openai\s+)?codex\b/i,
-  // Claude Code：Anthropic Claude Code / claude-code…
-  /\b(?:i am|this is|i'm)\s+(?:running (?:in|within|inside)\s+)?claude\s*code\b/i,
-  /\bclaude\s*code\s+(?:cli|agent|powered|models?|engine|hook)\b/i,
-  /\banthropic'?s? claude/i,
-  /(?:你是)?claude\s*code\s*(?:命令行|代码助手|智能体|代理|模型)/i,
-  // 「You are Claude Code, Anthropic's official CLI for Claude」标准开头：
-  /\byou(?:'re| are)\s+claude\s*code\b/i,
+  // 只认「自述身份」句式（You are X / I am X / 你是 X）。
+  //
+  // 2026-10-24 修正：原规则用裸 token 匹配（如 /\bdeepseek\s+harness\b/i），
+  // 会把**环境描述**误判成身份声明——实测对 ARMOR 提示词命中了两句：
+  //   "The runtime context names the DeepSeek Harness implementation checkout."
+  //   "You are interacting with the user through the DeepSeek Harness Web GUI…"
+  // 这两句是运行时说明，不是「我是谁」，改写它们没有收益且污染 prompt。
+  // 现在所有模式都锚定自述句式，句中提及不再命中。
+  //
+  // Codex：官方 system prompt 第一句「You are Codex…」
+  /\byou(?:'re| are)\s+(?:the\s+)?(?:openai\s+)?codex\b/i,
+  /\b(?:i am|i'm)\s+(?:the\s+)?(?:openai\s+)?codex\b/i,
+  // Claude Code：「You are Claude Code, Anthropic's official CLI for Claude.」
+  /\byou(?:'re| are)\s+(?:the\s+)?claude\s*code\b/i,
+  /\b(?:i am|i'm)\s+(?:the\s+)?claude\s*code\b/i,
   // Gemini CLI / Gemini Agent
-  /\bgemini\s+(?:cli|agent|code)\b/i,
-  /\byou(?:'re| are)\s+gemini\s+(?:cli|agent|code)\b/i,
-  // 通用 harness 自述：DeepSeek Harness / DSH
-  /\bdeepseek\s+harness\b/i,
-  /\bdsh\b(?=\s+(?:harness|agent|gateway|proxy))/i,
-  // 泛化自述：「作为一个 AI 编码代理/命令行工具运行」——只匹配自述句式，
-  // 不匹配普通提及（如「用 claude code 打开这个项目」是用户指令，不能动）。
-  /\b(?:i am|this is|i'm)\s+(?:an?\s+)?(?:ai[- ](?:coding\s+)?(?:agent|assistant)|agentic\s+(?:coding\s+)?(?:tool|cli))\b/i,
-  /\byou(?:'re| are)\s+(?:an?\s+)?(?:ai[- ](?:coding\s+)?(?:agent|assistant)|agentic\s+(?:coding\s+)?(?:tool|cli))\b/i,
+  /\byou(?:'re| are)\s+(?:the\s+)?gemini\s+(?:cli|agent|code)\b/i,
+  /\b(?:i am|i'm)\s+(?:the\s+)?gemini\s+(?:cli|agent|code)\b/i,
+  // DeepSeek Harness / DSH（自述形态）
+  /\byou(?:'re| are)\s+(?:the\s+)?deepseek\s+harness\b/i,
+  /\b(?:i am|i'm)\s+(?:the\s+)?deepseek\s+harness\b/i,
+  // 中文自述：你是 Codex / 你是 Claude Code / 你是 Gemini CLI / 你是 DeepSeek Harness
+  /[你您]是\s*(?:openai\s+)?codex\b/i,
+  /[你您]是\s*claude\s*code\b/i,
+  /[你您]是\s*gemini\s*cli\b/i,
+  /[你您]是\s*(?:the\s+)?deepseek\s+harness\b/i,
 ];
 
 /**
@@ -72,7 +75,12 @@ const REWRITE_MAP = [
     keepCase: true,
   },
   {
-    re: /\byou(?:'re| are)\s+gemini\s+(?:cli|agent|code)\b/gi,
+    re: /\byou(?:'re| are)\s+(?:the\s+)?gemini\s+(?:cli|agent|code)\b/gi,
+    to: 'You are a coding assistant',
+    keepCase: true,
+  },
+  {
+    re: /\byou(?:'re| are)\s+(?:the\s+)?deepseek\s+harness\b/gi,
     to: 'You are a coding assistant',
     keepCase: true,
   },
