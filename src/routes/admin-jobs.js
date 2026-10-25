@@ -196,8 +196,10 @@ router.get('/rotate/status', admin, async (req, res) => {
 router.post('/rotate/run', admin, async (req, res) => {
   try {
     const rotate = require('../jobs/rotate-accounts');
-    // 无备份时先种入账号库备份，再执行轮换（一键免手动登录）
-    const seed = rotate.seedAll();
+    // 无备份时先种入账号库备份，再执行轮换（一键免手动登录）。
+    // force：库内 token 可能在账号恢复后被 import/refresh 更新过，旧种子会让
+    // 轮换切过去后是未登录态——每次手动轮换都用库内当前 token 重播种子。
+    const seed = rotate.seedAll({ force: true });
     // manual:true —— 用户点「立即轮换一遍」不受自动调度开关限制
     const r = await scheduler.runRotateAccounts({ manual: true });
     res.json({ object: 'rotate_run', ...r, seeded: seed });
@@ -206,11 +208,12 @@ router.post('/rotate/run', admin, async (req, res) => {
   }
 });
 
-/** 从账号库生成 auth 备份种子（免手动登录客户端）。 */
+/** 从账号库生成 auth 备份种子（免手动登录客户端）。body.force=true 重播全部种子。 */
 router.post('/rotate/seed', admin, (req, res) => {
   try {
     const rotate = require('../jobs/rotate-accounts');
-    const seed = rotate.seedAll();
+    const force = !!(req.body && req.body.force);
+    const seed = rotate.seedAll({ force });
     res.json({ object: 'rotate_seed', ...seed });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
@@ -222,9 +225,12 @@ router.post('/rotate/switch', admin, async (req, res) => {
     const rotate = require('../jobs/rotate-accounts');
     const uid = String((req.body && req.body.uid) || '').trim();
     if (!uid) return res.status(400).json({ error: { message: 'uid required', type: 'invalid_request_error' } });
+    // 切换前强制重播该路径上的种子：switchAccount 走 discoverAccounts 的备份清单，
+    // 旧种子里的 token 若已被上游吊销，切过去就是未登录态（实测踩过）。
+    const seed = rotate.seedAll({ force: true });
     const r = await rotate.switchAccount(uid);
     if (!r.ok && r.msg && /未找到/i.test(r.msg)) return res.status(404).json({ error: { message: r.msg, type: 'not_found' } });
-    res.json({ object: 'rotate_switch', ok: r.ok, uid: r.uid || uid, label: r.label || uid, msg: r.msg });
+    res.json({ object: 'rotate_switch', ok: r.ok, uid: r.uid || uid, label: r.label || uid, msg: r.msg, seeded: seed.ok.length });
   } catch (e) {
     res.status(500).json({ error: { message: e.message, type: 'internal_error' } });
   }
