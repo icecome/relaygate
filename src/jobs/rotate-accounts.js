@@ -280,8 +280,19 @@ async function startClient() {
     return { ok: false, reason: 'service_session' };
   }
   if (ownSession === 0) {
-    console.error('[rotate] 服务会话无法拉起可见客户端（schtasks /IT 未生效），拒绝 execFile 隐形兜底');
-    return { ok: false, reason: 'service_session' };
+    // 服务会话（Session 0）无法直接 execFile 拉起用户会话可见窗口；但
+    // explorer.exe 本身活在用户会话，让它代为启动即可落在正确会话——
+    // 实测这是会话 0 下唯一稳定可用的拉起方式（schtasks /IT 常静默不跑）。
+    try {
+      const child = execFile('explorer.exe', [exe], { detached: true, stdio: 'ignore' });
+      child.unref();
+    } catch (e) {
+      console.error(`[rotate] explorer start failed: ${e.message}`);
+      return { ok: false, reason: 'start_failed' };
+    }
+    const w3 = await waitForClientStart(30000, count0);
+    if (!w3.started) return { ok: false, reason: 'no_process' };
+    return { ok: true, via: 'explorer', session: w3.session };
   }
   try {
     const child = execFile(exe, [], { detached: true, stdio: 'ignore' });
@@ -311,11 +322,18 @@ function ensureSeedBackups() {
   return { needed: true, ...seedAll() };
 }
 
-/** 切换 auth 主文件（覆盖式）。返回 {ok, msg}。 */
+/** 切换 auth 主文件（覆盖式）。返回 {ok, msg}。
+ *
+ *  同时清除 `workbuddy-desktop.info.logged-out` 标记：客户端启动时若看到该
+ *  标记会清空登录态（observation.json 无 identity），此时 auth 文件里即便有
+ *  有效 token 也不会被采用——实测踩过，表现为「切了号但客户端仍是未登录」。
+ */
 function replaceAuthFile(src) {
   if (!fs.existsSync(src)) return { ok: false, msg: '备份不存在: ' + src };
   try {
     fs.copyFileSync(src, AUTH_FILE);
+    const logoutMarker = path.join(AUTH_DIR, 'workbuddy-desktop.info.logged-out');
+    try { if (fs.existsSync(logoutMarker)) fs.unlinkSync(logoutMarker); } catch { /* 忽略 */ }
     return { ok: true };
   } catch (e) {
     return { ok: false, msg: '切换失败: ' + e.message };
@@ -500,7 +518,39 @@ async function switchAccountInner(uid) {
   if (!s.ok) {
     return { ok: false, msg: r.msg + `，但客户端启动失败（${s.reason || 'unknown'}）`, uid: acct.uid, label: acct.label };
   }
+  // 关键：startClient 的 ok 只代表「进程数增加了」，不代表「登录态恢复成目标账号」。
+  // 实测踩过：会话 0 下 schtasks /IT 拉起失败但进程数判断误报成功，切换实际未生效、
+  // 客户端仍是上一个账号。这里以 observation.json 的 identity 为准做终态校验。
+  const verified = await waitForIdentity(acct.uid, 60000);
+  if (!verified) {
+    return {
+      ok: false,
+      msg: `已切换 auth 文件到 ${acct.label || acct.uid.slice(0, 8)}，但客户端登录态未变为该账号（可能被安全软件拦截启动，或该账号 token 已被上游吊销）`,
+      uid: acct.uid,
+      label: acct.label,
+      unverified: true,
+    };
+  }
   return { ok: true, msg: '已切换到 ' + (acct.label || acct.uid.slice(0, 8)) + '（客户端已重启热加载）', uid: acct.uid, label: acct.label };
+}
+
+/**
+ * 轮询客户端 observation.json，确认登录态落到期望 uid。
+ * 客户端冷启动约 15-25s；只认 identity.userId 匹配且 active === true。
+ */
+async function waitForIdentity(uid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const f = fs.readdirSync(AUTH_DIR).find((x) => /^workbuddy-desktop\.info\..*\.observation\.json$/.test(x));
+      if (f) {
+        const j = JSON.parse(fs.readFileSync(path.join(AUTH_DIR, f), 'utf8'));
+        if (j.identity && j.identity.userId === uid && j.active === true) return true;
+      }
+    } catch { /* 文件可能正在写 */ }
+    await sleep(2000);
+  }
+  return false;
 }
 
 /** 查询各账号今日活跃状态（只读，不切换）。 */
@@ -551,7 +601,7 @@ module.exports = {
   switchAccount,
   readState,
   ensureSeedBackups,
-  seedAll: () => require('./rotate-seed').seedAll(),
+  seedAll: (opts) => require('./rotate-seed').seedAll(opts),
   resolveAuthDir,
   isClientRunning,
   probeClientRunning,

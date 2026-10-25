@@ -63,6 +63,16 @@
    - 解密：`WB_ATREST_KEY=<base64> node scripts/wb-decrypt-auth.js` → 输出明文 `.info` 到 `logs/_wb-plain`（同 uid 取最新登录的备份）。
    - 导入：`WB_AUTH_DIR=logs/_wb-plain node scripts/import-wb-auth.js --apply`（billing 校验 + 余额；写回 token/refreshToken/有效期，清零错误计数并**重新启用**被自动禁用的账号）。
    - 安全：密钥与明文 token 仅存本机（`.env` 的 `WB_ATREST_KEY` 与 `logs/` 均在 gitignore）；换机器需重新扫描。
+6. **账号轮换（2026-10-25 修复，实测通过）**
+   - 原理（原有实现）：`rotate-seed` 用账号库 token 生成 `.seed.` 备份 → `rotate-accounts.switchTo/switchAccount` 覆盖 `workbuddy-desktop.info` 并重启客户端热加载。
+   - 实测发现 4 个缺陷并修复：
+     1. **`.logged-out` 标记未清除**：客户端见标记即清空登录态，导致「切了号仍是未登录」。现在 `replaceAuthFile` 一并删除该标记。
+     2. **种子骨架自噬**：`pickSkeleton` 曾把上一轮 `.seed.` 当骨架，字段越滚越少（丢 uin/sessionState/domain），客户端启动 `hasAccessToken=false`。现在骨架优先取解密明文缓存 `logs/_wb-plain`，客户端备份仅在其字段完整（有 uin）时接受。
+     3. **`seedAll` 无强制刷新**：已有备份就跳过，导致轮换仍用旧（已吊销）token。新增 `seedAll({force:true})`。
+     4. **切换假成功**：`startClient` 只看进程数增加，schtasks 静默不跑也报 ok。现在切换后轮询 `observation.json`，`identity.userId` 与目标一致且 `active=true` 才算成功，否则如实返回失败。
+   - 附加：会话 0 下 `schtasks /IT` 拉起不稳定，`startClient` 增加 explorer.exe 兜底（explorer 活在用户会话）。
+   - 使用前提：先关闭客户端（托盘退出）或接受一次 UAC 提权杀进程；服务会话无法直接停用户会话进程。
+   - 单账号手动切号也可用 `node scripts/wb-switch-account.js --phone <号>`（写完整明文 + 删标记 + explorer 启动 + 自校验）。
 
 ## 5. 运维清单
 
