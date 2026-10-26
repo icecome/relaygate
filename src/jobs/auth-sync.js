@@ -84,7 +84,34 @@ function syncOnce(opts = {}) {
   }
 
   const acct = store.list().find((a) => a.edition === 'workbuddy' && a.userId === uid);
-  if (!acct) return { updated: false, reason: 'not_in_pool', uid };
+  if (!acct) {
+    // 池里没有这个号：客户端登录的是新账号 → 自动建号入池（一条龙，免手工导入）。
+    const expiresIn = Number(raw.auth && raw.auth.expiresIn) || 0;
+    const nickname = decryptValue(raw.account && raw.account.nickname, key);
+    const phone = decryptValue(raw.account && raw.account.phoneNumber, key);
+    const label = (phone && String(phone).trim()) || (nickname && String(nickname).trim()) || uid.slice(0, 8);
+    try {
+      store.add({
+        label,
+        edition: 'workbuddy',
+        token,
+        refreshToken: refresh || null,
+        userId: uid,
+        host: 'https://copilot.tencent.com',
+        userRegion: 'cn',
+        expiredAt: expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
+        source: 'auth-sync',
+        enabled: true,
+        errorCount: 0,
+        coolUntil: 0,
+        lastRefreshAt: new Date().toISOString(),
+      }, 'auth-sync');
+    } catch (e) {
+      return { updated: false, reason: 'add_failed: ' + String(e.message || e).slice(0, 60), uid };
+    }
+    lastFingerprint = fp;
+    return { updated: true, created: true, uid, label, tokenLen: token.length, refreshLen: refresh ? refresh.length : 0 };
+  }
 
   // 与池内现值相同则跳过（避免每次 mtime 抖动都写库）
   const full = store.get(acct.id) || {};
