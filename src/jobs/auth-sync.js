@@ -59,7 +59,7 @@ let lastFingerprint = null;
  * 执行一次同步。返回 {updated, uid?, label?, reason?}。
  * 无变化、无密钥、已登出、文件不可读等情况一律安静返回，不抛错。
  */
-function syncOnce(opts = {}) {
+async function syncOnce(opts = {}) {
   if (!config.wbAuthSyncEnabled) return { updated: false, reason: 'disabled' };
   const dir = authDir();
   const file = path.join(dir, 'workbuddy-desktop.info');
@@ -120,6 +120,21 @@ function syncOnce(opts = {}) {
     return { updated: false, reason: 'same_as_pool', uid, label: acct.label };
   }
 
+  // 写库前先验真：客户端文件里可能混着**插件型 token**（payload 是租户 data.id，
+  // 长度约 1004），它对 chat/billing 全部 401。2026-10-26 实测：这类值被同步进
+  // 池后 8 个号一起失效。用 billing 接口验一次（仅在文件变化时发生，代价可忽略）。
+  try {
+    const wbAuth = require('../workbuddy/auth');
+    const chk = await Promise.resolve(wbAuth.verify({ accessToken: token, uid: acct.userId || uid, region: 'cn' }));
+    if (!chk || !chk.valid) {
+      lastFingerprint = fp;
+      return { updated: false, reason: 'token_not_usable: ' + String(chk && chk.reason || '').slice(0, 40), uid, label: acct.label };
+    }
+  } catch (e) {
+    lastFingerprint = fp;
+    return { updated: false, reason: 'token_check_failed: ' + String(e.message || e).slice(0, 40), uid, label: acct.label };
+  }
+
   const expiresIn = Number(raw.auth && raw.auth.expiresIn) || 0;
   try {
     store.update(acct.id, {
@@ -147,10 +162,13 @@ function start(intervalSec) {
   if (!config.wbAtRestKey) { console.log('[auth-sync] 未配置 WB_ATREST_KEY，跳过（客户端凭据为加密存储时无法同步）'); return false; }
   const sec = Number(intervalSec) > 0 ? Number(intervalSec) : (config.wbAuthSyncIntervalSec || 60);
   const tick = () => {
-    try {
-      const r = syncOnce();
-      if (r && r.updated) console.log(`[auth-sync] 已同步客户端凭据 ${r.label || r.uid || ''}（token=${r.tokenLen}B refresh=${r.refreshLen}B）`);
-    } catch (e) { console.error('[auth-sync] 同步失败:', String(e.message || e).slice(0, 120)); }
+    syncOnce().then((r) => {
+      if (r && r.updated) {
+        console.log(`[auth-sync] 已同步客户端凭据 ${r.label || r.uid || ''}（token=${r.tokenLen}B refresh=${r.refreshLen}B${r.created ? ' 新建' : ''}）`);
+      } else if (r && r.reason && r.reason !== 'unchanged' && r.reason !== 'same_as_pool' && r.reason !== 'logged_out') {
+        console.log(`[auth-sync] 跳过：${r.reason}`);
+      }
+    }).catch((e) => console.error('[auth-sync] 同步失败:', String(e.message || e).slice(0, 120)));
   };
   // 启动后先跑一次（承接用户上次登录留下的新 token）
   setTimeout(tick, 3000).unref?.();
@@ -161,3 +179,4 @@ function start(intervalSec) {
 }
 
 module.exports = { syncOnce, start, decryptValue, authDir };
+
