@@ -21,6 +21,32 @@ const GROWTH_HOST = variant.variantOf(variant.WORKBUDDY).hosts.growth;
 // 留在本文件会形成 rotate-accounts 与 rotate-seed 的循环依赖。
 const SWITCH_WAIT_MS = 60000;
 
+/**
+ * 检查该账号的 refreshToken 是否还能续期（决定轮换是否安全）。
+ *
+ * 为什么必须查：客户端（5.9.x）启动后**无条件强制续期** `scheduleRefreshSession(true)`。
+ * refreshToken 失效时续期 401 → renderer 弹「登录已过期」→ `auth:logout` →
+ * 删除 auth 文件并写 logged-out 标记。表现为「切到某个号，客户端把它登出了」。
+ * refreshToken 是单次使用的（每次续期换发新的），池里存的是导入时的旧值，
+ * 一旦客户端在别处续期过，池里这份就死了——**必须切换前验证**，失效的直接跳过，
+ * 不要拿它去启动客户端。
+ *
+ * 副作用：续期成功本身会轮换 refreshToken。因此成功后必须把新 token 回写账号池，
+ * 否则下一次又会用到已作废的旧值。这里只做探测，真正回写由调用方用返回的新值完成。
+ *
+ * @returns {Promise<{ok:boolean, accessToken?:string, refreshToken?:string, expiresAt?:string, reason?:string}>}
+ */
+async function verifyRefresh(acct) {
+  try {
+    const wbAuth = require('../workbuddy/auth');
+    const r = await wbAuth.refresh(acct.refreshToken);
+    if (!r || !r.accessToken) return { ok: false, reason: '续期返回空 token' };
+    return { ok: true, accessToken: r.accessToken, refreshToken: r.refreshToken, expiresAt: r.expiresAt };
+  } catch (e) {
+    return { ok: false, reason: String(e.message || e).slice(0, 80) };
+  }
+}
+
 /** 客户端可执行文件：env WB_EXE > 进程路径探测 > 常见安装位置。 */
 function resolveWbExe() {
   if (process.env.WB_EXE) return process.env.WB_EXE;
@@ -442,6 +468,37 @@ async function rotateAllInner() {
   await sleep(1000);
 
   for (const acct of accounts) {
+    // 每号切换前验续期：失效的号跳过并如实计失败，避免客户端被强制续期踢下线。
+    const storeMod = require('../credentials/store');
+    const poolAcct = storeMod.list().find((a) => a.edition === 'workbuddy' && a.userId === acct.uid);
+    let refreshed = null;
+    if (poolAcct) {
+      const full = storeMod.get(poolAcct.id) || poolAcct;
+      const chk = full.refreshToken ? await verifyRefresh(full) : { ok: false, reason: '账号无 refreshToken' };
+      if (!chk.ok) {
+        results.push({ label: acct.label, uid: acct.uid, ok: false, msg: `refreshToken 已失效（${chk.reason}），跳过以免客户端被强制登出；请重新登录该账号` });
+        failed++;
+        continue;
+      }
+      refreshed = chk;
+      try {
+        storeMod.update(poolAcct.id, {
+          token: chk.accessToken,
+          refreshToken: chk.refreshToken,
+          expiredAt: chk.expiresAt,
+          lastRefreshAt: new Date().toISOString(),
+          errorCount: 0,
+          coolUntil: 0,
+        });
+      } catch { /* 忽略 */ }
+      // 用续期后的新 token 重播种，保证客户端拿到的不是已作废的旧 refreshToken
+      try {
+        const { seedAccount } = require('./rotate-seed');
+        const fresh = { ...storeMod.get(poolAcct.id), token: chk.accessToken, refreshToken: chk.refreshToken, expiredAt: chk.expiresAt };
+        const seeded = seedAccount(fresh, { force: true });
+        if (seeded && seeded.file) acct.backup = path.basename(seeded.file);
+      } catch { /* 忽略，用原备份 */ }
+    }
     const r = switchTo(acct);
     results.push({ label: acct.label, uid: acct.uid, ...r });
     if (r.ok) ok++; else failed++;
@@ -497,12 +554,53 @@ async function rotateAllInner() {
 async function switchAccountInner(uid) {
   const acct = discoverAccounts().find((a) => a.uid.startsWith(uid) || a.label === uid);
   if (!acct) return { ok: false, msg: '账号未找到: ' + uid };
+
+  // 切换前验续期能力：refreshToken 失效的号，客户端启动强制续期会 401 →
+  // 自动登出并删除 auth 文件（2026-10-26 实测）。宁可这条报错，也不要把客户端登出。
+  const store = require('../credentials/store');
+  const poolAcct = store.list().find((a) => a.edition === 'workbuddy' && a.userId === acct.uid);
+  let refreshed = null;
+  if (poolAcct) {
+    const full = store.get(poolAcct.id) || poolAcct;
+    const chk = full.refreshToken ? await verifyRefresh(full) : { ok: false, reason: '账号无 refreshToken' };
+    if (!chk.ok) {
+      return {
+        ok: false,
+        msg: `${acct.label || acct.uid.slice(0, 8)} 的 refreshToken 已失效（${chk.reason}），切过去客户端会强制续期失败并自动登出。请重新登录该账号后再轮换。`,
+        uid: acct.uid,
+        label: acct.label,
+        refreshDead: true,
+      };
+    }
+    refreshed = chk;
+    // 续期会轮换 refreshToken，立刻回写，避免下次又用已作废的旧值。
+    try {
+      store.update(poolAcct.id, {
+        token: chk.accessToken,
+        refreshToken: chk.refreshToken,
+        expiredAt: chk.expiresAt,
+        lastRefreshAt: new Date().toISOString(),
+        errorCount: 0,
+        coolUntil: 0,
+      });
+    } catch { /* 回写失败不阻断切换 */ }
+  }
+
   const cur = readUid();
   // 备份当前 auth（即使目标与当前相同也先备份当前）
   if (cur && cur !== acct.uid && acct.backup !== 'workbuddy-desktop.info') {
     try {
       fs.copyFileSync(AUTH_FILE, path.join(AUTH_DIR, 'workbuddy-desktop.info.bak-' + cur.slice(0, 8)));
     } catch { /* 备份失败不阻断 */ }
+  }
+  // 种子里的 token 必须是最新续期后的值（旧值客户端续期必失败）
+  if (refreshed && poolAcct) {
+    try {
+      const { seedAccount } = require('./rotate-seed');
+      const fresh = { ...store.get(poolAcct.id), token: refreshed.accessToken, refreshToken: refreshed.refreshToken, expiredAt: refreshed.expiresAt };
+      const seeded = seedAccount(fresh, { force: true });
+      if (seeded && seeded.file) acct.backup = path.basename(seeded.file);
+    } catch { /* 重播种失败则用原备份 */ }
   }
   const stopped = await stopClient();
   if (!stopped) {
@@ -594,6 +692,7 @@ function currentUid() { return readUid(); }
 
 module.exports = {
   rotateAll,
+  verifyRefresh,
   checkStatus,
   discoverAccounts,
   currentUid,
@@ -611,3 +710,4 @@ module.exports = {
   AUTH_DIR,
   AUTH_FILE,
 };
+

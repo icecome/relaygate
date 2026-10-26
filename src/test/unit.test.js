@@ -3150,8 +3150,13 @@ t('rotate-seed 与 rotate-accounts 不再互相 require', () => {
   const seed = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'rotate-seed.js'), 'utf-8');
   const acct = fs.readFileSync(path.join(__dirname, '..', 'jobs', 'rotate-accounts.js'), 'utf-8');
   assert.ok(!/require\('\.\/rotate-accounts'\)/.test(seed), 'rotate-seed 不应 require rotate-accounts');
-  assert.ok(!/require\('\.\/rotate-seed'\)\s*;/.test(acct.replace(/seedAll: \(\) => require\('\.\/rotate-seed'\)\.seedAll\(\)/, '')),
-    'rotate-accounts 不应在加载期 require rotate-seed（惰性调用除外）');
+  // 只禁「加载期」互相 require（模块顶层、行首无缩进）。函数体内的惰性 require 是
+  // 正确做法——按需加载不构成加载期循环。旧断言用 /require\('\.\/rotate-seed'\)\s*;/
+  // 会把 `const { seedAccount } = require('./rotate-seed');` 这类函数内惰性调用误报。
+  const topLevelRequire = acct
+    .split('\n')
+    .filter((line) => /^(?:const|let|var)\s.+=.*require\('\.\/rotate-seed'\)/.test(line) || /^require\('\.\/rotate-seed'\)/.test(line));
+  assert.deepStrictEqual(topLevelRequire, [], 'rotate-accounts 不应在加载期 require rotate-seed（惰性调用除外）');
 });
 
 console.log('jobs.rotate-accounts 轮换失败隔离（m-39）');
