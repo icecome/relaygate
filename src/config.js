@@ -252,6 +252,20 @@ const config = {
    * 关闭（置 false）即恢复「纯成本序选候选」的旧行为。
    */
   poolAccountPriority: process.env.POOL_ACCOUNT_PRIORITY !== 'false',
+  // WorkBuddy 客户端凭据自动同步（默认开）。
+  //
+  // 背景：客户端把 token 加密存成 {$wbEncrypted} 信封，且 refreshToken 单次使用
+  // （每次续期换发新的）。用户重新登录/客户端续期后，池里的副本立即变旧——
+  // 拿旧 refreshToken 去轮换会「续期 401 → 客户端自动登出」。所以要有一个
+  // 后台任务盯着 auth 文件，一变就解密并回写池子，让人工步骤彻底消失。
+  // 密钥是本机 at-rest 保护密钥（base64 32 字节），缺失时该任务自动跳过。
+  wbAuthSyncEnabled: process.env.WB_AUTH_SYNC !== 'false',
+  wbAtRestKey: String(process.env.WB_ATREST_KEY || '').trim(),
+  // 检查间隔（秒）：只做 mtime 比较，开销可忽略。
+  wbAuthSyncIntervalSec: (() => {
+    const n = parseInt(process.env.WB_AUTH_SYNC_INTERVAL_SEC || '60', 10);
+    return Number.isFinite(n) && n >= 10 && n <= 3600 ? n : 60;
+  })(),
   // 临期抢占窗口（天）：只有窗口内的到期包才触发跨池抢占，避免把
   // 「12 个月后到期」与「11 个月后到期」这类无意义差异当成优先级信号。
   poolAccountPriorityWindowDays: (() => {

@@ -679,6 +679,13 @@ function start() {
   // 轮换定时仅看时刻是否排上；执行与否由 runRotateAccounts 内部的
   // rotate-settings.enabled 唯一开关判定（m-32）
   scheduleOnce(eff.rotateHour, eff.rotateMinute, 'rotate', () => runRotateAccounts());
+  // 客户端凭据自动同步：用户在客户端登录/续期后，把新 token 自动写回账号池，
+  // 免去「解密 + 导入」人工步骤（refreshToken 单次使用，不同步就会拿旧值轮换）。
+  try {
+    require('./auth-sync').start(config.wbAuthSyncIntervalSec);
+  } catch (e) {
+    console.warn('[scheduler] auth-sync 启动失败:', String(e.message || e).slice(0, 120));
+  }
   scheduleModelProbe(eff);
   // 成长中心（WorkBuddy 派猫旅行等）：每天 growthHour:growthMinute 墙钟一次（默认 08:00）
   scheduleGrowthPoll(eff);
