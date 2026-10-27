@@ -522,14 +522,25 @@ async function rotateAllInner() {
       // 客户端没起来：无需（也无法）为下一个账号执行「停止客户端」步骤，直接继续
       continue;
     }
-    // 停留阶段以「登录态真的切过去了」为准，而不是固定睡 stayMs：
-    // startClient 的 ok 只代表进程数增加，客户端仍可能是未登录页（例如 auth 文件
-    // 里混了它不认的字段）。这里等 observation identity 落到目标 uid，
-    // 等到即结束停留；超时则如实记失败，避免「轮换成功但活跃没记上」。
+    // 停留阶段 = 「等登录态真正落到目标 uid」+ 「补足剩余停留下限」。
+    //
+    // startClient 的 ok 只代表进程数增加，客户端可能还在登录页，所以要等
+    // observation.json 的 identity 落到目标 uid（最多 stayMs）。但**不能**以
+    // 「登录成功」作为停留结束——stayMs 的语义是「让该账号在客户端待够多久」，
+    // 用于让客户端把启动期的 API 调用发完、把活跃记上。此前直接把 waitForIdentity
+    // 当停留，登录一成功（约 15~25s）就切下一个，配置的 90s 形同虚设
+    // （2026-10-27 实测反馈：每个号登录后立刻切走）。
+    const dwellStart = Date.now();
     const identified = await waitForIdentity(acct.uid, Math.max(stayMs, 30000));
     if (!identified) {
       results.push({ label: acct.label, uid: acct.uid, ok: false, msg: '客户端已启动但登录态未落到该账号（可能被强制登出或 token 不被接受）' });
       failed++;
+    } else {
+      const confirmMs = Date.now() - dwellStart;
+      const remaining = stayMs - confirmMs;
+      if (remaining > 0) await sleep(remaining);
+      console.log(`[rotate] ${acct.label || acct.uid.slice(0, 8)} 状态确认 ${confirmMs}ms，`
+        + `停留合计 ${Date.now() - dwellStart}ms（配置 ${stayMs}ms）`);
     }
     // 下一个账号前再停止客户端（当前进程已在跑，直接覆盖可能被写回）
     const stopped2 = await stopClient();
