@@ -172,6 +172,13 @@ const config = {
   notifyTelegramBotToken: process.env.TELEGRAM_BOT_TOKEN || '',
   notifyTelegramChatId: process.env.TELEGRAM_CHAT_ID || '',
   notifyDedupeMs: parseInt(process.env.NOTIFY_DEDUPE_MS || String(60 * 60 * 1000), 10),
+  // 单次通知的 HTTP 超时（毫秒）。实测：经自建 webhook 转发到钉钉，上游往返
+  // 常达 8s+；原来写死 8000 会把「已发出但慢」判成失败
+  // （delivered:false + aborted due to timeout）。
+  notifyTimeoutMs: (() => {
+    const n = parseInt(process.env.NOTIFY_TIMEOUT_MS || '20000', 10);
+    return Number.isFinite(n) && n >= 3000 && n <= 120000 ? n : 20000;
+  })(),
   // 通知合并窗口：同一事件在窗口内重复触发时，窗口结束补发一条合并摘要（毫秒）
   notifyMergeMs: parseInt(process.env.NOTIFY_MERGE_MS || String(10 * 60 * 1000), 10),
   // 状态根目录：一律解析为绝对路径。

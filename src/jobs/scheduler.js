@@ -397,6 +397,32 @@ async function runRotateAccounts(opts = {}) {
         message: `账号轮换 ${r.failed} 个失败`,
       }, '账号轮换部分失败').catch(() => {});
     }
+    // 轮换跑完后核对当日活跃度：活跃度靠真实使用产生，轮换只负责把客户端
+    // 登上去，所以「轮换完成但仍 0 分」的号通常是当天没人用——值得提醒一次。
+    // 放在轮换之后而不是别处，是因为此刻客户端刚被逐个登过，数据最新。
+    try {
+      const status = await rotate.checkStatus();
+      const inactive = status.filter((s) => !s.isActive && !s.error);
+      if (inactive.length) {
+        // accounts 必须是数组：notify 的 buildText 对 accounts 做 join（传字符串会抛错）
+        const labels = inactive.map((s) => s.label || String(s.uid || '').slice(0, 8));
+        const list = labels.join('、');
+        console.log(`[scheduler] rotate heatmap: ${status.length - inactive.length}/${status.length} 个账号今日活跃，0 分：${list}`);
+        // 每日一次的报告用 dedupe:false：否则同一小时内手动触发过轮换就会把
+        // 真正的报告吞进合并桶，用户当天收不到活跃度提醒。
+        require('../notify').notifyDetail('rotate_inactive', {
+          total: status.length,
+          inactive: inactive.length,
+          accounts: labels,
+          message: `轮换已跑完，今日活跃度仍为 0 的账号（${inactive.length}/${status.length}）：${list}。活跃度需真实使用客户端产生，建议抽空用这些号聊一句。`,
+        }, `轮换后 ${inactive.length} 个账号活跃度为 0`, { dedupe: false }).catch(() => {});
+        appendTaskLog({ task: 'rotate-heatmap', trigger: manual ? 'manual' : 'scheduler', ok: status.length - inactive.length, failed: inactive.length, total: status.length });
+      } else if (status.length) {
+        console.log(`[scheduler] rotate heatmap: ${status.length}/${status.length} 个账号今日活跃`);
+      }
+    } catch (e) {
+      console.warn('[scheduler] rotate heatmap check failed:', String(e.message || e).slice(0, 120));
+    }
     return r;
   } catch (e) {
     state.lastError = `account-rotate: ${e.message}`;

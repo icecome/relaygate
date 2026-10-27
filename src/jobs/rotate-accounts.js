@@ -381,6 +381,11 @@ function switchTo(account) {
   }
   try {
     fs.copyFileSync(src, AUTH_FILE);
+    // 与 replaceAuthFile 同理：客户端见 `.logged-out` 标记会清空登录态，
+    // 此时 auth 文件里即便有有效 token 也不采用。整遍轮换走的是本函数
+    // （不经 replaceAuthFile），此前漏删标记 → 客户端停在未登录页。
+    const logoutMarker = path.join(AUTH_DIR, 'workbuddy-desktop.info.logged-out');
+    try { if (fs.existsSync(logoutMarker)) fs.unlinkSync(logoutMarker); } catch { /* 忽略 */ }
     return { ok: true, msg: '已切换到 ' + (account.label || account.uid.slice(0, 8)) };
   } catch (e) {
     return { ok: false, msg: '切换失败: ' + e.message };
@@ -517,7 +522,15 @@ async function rotateAllInner() {
       // 客户端没起来：无需（也无法）为下一个账号执行「停止客户端」步骤，直接继续
       continue;
     }
-    await sleep(stayMs);
+    // 停留阶段以「登录态真的切过去了」为准，而不是固定睡 stayMs：
+    // startClient 的 ok 只代表进程数增加，客户端仍可能是未登录页（例如 auth 文件
+    // 里混了它不认的字段）。这里等 observation identity 落到目标 uid，
+    // 等到即结束停留；超时则如实记失败，避免「轮换成功但活跃没记上」。
+    const identified = await waitForIdentity(acct.uid, Math.max(stayMs, 30000));
+    if (!identified) {
+      results.push({ label: acct.label, uid: acct.uid, ok: false, msg: '客户端已启动但登录态未落到该账号（可能被强制登出或 token 不被接受）' });
+      failed++;
+    }
     // 下一个账号前再停止客户端（当前进程已在跑，直接覆盖可能被写回）
     const stopped2 = await stopClient();
     if (!stopped2) {
@@ -530,12 +543,22 @@ async function rotateAllInner() {
 
   // 切回起始账号（可配）
   if (rs.switchBack) {
-    const back = accounts.find((a) => a.uid === startUid);
+    // 必须重新 discover：循环里每号都重播过种子（带续期后的新 token），
+    // accounts 数组是轮换开始时的快照，其中的 backup 可能已过期，
+    // 直接拿它切回会把客户端塞回旧 token → 续期 401 → 登出。
+    const back = discoverAccounts().find((a) => a.uid === startUid)
+      || accounts.find((a) => a.uid === startUid);
     if (back) {
-      switchTo(back);
+      const rb = switchTo(back);
+      if (!rb.ok) console.warn('[rotate] switchBack failed:', rb.msg);
       await sleep(1000);
       if (!isClientRunning()) await startClient();
-      await sleep(5000);
+      // 切回同样按登录态收尾，失败只记结果不打断
+      const backOk = await waitForIdentity(back.uid, 45000);
+      if (!backOk) {
+        results.push({ label: back.label, uid: back.uid, ok: false, msg: '切回起始账号后登录态未恢复' });
+        failed += 1;
+      }
     }
   } else if (!isClientRunning()) {
     await startClient();

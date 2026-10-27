@@ -58,6 +58,10 @@ const EVENTS = [
   // 才发。upstreamSkipped（上游当日未发放 daily_grant）是上游状态、网关无法干预，
   // 刻意不发 —— 每天一条只会造成「签到坏了」的误判（2026-10-20 实证踩坑）。
   'raccoon_keepalive_fail',
+  // 账号轮换后活跃度核对：轮换跑完仍 0 分的账号（活跃度靠真实使用产生）
+  'rotate_inactive',
+  // 存量缺口：轮换部分失败的通知一直在发，但事件未登记（面板无法单独控制）
+  'rotate_fail',
 ];
 
 /**

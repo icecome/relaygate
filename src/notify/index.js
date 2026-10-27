@@ -120,7 +120,7 @@ async function postJson(url, body, headers) {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(config.notifyTimeoutMs),
   });
   return resp.ok;
 }
@@ -157,7 +157,7 @@ async function sendCustomWebhook(s, title, text, event, payload) {
     method,
     headers,
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(config.notifyTimeoutMs),
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   return true;
@@ -171,7 +171,7 @@ async function sendServerChan(sendKey, title, text) {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(config.notifyTimeoutMs),
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const j = await resp.json().catch(() => null);
@@ -185,7 +185,7 @@ async function sendPushPlus(token, title, text) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token, title, content: text, template: 'txt' }),
-    signal: AbortSignal.timeout(8000),
+    signal: AbortSignal.timeout(config.notifyTimeoutMs),
   });
   if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
   const j = await resp.json().catch(() => null);
@@ -214,6 +214,12 @@ const EVENT_TITLES = {
   // Raccoon 每日积分保活：只在「我们该做而没做成」时发
   // （upstreamSkipped = 上游当日未发放，属上游状态，刻意不告警）
   raccoon_keepalive_fail: '小浣熊每日积分未延长',
+  // 账号轮换后活跃度核对：轮换跑完仍为 0 分的账号。活跃度靠真实使用产生，
+  // 轮换只负责把客户端登上去，因此 0 分通常意味着该号当天没人用。
+  rotate_inactive: '轮换后活跃度为 0 的账号',
+  // 补齐存量缺口：rotate_fail 一直在 scheduler 里被调用，但从未注册标题，
+  // 面板上只能看到裸事件名。
+  rotate_fail: '账号轮换部分失败',
 };
 
 function humanTitle(event, payload = {}, fallback) {
@@ -280,7 +286,10 @@ async function notifyDetail(event, payload = {}, title, opts = {}) {
     return { delivered: false, enabled: true, results: [], skipped: 'event_disabled' };
   }
   const key = `${event}:${payload.accountId || payload.id || 'global'}`;
-  if (!opts.force && !shouldSend(key)) return { delivered: false, enabled: true, results: [] };
+  // dedupe:false —— 每日一次的汇总类通知（如轮换后活跃度报告）不该被
+  // 「同事件 1 小时内已发过」吞掉：它们本身就是结论，重复发送无噪音风险，
+  // 而被吞掉就等于「今天没有报告」。事件开关（isEventEnabled）仍然生效。
+  if (!opts.force && opts.dedupe !== false && !shouldSend(key)) return { delivered: false, enabled: true, results: [] };
 
   const text = buildText(event, payload, title);
   const s = settings.getEffective();
