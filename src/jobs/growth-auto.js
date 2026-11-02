@@ -5,7 +5,9 @@
  * 对每个启用的 WorkBuddy 账号按顺序执行（各段独立 try，一段失败不影响其余）：
  *   1. 旅行：state 权威三态 → arrived 领奖 / traveling 等待 / idle 派出发 / 已达次数收工
  *   2. 任务：available 接单 → completed 领奖
- *   3. 补登：有卡且有可补日期时用卡（每轮最多 1 张；候选日若上游判定未断登则跳过，不算失败）
+ *   3. 补登：补到「最低未领档位的要求天数」为止；候选日以 heatmap 0 分日为准
+ *      （/streak 的 makeup_dates 会残留已补日期、漏掉真缺口，仅作兜底）；
+ *      每张卡按「账号+目标日期」独立幂等键，同日重跑去重、不同日互不吞掉
  *   4. 连登兑换：非 claimed/locked 的档位尝试兑换（403 未解锁、409 已兑换均为业务常态）
  *   5. 抽奖：有次数才抽（每轮最多 1 次，写路径不可逆）
  *   6. Buddy 盲盒：能量够 cost_per_open 才开
@@ -19,12 +21,15 @@ const { sleep, localDateKey } = require('../lib/util');
 const { notify } = require('../notify');
 const { writeJsonAtomic } = require('../lib/atomic-write');
 const fs = require('fs');
-const path = require('path');
-const config = require('../config');
 const { stateFile, resolveStateFileForRead } = require('../lib/paths');
 
 const GAP_MS = 400;
-const MAKEUP_MAX_PER_RUN = 1;
+// 单账号单轮最多消耗的补登卡数。此前为 1，两个原因叠加导致补不上缺口：
+//   1) 幂等键按「账号+当天」派生，同日第二次用卡被上游去重静默吞掉（现在
+//      种子改为「账号+目标日期」，见下方补登段，同轮多张互不吞掉）；
+//   2) 28 天档位按连登天数判定，孤立断登段起点之前往往连着好几天都缺，
+//      一轮只补 1 张追不上。上限取 8（上游 makeup_cards.max 实测 4，留余量）。
+const MAKEUP_MAX_PER_RUN = 8;
 const RUN_LOG = () => stateFile('growth-last-run.json');
 const readRunLog = () => resolveStateFileForRead('growth-last-run.json', fs.existsSync);
 
@@ -149,29 +154,81 @@ async function runAccount(a, opts = {}) {
     }
   } catch (e) { actions.push({ seg: 'tasks', ok: false, msg: e.message }); }
 
-  // 3) 补登卡（每轮最多 1 张；not_broken = 该日本来就已签，属常态跳过）
+  // 3) 补登卡：补到「最低未领档位的要求天数」为止。
+  //    - 候选日以 heatmap 的 0 分日为准：/streak 的 makeup_dates 会残留已补日期、
+  //      又漏掉真正断登日（2026-10-30 实测，八个账号全被它误导成「无需补登」），
+  //      只在 heatmap 查询失败时作兜底。not_broken 上游不扣卡，假候选代价为零。
+  //    - 从新到旧补（最新 0 分日就是当前连登段起点的前一天，最能延长连登）；
+  //      窗口只看到 target 天前——再早的断登日补上也进不了这 28 个连续格子。
+  //    - 幂等键按「账号+目标日期」派生：同日重跑去重，不同日期互不吞掉
+  //      （此前共用「账号+当天」的 seed，一天用多张卡只有第一张生效）。
   try {
     const s = await g.fetchStreak(info);
-    if (s.ok && s.makeupCards > 0 && s.makeupDates.length) {
-      let done = false;
-      let stale = 0;
-      let errMsg = null;
-      for (const date of s.makeupDates) {
-        if (done) break;
-        const mr = await g.useMakeupCard(info, date, { seed });
-        if (mr.ok) {
-          actions.push({ seg: 'makeup', ok: true, msg: `补登 ${date}（剩 ${mr.cardsLeft ?? '?'} 张）` });
-          done = true;
-        } else if (mr.result === 'not_broken') {
-          stale += 1;
-        } else {
-          errMsg = `补登失败：${mr.reason}`;
-          break;
+    if (s.ok && s.makeupCards > 0) {
+      const TIER_DAYS = { '7d': 7, '14d': 14, '28d': 28 };
+      const rs = await g.fetchRedeemSummary(info);
+      if (!rs.ok) {
+        actions.push({ seg: 'makeup', ok: false, msg: `兑换档位查询失败：${rs.reason}（判不了缺口，本轮不用卡）` });
+      } else {
+        let target = null;
+        for (const t of rs.tiers) {
+          if (!t.status || t.status === 'claimed') continue;
+          const req = TIER_DAYS[t.tier];
+          if (req && s.days != null && s.days < req && (target == null || req < target)) target = req;
         }
-        await sleep(200);
+        if (target == null) {
+          actions.push({ seg: 'makeup', ok: true, skip: true, msg: `连登 ${s.days} 天，无待解锁档位，不耗卡` });
+        } else {
+          const now = new Date();
+          const today = localDateKey();
+          // 今天刻意不补：当天还能靠真实活跃点亮，用卡补今天纯浪费。
+          const windowStart = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - target));
+          let dates = [];
+          const hm = await g.fetchHeatmap(info);
+          if (hm.ok) {
+            dates = hm.cells
+              .filter((c) => c.date && c.date >= windowStart && c.date < today && c.score <= 0)
+              .map((c) => c.date)
+              .sort()
+              .reverse();
+          }
+          if (!dates.length && hm.ok) {
+            actions.push({ seg: 'makeup', ok: true, skip: true, msg: `连登 ${s.days}/${target} 天，但热力墙窗口内无断登日可补` });
+          } else {
+            if (!dates.length) dates = (s.makeupDates || []).slice().sort().reverse();
+            let done = 0;
+            let stale = 0;
+            let lastDays = s.days;
+            let errMsg = null;
+            for (const date of dates) {
+              if (done >= MAKEUP_MAX_PER_RUN) break;
+              const cur = await g.fetchStreak(info);
+              if (!cur.ok) { errMsg = `重读连登失败：${cur.reason}`; break; }
+              if (cur.days != null) lastDays = cur.days;
+              if (cur.makeupCards <= 0 || (cur.days != null && cur.days >= target)) break;
+              const mr = await g.useMakeupCard(info, date, { seed: `${a.id}|makeup|${date}` });
+              if (mr.ok) {
+                done += 1;
+                actions.push({ seg: 'makeup', ok: true, msg: `补登 ${date}（剩 ${mr.cardsLeft ?? '?'} 张）` });
+              } else if (mr.result === 'not_broken') {
+                stale += 1;
+              } else {
+                errMsg = `补登失败：${mr.reason}`;
+                break;
+              }
+              await sleep(200);
+            }
+            if (errMsg) {
+              actions.push({ seg: 'makeup', ok: false, msg: errMsg });
+            } else {
+              if (stale && !done) actions.push({ seg: 'makeup', ok: true, skip: true, msg: `${stale} 个候选日本就已签，无需补登` });
+              if (lastDays != null && lastDays < target) {
+                actions.push({ seg: 'makeup', ok: true, skip: true, msg: `连登 ${lastDays}/${target} 天，候选日或补登卡已用尽` });
+              }
+            }
+          }
+        }
       }
-      if (!done && errMsg) actions.push({ seg: 'makeup', ok: false, msg: errMsg });
-      else if (!done && stale) actions.push({ seg: 'makeup', ok: true, skip: true, msg: `${stale} 个候选日本就已签，无需补登` });
     }
   } catch (e) { actions.push({ seg: 'makeup', ok: false, msg: e.message }); }
 
