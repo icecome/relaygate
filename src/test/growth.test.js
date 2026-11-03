@@ -135,7 +135,7 @@ t('路由可加载并暴露全部端点', () => {
 
 // 新增能力契约：buddy / 任务 / 连登 / 兑换 / 抽奖
 
-const { fetchBuddyQuota, openBuddyBox, fetchTasks, acceptTasks, claimTask, fetchStreak, useMakeupCard, fetchRedeemSummary, redeemTier, fetchLotteryChances, drawLottery } = require('../workbuddy/cat-trip');
+const { fetchBuddyQuota, openBuddyBox, fetchTasks, acceptTasks, claimTask, fetchStreak, fetchHeatmap, useMakeupCard, fetchRedeemSummary, redeemTier, fetchLotteryChances, drawLottery } = require('../workbuddy/cat-trip');
 
 t('buddy/quota 与 open 解析', async () => {
   const orig = global.fetch;
@@ -273,6 +273,167 @@ t('claim 中 403 不再被误判为登录失效', async () => {
   const r = await redeemTier({ token: 'x', uid: 'u', region: 'cn' }, '7d');
   assert.strictEqual(r.result, 'tier_locked');
   assert.strictEqual(r.reason, '天数不足');
+  global.fetch = orig;
+});
+
+// ── 补登自动化（jobs/growth-auto.js 的 makeup 段）──
+// 2026-10-30 实测教训固化为契约：
+//   1) 候选日必须取 heatmap 的 0 分日——/streak 的 makeup_dates 会残留已补日期、
+//      又漏掉真正断登日，八个账号全被它误导成「无需补登」；
+//   2) 每张卡的幂等键按「账号+目标日期」派生——此前共用「账号+当天」的 seed，
+//      同日第二张卡被上游去重静默吞掉；
+//   3) 无待解锁档位时不耗卡。
+
+function makeupMocks(h) {
+  const now = new Date();
+  const dk = (i) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
+    const y = d.getFullYear();
+    return `${y}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const json = (code, msg, data) => ({ status: 200, ok: true, text: async () => JSON.stringify({ code, msg, data }) });
+  const state = { used: 0, makeupBodies: [], cardStart: 1, daysStart: 27, ...h };
+  global.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.endsWith('/buddy/travel/status')) return json(0, 'OK', { state: 'traveling', location: { name: '咖啡馆' } });
+    if (u.endsWith('/tasks')) return json(0, 'OK', { tasks: [] });
+    if (u.endsWith('/heatmap')) {
+      if (state.heatmapFail) return json(500, 'upstream boom', null);
+      return json(0, 'OK', {
+        cells: [
+          { date: dk(1), score: 0 }, { date: dk(2), score: 0 },
+          { date: '2026-01-01', score: 0 }, // 窗口外的老断登日：补了也进不了连登段
+          { date: dk(3), score: 5 },
+        ],
+        today: { date: dk(0), score: 0, is_active: false },
+      });
+    }
+    if (u.endsWith('/streak')) {
+      return json(0, 'OK', {
+        streak: { days: state.daysStart + state.used, month_total_days: state.daysStart + state.used, makeup_dates: state.streakDates || [] },
+        makeup_cards: { balance: Math.max(0, state.cardStart - state.used) },
+        redemption_status: {},
+      });
+    }
+    if (u.endsWith('/redeem/summary')) {
+      return json(0, 'OK', {
+        starter_status: 'claimed', advanced_status: 'claimed',
+        legendary_status: state.legendary || 'locked', remaining_days: state.daysStart + state.used,
+      });
+    }
+    if (u.endsWith('/makeup-cards/use')) {
+      const b = JSON.parse(opts.body);
+      state.makeupBodies.push(b);
+      if ((state.acceptDates || [dk(1)]).includes(b.target_date) && state.used < (state.maxUse || 1)) {
+        state.used += 1;
+        return json(0, 'OK', { makeup_cards: { balance: Math.max(0, state.cardStart - state.used) } });
+      }
+      return json(400, 'date is not broken, no makeup needed', null);
+    }
+    if (u.endsWith('/lottery/chances')) return json(0, 'OK', { balance: 0 });
+    if (u.endsWith('/buddy/quota')) return json(0, 'OK', { balance: 0, affordable: 0 });
+    throw new Error('unmocked url: ' + u);
+  };
+  return state;
+}
+
+async function runMakeupCase(h) {
+  const g = require('../workbuddy/cat-trip');
+  const authMod = require('../auth');
+  const storeMod = require('../credentials/store');
+  const { runAccount } = require('../jobs/growth-auto');
+  const origFetch = global.fetch;
+  const origGet = storeMod.get;
+  const origEnsure = authMod.ensureAuth;
+  storeMod.get = () => ({ id: 'acct_mk', token: 't', refreshToken: 'r', userId: 'u', host: 'https://copilot.tencent.com' });
+  authMod.ensureAuth = async () => ({ token: 't', refreshToken: 'r', userId: 'u', host: 'https://copilot.tencent.com' });
+  try {
+    const state = makeupMocks(h);
+    const r = await runAccount({ id: 'acct_mk', label: 'mk' }, {});
+    return { r, state, g };
+  } finally {
+    global.fetch = origFetch;
+    storeMod.get = origGet;
+    authMod.ensureAuth = origEnsure;
+  }
+}
+
+t('makeup 段：候选日取 heatmap 断登日而非 makeup_dates；卡按目标日期独立幂等键', async () => {
+  const { localDateKey } = require('../lib/util');
+  const now = new Date();
+  const d1 = localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1));
+  const { r, state, g } = await runMakeupCase({
+    // 上游候选里只有 stale（假候选），真缺口（heatmap 的 0 分日）不在里面
+    streakDates: ['2025-12-31'],
+    acceptDates: [d1],
+  });
+  const mk = r.actions.filter((x) => x.seg === 'makeup');
+  assert.ok(mk.some((x) => x.ok && !x.skip && x.msg.includes(d1)), `应补登 heatmap 缺口 ${d1}，实际：${JSON.stringify(mk)}`);
+  assert.strictEqual(state.makeupBodies.length, 1, '达标即停，不多耗卡');
+  assert.strictEqual(state.makeupBodies[0].target_date, d1);
+  assert.strictEqual(
+    state.makeupBodies[0].client_token,
+    g.clientToken('makeup', `acct_mk|makeup|${d1}`),
+    '幂等键必须按「账号+目标日期」派生（同日两张卡互不吞掉）',
+  );
+  assert.notStrictEqual(
+    state.makeupBodies[0].client_token,
+    g.clientToken('makeup', `acct_mk|${localDateKey()}`),
+    '不得再共用「账号+当天」的种子',
+  );
+});
+
+t('makeup 段：heatmap 查询失败时退回 makeup_dates 兜底候选', async () => {
+  const { r, state } = await runMakeupCase({
+    heatmapFail: true,
+    streakDates: ['2025-12-31'],
+    acceptDates: ['2025-12-31'],
+  });
+  const mk = r.actions.filter((x) => x.seg === 'makeup');
+  assert.ok(mk.some((x) => x.ok && !x.skip && x.msg.includes('2025-12-31')), `兜底应补 makeup_dates，实际：${JSON.stringify(mk)}`);
+  assert.strictEqual(state.makeupBodies.length, 1);
+});
+
+t('makeup 段：无待解锁档位时不耗卡', async () => {
+  const { r, state } = await runMakeupCase({ legendary: 'claimed' });
+  assert.strictEqual(state.makeupBodies.length, 0, '三档全 claimed 却补登 = 浪费卡');
+  const mk = r.actions.filter((x) => x.seg === 'makeup');
+  assert.ok(mk.some((x) => x.skip && /不耗卡/.test(x.msg)), `应记录跳过，实际：${JSON.stringify(mk)}`);
+});
+
+t('makeup 段：同日连补两张卡幂等键互不相同（旧 seed 会被上游去重吞掉）', async () => {
+  const { localDateKey } = require('../lib/util');
+  const now = new Date();
+  const dk = (i) => localDateKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - i));
+  const g = require('../workbuddy/cat-trip');
+  const { r, state } = await runMakeupCase({
+    cardStart: 2, daysStart: 26, // 差 2 天才到 28 档
+    acceptDates: [dk(1), dk(2)], maxUse: 2,
+  });
+  assert.strictEqual(state.makeupBodies.length, 2, '应连用两张卡补到 28 天');
+  const dates = state.makeupBodies.map((b) => b.target_date);
+  assert.deepStrictEqual(dates, [dk(1), dk(2)], '从最近的断登日补起（延长连登段）');
+  const tokens = state.makeupBodies.map((b) => b.client_token);
+  assert.notStrictEqual(tokens[0], tokens[1], '不同目标日期必须拿到不同幂等键');
+  assert.strictEqual(tokens[0], g.clientToken('makeup', `acct_mk|makeup|${dk(1)}`), '键仍按「账号+目标日期」稳定派生（重跑同一天去重）');
+  const mk = r.actions.filter((x) => x.seg === 'makeup' && x.ok && !x.skip);
+  assert.strictEqual(mk.length, 2);
+});
+
+t('fetchHeatmap 解析热力墙 cells 与 today', async () => {
+  const orig = global.fetch;
+  global.fetch = sig(0, 'OK', {
+    cells: [{ date: '2026-10-30', score: 2, has_new_buddy: true }, { date: '2026-10-29', score: 0 }],
+    today: { date: '2026-10-30', score: 2, is_active: true, status_text: '今日已活跃' },
+    updated_at: '2026-10-30T22:00:00+08:00',
+  });
+  const h = await fetchHeatmap({ token: 'x', uid: 'u', region: 'cn' });
+  assert.strictEqual(h.ok, true);
+  assert.strictEqual(h.cells.length, 2);
+  assert.strictEqual(h.cells[0].score, 2);
+  assert.strictEqual(h.cells[0].hasNewBuddy, true);
+  assert.strictEqual(h.cells[1].score, 0);
+  assert.strictEqual(h.today.isActive, true);
   global.fetch = orig;
 });
 

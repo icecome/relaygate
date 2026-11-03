@@ -14,6 +14,7 @@
  *   POST /activity/growth/tasks/accept          → 接单（{task_codes:[], client_token}）
  *   POST /activity/growth/tasks/{code}/claim    → 任务领奖
  *   GET  /activity/growth/streak                → 连登 + 补登卡 + 兑换档位
+ *   GET  /activity/growth/heatmap               → 一年热力墙（逐日 score + 今日状态）
  *   POST /activity/growth/makeup-cards/use      → 用补登卡（{target_date, client_token}）
  *   GET  /activity/growth/redeem/summary        → 兑换档位状态
  *   POST /activity/growth/redeem                → 兑换（{tier:"7d|14d|28d", client_token}）
@@ -43,6 +44,7 @@ const PATH_BUDDY_OPEN = '/buddy/open';
 const PATH_TASKS = '/tasks';
 const PATH_TASKS_ACCEPT = '/tasks/accept';
 const PATH_STREAK = '/streak';
+const PATH_HEATMAP = '/heatmap';
 const PATH_MAKEUP_USE = '/makeup-cards/use';
 const PATH_REDEEM_SUMMARY = '/redeem/summary';
 const PATH_REDEEM = '/redeem';
@@ -340,9 +342,41 @@ async function fetchStreak(info) {
 }
 
 /**
+ * 热力墙（只读）：逐日 score 与今日状态。
+ * data.cells 为约一年（365 天）的 {date, score, has_new_buddy}，date 按上游
+ * 时区（Asia/Shanghai）本地日；today = {date, score, is_active, status_text}。
+ * score > 0 即该日活跃（点亮）；0 分日就是断登日——这是补登候选的权威来源
+ * （/streak 的 makeup_dates 不可靠，见 useMakeupCard 注释）。
+ */
+async function fetchHeatmap(info) {
+  const r = await doReq(PATH_HEATMAP, info, { method: 'GET' });
+  if (!r.ok) return { ok: false, reason: r.reason, code: r.code };
+  const cells = Array.isArray(r.data.cells) ? r.data.cells : [];
+  return {
+    ok: true,
+    cells: cells.map((c) => ({
+      date: c.date || null,
+      score: Number(c.score) || 0,
+      hasNewBuddy: c.has_new_buddy === true,
+    })),
+    today: r.data.today && typeof r.data.today === 'object'
+      ? { date: r.data.today.date || null, score: Number(r.data.today.score) || 0, isActive: !!r.data.today.is_active }
+      : null,
+    updatedAt: r.data.updated_at || null,
+  };
+}
+
+/**
  * 使用补登卡（写；{target_date, client_token}）。
  * /streak 的 makeup_dates 偶尔会列出实际已签到的日期（与 heatmap 不一致），
  * 上游以 400 "date is not broken" 拒绝——属业务常态，非失败。
+ *
+ * ⚠️ 候选日**不要**只取 makeup_dates（2026-10-30 实测）：
+ *   - 补登成功后该日期仍留在列表里（已补的也列出来，无法据此判断还剩哪些真缺口）；
+ *   - 真正断登的孤立日期反而不在列表里，导致有卡却「无处可用」。
+ * 权威来源是 fetchHeatmap() 的 0 分日期；且 28 天档位按**连续**登录天数判定，
+ * 补孤立断登日只增加 month_total_days、不延长连登段，等于浪费卡。
+ * 详见 jobs/growth-auto.js 的 makeupCandidateDates()。
  */
 async function useMakeupCard(info, targetDate, opts = {}) {
   const d = String(targetDate || '').trim();
@@ -434,6 +468,7 @@ module.exports = {
   acceptTasks,
   claimTask,
   fetchStreak,
+  fetchHeatmap,
   useMakeupCard,
   fetchRedeemSummary,
   redeemTier,
