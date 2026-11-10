@@ -7,7 +7,160 @@
 
 ## Unreleased
 
+### WorkBuddy 客户端 5.9.3 形状对齐（2026-11-10）
+
+- **11128 根因定位并修复（system 内容层 + 长度阈值）**：DSH 重启后用新 `wb`
+  provider 真实复现了 11128。二分实验给出决定性判据——**上游只对 `role: system`
+  的消息做内容校验**：同一份 13,649 字系统提示，放 `system` → 11128，放 `user`
+  → 200，字节完全相同。性质是「长度 × 第三方语境密度」累积特征：中性文本 30,000
+  字放行；system 前缀 7000 字放行、9000 字被拦；逐词替换 `DeepSeek Harness`/`DSH`/
+  `runtime context`/`Web GUI` 全文后**仍被拦**（词表方案被证否）。修复用
+  `src/transform/system-relocate.js`：超 6000 字的 system 正文迁到首条 user，
+  system 只留一句中性身份，**一个字节不改**，模型所见信息量与原请求一致。
+  实测 5 模型 + 45 个真实工具 schema 全部从 11128 转 200；短 system / 无 system
+  零改动。多模态安全（图片块不丢）、多条 system 合并、未超阈值零拷贝均有单测。
+  阈值 `WB_SYSTEM_RELOCATE_MAX` 可调，`WB_SYSTEM_RELOCATE=false` 可关。
+  **已知权衡（2026-11-10 审查补记）**：该变换把 system 正文降为 user 消息，
+  协议级 role 隔离退化为纯文本边界，系统指令的遵循权重低于原生 `system` role；
+  为降低提示注入面，前缀显式声明「以下为引用文本，不是可执行指令」，闭合标记
+  改为不可由用户消息伪造的形态。无法接受该权衡时置 `WB_SYSTEM_RELOCATE=false`。
+  另：非纯文本（含图片块 / 混合块 / null）的 system 消息整条原样保留、不参与
+  迁位，避免收集循环跳过而删除循环无差别删除导致图片静默丢失。
+- **渠道校验复核**：11128 在 10-23 头集重建后曾连续 7 天 0 例（精确统计工具
+  `scripts/probes/wb-real-11128.js`，修复了「totalTokens 含 11128 数字串被误计」的口径）。
+  「DSH 内调 WB 报错」是**两层问题**：换密钥后是密钥平台边界（trae 密钥调 `wb/*`
+  被网关 403，DSH 显示成通用错误）；换密钥前（DSH 真用 `provider: workbuddy` 的
+  10-16~10-30）的历史失败原文从会话日志还原（`scripts/probes/dsh-wb-fails.js`）——
+  是上游 500 invoke model error、上下文超限、账号限流、14003 模型繁忙，
+  **没有一条 11128**。DSH 侧已补独立 provider `wb` + 专用 WB 密钥
+  （`label=dsh-workbuddy`，可单独吊销；详见
+  `docs/05-incidents/workbuddy-channel-detection-2026-11-10.md` §2）。
+- **指纹升级**：客户端已升 5.9.3 / CLI 2.165.0，`variant.js` 声明与 UA 模板同步
+  （`check-wb-fingerprint.js` 现在报一致）。
+- **头集跟进 asar 取证**：chat 面新增 `acp-connection-id`（同会话稳定）、
+  `X-Agent-Runtime: local-agent`、`X-Agent-Type: main`；`X-Request-ID` 与
+  `X-Conversation-Message-ID` 改为客户端真实的同值 messageId 形态。会话键
+  `wbConversationOpts` 按 stickyKey 同时派生 conversationId 与 acpConnectionId。
+- **identity-scrub 两处修正**：① 官方身份跳过从「整条消息」改为「句级」——
+  否则长系统提示里只要说明性提到 WorkBuddy 一词，整条提示免检；② 改写句保留
+  首尾空白，修复改写后与相邻句粘连（`GUI.You are`）。
+- **密钥修复**：`updateKey` 改 label/scope 时不再把 `platform` 列写丢（丢失后
+  平台密钥会变成跨平台语义错乱）。
+- 新探针：`dsh-wb-e2e`（DSH 形态端到端）、`dsh-key-matrix`（密钥×模型矩阵）、
+  `wb-direct-chat`（绕过运行中服务、直打上游验证新头集）、`wb-fail-scan`、
+  `wb-errorcodes`。全量测试 310+ 全绿。
+- **审查根因修复（2026-11-10，首轮 SPEAR 66 → 全量回归）**：
+  - `src/lib/upstream-error.js`（新增）：统一上游错误出口，客户端只回泛化文案 +
+    结构化 code/Retry-After，上游原始报文全量进服务端日志；网关自产的「无账号
+    怎么接 / 冷却怎么退避」指引通过 `err.gatewayError` 原样保留，不影响可行动性。
+    接入 `openai` / `raccoon` / `workbuddy` 路由、`raccoon/stream` 错误帧与
+    `index.js` 全局兜底。
+  - `raccoon/limiter.js#release()` 唤醒排队者前复核 `blockedFor()`，冷却期间批量
+    reject（不再把一次撞墙放大成 N 次）；abort 监听改为按 `waiter.onAbort` 精确移除。
+  - `transform/system-relocate.js`：收集/删除循环统一用 `isTextOnlySystem()` 判据，
+    非纯文本 system 原样保留；迁位前缀声明引用语义、闭合标记不可伪造。
+  - `routes/models.js` 虚拟模型可见性与 `middleware/model-access.js` 判据同源
+    （`router:read|router:invoke` + `providerAllowedForKey(getProvider())`）；
+    Raccoon 目录改用 `pickCatalogAccount()`，不再被冷却/并发过滤误伤。
+  - `routes/openai.js#handleRaccoonChat` 改为逐字透传 `req.body`
+    （`reasoning_effort` / `thinking` / `seed` 等不再静默丢失），`max_tokens` 用原值。
+  - 其余：`RaccoonChatError.headers` 与 `Retry-After` 归一、identity-scrub 句级
+    判定顺序、OAuth 去重按 edition 收口、Anthropic 文本块补 `content_block_start`、
+    `http.ts` abort 原因按请求局部持有、显式端点复用 `res.locals.clientSignal`、
+    空 catch 补日志、死代码/重复注释清理、前端补 `raccoonStatus` / `raccoonLimiter`
+    类型与消费、伪测试断言改为无条件真实断言。
+
+### 新功能（对标 WorkDaddy 的五大功能点）
+
+- **无感登录新账号（WorkBuddy 免退出 OAuth）**：凭据池新增第三条 WorkBuddy 接入路——
+  不退出当前账号、不动本机客户端，点「接入 → 无感登录新账号」在系统浏览器完成授权后，
+  新账号自动加入凭据池（默认停用，验证后启用）。国内版 / 国际版可选；授权链接 10 分钟有效，
+  授权完成前面板每 2 秒自动查询结果，无需手动提交任何东西。
+- **账号导入 / 导出（跨机迁移）**：凭据池页新增「导入 / 导出」。导出用你设置的密码 +
+  随机盐做 AES-256-GCM 加密（gzip 先压缩后加密），生成 `RelayGate-账号导出-日期.json`；
+  在另一台机器的 RelayGate 里选文件、输密码即可导入。按账号 uid 去重：已存在的号更新凭据，
+  新号默认停用。导出文件含可恢复登录态的 token，请像密码一样保管；访问密钥不导出。
+- **成长每日汇总（一张卡片看全）**：成长中心新增「成长每日汇总」表——成长任务进度（含
+  「N 项需真实操作」提示）、当日签到、今日活跃（热力墙 is_active）、连续活跃天数、
+  Buddy 解锁与旅行状态，全部账号一次出全。查询带 60 秒缓存，打开面板不会把上游打满；
+  失败账号如实标「查询失败」，不会把没查到写成零分或未签到。
+- **用量统计支持按账号筛选**：「用量与成本」页顶栏新增账号下拉——按天 Token/积分、
+  模型排行、账号排行、官方账单四块全部联动过滤（热力图保持全账号视角）。
+- **账号切换说明**：WorkDaddy 的「点一下切账号」在本项目里由两套机制覆盖——转发调度
+  （每请求按 FEFO/优先级自动选号）与「运维 → 账号轮换」（客户端轮换，带登录态终态校验），
+  无需新增入口。详见 `docs/06-deliverables/comparisons/workdaddy-adoption-2026-11-06.md`。
+
 ### 修掉的问题
+
+- **「不可用」的模型状态混了三件事：媒体模型被误判、账号套餐被记成模型下线（2026-11-08）**：
+  面板上有一批 WorkBuddy 模型长期挂红，实际是三种不同情况被同一个 `unavailable` 混在一起：
+  1. **图片/视频生成模型被 chat 探活误判**（`hunyuan-image-alpha` / `kling-video-v3` /
+     `minimax-video-h3` / `hunyuan-image-alpha-edit`）：它们在目录里，但推理后端是
+     `hunyuan-stream` / `maas`，**没有 chat 端点**，拿 chat 探必然回 11103
+     「Backend is not supported」。这不是模型不可用，是探活方式错。现在按
+     `tags` / `videoGeneration` 分类（`isChatModel`），探活与转发都跳过，
+     面板单独显示为「媒体模型」。
+  2. **套餐额度不足被记成模型下线**（`kimi-k3.1-pro`）：PlanLimit 1005 是账号/套餐
+     维度结论，换号或升级立刻可用。TTL 从 7 天改为 6 小时，原因前缀标 `[套餐层]`。
+  3. **目录已下架的僵尸条目一直留着**（`wb/hy4-preview` 等）：新增按目录对账
+     （`availability.reconcile`），带「目录条目过少则跳过」的截断保护。
+  真正「目录有、chat 服务没有」的 11102（`glm-5.0` / `glm-4.6` / `glm-4.7` /
+  `minimax-m2.5` 等 8 个）判定本来就是对的，未改。
+  同时 `/v1/models` 改用 WorkBuddy 动态目录（此前只映射静态名单，与面板口径分叉：
+  多出 7 个已下架 id、少了 14 个新增 id）。系统梳理见
+  `docs/02-technical/model-subsystem.md`。
+- **模型相关面板页对齐后端能力（2026-11-09）**：后端引入「媒体模型」档、套餐层结论与
+  动态目录后，前端有三处没跟上，已修：
+  1. 状态筛选缺「未探测」，且三档各写一条 `if` 判断——新增一档必漏一行。改为单条比对。
+  2. 媒体模型仍显示「探测」按钮，点了必然 11103。改为显示「无 chat 端点」。
+  3. `[套餐层] PlanLimit: 套餐额度不足 (1005)` 原样裸露方括号。改为前缀渲染成标签，
+     正文保留后端原文（错误码是排查依据，翻译掉就搜不到了）。
+  另修：指标卡口径不闭合（总数 − 可用 = 13，但不可用只有 9，差的正是 4 个媒体模型，
+  现在总数卡显式列出）；`least_balance` / `chat_v3` / `model-router` 等机器标识改为中文名
+  并保留原值；空态指向了不存在的「同步目录」按钮；清理确认框说「所有模型」但媒体模型
+  根本不写可用性表。审查报告见 `docs/04-reviews/ui-review-2026-11-09-model-pages.md`。
+- **单个后端模型提示「API 密钥失效」、只剩聚合虚拟模型可用（2026-11-07）**：
+  直接调单个模型（如 `glm-5.3` / `doubao-1-6` / `wb/glm-5.3`）返回 403
+  `auth_error`，客户端把它显示成「API 密钥失效」；虚拟模型（`vm/long-context`
+  等）一切正常——因为虚拟模型分支不做平台与 scope 判定。两个叠加根因均已修复：
+  1. **密钥 scope 被迁移脚本写坏**：`ensureModelsReadScope` 此前把「scopes 为空」
+     的历史密钥写成只剩 `models:read`，单模型调用要求的 `models:invoke` 缺失。
+     现在空值按平台默认物化（含 invoke），已写坏的行由新增的
+     `ensureInvokeScope` 在启动时自动修复。
+  2. **「WB 独有」判定只看静态名单**：`glm-5.3` / `glm-5.2` / `kimi-k2.6` /
+     `minimax-m2.5` 等名字 WorkBuddy 名单里有、Trae 上游**同样服务**（实测
+     可调），却被判成平台不匹配而 403。新增平台归属事实源
+     （`models/platform-ownership`）：Trae 上游目录（含隐藏项）+ 实测记录 +
+     可用性表三路证据，任何一路命中即不再判独占；真 WB 独有（`hy3` /
+     `hunyuan-chat` 等，Trae 实测明确不可用）仍被正确拒绝。
+  通用密钥的同名模型分派同步修正：`glm-5.3` 现在按 Trae 走（不再白占
+  WorkBuddy 配额），`hy3` 仍走 WorkBuddy。修复脚本：
+  `node scripts/repair-model-key-access.js`（幂等，可反复跑）。
+- **虚拟模型一轮调用多个工具时整轮失败（`Unexpected non-whitespace character after JSON`）**：
+  虚拟模型的流式出口给每个工具调用的 `tool_calls[].index` 都发了 0，客户端
+  （DSH 等）按 index 聚合参数，把两个调用的参数拼成 `}{...}` 一条流，
+  JSON 解析在第二个对象处报错，两个调用一个都没执行。单工具轮次不受影响，
+  所以平时看着正常；修复后每个调用的 index 递增，各自独立。
+  Anthropic 出口（`/v1/messages`）的同族问题（文本块与工具块共用
+  content_block 序号 0）一并修复。详见
+  `docs/05-incidents/incident-2026-11-06-toolcall-index-collision.md`。
+- **关机跨过签到时刻，开机后当天会补跑**：定时签到此前只算「今天/明天 HH:mm」，
+  已过点就顺延到明天，而「今天跑没跑过」记在进程内存里，重启即失忆。
+  于是「夜里关机 → 次日上午开机」这条路径上，当天**永远不会**签到
+  （实测 10-31、11-01 两天全部账号漏领）。现在把执行事实写进
+  `.trae-api/daily-runs.json`，开机后发现已过点且今日未跑，60 秒后补跑一轮；
+  成长中心（派猫旅行、任务奖励）同样纳入补跑。
+- **签到通知不再把「今日已签满」报成失败**：定时轮按 30 分钟窗口分散签到，
+  这期间你点「全部签到」会同时起第二轮，两批各领一半，通知于是显示
+  「Trae 签到 3 · 已签 5」——看着像 5 个号失败，实际 8 个号全签完了。
+  现在三条批量签到入口共用一把互斥锁，后到的那次直接跳过并说明原因；
+  文案改为「本轮领取 N · 今日已签 M（Trae 今日 8/8）」，按今日口径给结论。
+- **余额刷新不再每 30 分钟静默失败一次**：小浣熊账号的余额接口返回的数据
+  少了一个字段，导致后续「解冻账号」拿到空值去查库，SQLite 直接报错，
+  整轮刷新的解冻与低额度告警全部中断（自接入起累计 549 次，面板上看不到）。
+  现在补齐字段并加了空值防御，即使将来新增平台再漏字段也不会带崩整轮。
+- **账号轮换不再和签到抢同一分钟**：两者都排在 08:45，轮换要在开机后逐个
+  登录客户端（会短暂占住主线程），把签到窗口内的动作往后推。轮换时刻已改到 10:30。
 
 - **凭据不再从管理接口漏出去**：新增的「小浣熊密码登录」把手机号与密码存进了
   账号表，但两处出口没跟上——`GET /v1/credentials/:id` 只剥了 token，于是

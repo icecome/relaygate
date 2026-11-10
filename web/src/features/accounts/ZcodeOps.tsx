@@ -173,7 +173,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       const total = (r.balances || []).reduce((s, b) => s + (Number(b.remaining_units) || 0), 0);
       onChanged();
       void load();
-      return { tone: 'ok', text: `剩余 ${formatNumber(total)} tokens`, balance: r };
+      return { tone: 'ok', text: `剩余 ${formatNumber(total)} Token`, balance: r };
     });
   }
 
@@ -181,7 +181,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
     await runOn(a.id, 'rotate', async () => {
       const r = await zcodeRotateFingerprint(a.id, key);
       onChanged();
-      return { tone: r.ok ? 'ok' : 'warn', text: r.ok ? '设备指纹已换发（device_mid 已变）' : '换发未成功' };
+      return { tone: r.ok ? 'ok' : 'warn', text: r.ok ? '设备标识已更换（下次请求将用新的设备指纹）' : '换发未成功' };
     });
   }
 
@@ -249,7 +249,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           刷新账号
         </Button>
         {jobs && (
-          <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
             定时任务{jobs.enabled ? '已启用' : '已停用'} · 下次执行 {formatTime(jobs.nextRunAt)} · 求解器
             {jobs.solver?.available ? '可用' : '不可用'}（{jobs.accounts} 个启用账号）
           </span>
@@ -259,7 +259,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       {/* 一轮批量结果：失败明细必须给出，只报计数等于没有反馈 */}
       {batch && (batch.failed > 0 || batch.claimed > 0 || (batch.claimedPlans?.length ?? 0) > 0) && (
         <div
-          className="rounded-lg border p-3 text-[12px] flex flex-col gap-1"
+          className="rounded-lg border p-3 text-aux flex flex-col gap-1"
           style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
         >
           <div className="font-medium">最近一轮结果</div>
@@ -289,8 +289,8 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
         className="rounded-lg border p-3 flex flex-col gap-2.5"
         style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
       >
-        <div className="text-[12px] font-medium">每日定时探测与领取（本地时区）</div>
-        <div className="flex items-center gap-4 flex-wrap text-[12px]">
+        <div className="text-aux font-medium">每日定时探测与领取（本地时区）</div>
+        <div className="flex items-center gap-4 flex-wrap text-aux">
           <label className="inline-flex items-center gap-1.5">
             <input
               type="checkbox"
@@ -309,19 +309,19 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           </label>
           <span className="inline-flex items-center gap-1">
             时段一
-            <HourInput label="时段一 小时" value={form.hour1} onChange={(n) => setForm((f) => ({ ...f, hour1: n }))} />:
+            <HourInput label="时段一 小时" value={form.hour1} onChange={(n) => setForm((f) => ({ ...f, hour1: n }))} />：
             <MinuteInput label="时段一 分钟" value={form.minute1} onChange={(n) => setForm((f) => ({ ...f, minute1: n }))} />
           </span>
           <span className="inline-flex items-center gap-1">
             时段二
-            <HourInput label="时段二 小时" value={form.hour2} onChange={(n) => setForm((f) => ({ ...f, hour2: n }))} />:
+            <HourInput label="时段二 小时" value={form.hour2} onChange={(n) => setForm((f) => ({ ...f, hour2: n }))} />：
             <MinuteInput label="时段二 分钟" value={form.minute2} onChange={(n) => setForm((f) => ({ ...f, minute2: n }))} />
           </span>
           <Button size="sm" onClick={saveSettings} disabled={busy !== null}>
             {busy === '__settings__' ? '保存中…' : '保存设置'}
           </Button>
         </div>
-        <div className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
           默认 00:30 与 21:30：00:30 抓上游日切后的新批次，21:30 补晚间二次投放。保存后立即重排定时器。
         </div>
       </div>
@@ -330,11 +330,11 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
         <LoadingBlock label="正在读取 ZCode 账号" />
       ) : (accounts?.length ?? 0) === 0 ? (
         <EmptyState
-          label="还没有 ZCode 账号。"
+          label="还没有 ZCode 账号"
           hint="先在渠道总览里用「读取本机客户端」接入本机 ZCode 桌面端账号，再回来领取限时套餐。"
         />
       ) : (
-        <table className="card-table w-full border-collapse text-[13px]">
+        <table className="data-table">
           <thead>
             <tr>
               <th className="th">账号</th>
@@ -351,34 +351,34 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
               return (
                 <Fragment key={a.id}>
                   <tr className="row-hover">
-                    <td className="td" data-label="账号">
-                      <div className="font-mono text-[12px] truncate" title={a.label}>
+                    <td className="td">
+                      <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {a.userId || a.id}
                       </div>
                     </td>
-                    <td className="td cell-num" data-label="剩余额度">
+                    <td className="td cell-num">
                       {/* token 计量：单独标注单位，绝不并入积分列 */}
                       {typeof a.tokenRemaining === 'number' ? (
                         <span title="ZCode Token 计量额度，不计入积分">
-                          {formatNumber(a.tokenRemaining)} <span className="text-[11px]">tok</span>
+                          {formatNumber(a.tokenRemaining)} <span className="text-unit">Token</span>
                         </span>
                       ) : (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>未查询</span>
                       )}
                     </td>
-                    <td className="td" data-label="上次领取">
+                    <td className="td">
                       {a.rewards?.lastClaimAt ? (
-                        <span className="text-[12px]" title={last?.message || undefined}>
+                        <span className="text-aux" title={last?.message || undefined}>
                           {formatTime(a.rewards.lastClaimAt)}
                         </span>
                       ) : (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                       )}
                     </td>
-                    <td className="td" data-label="状态">
+                    <td className="td">
                       {a.enabled === false ? (
                         <Chip tone="warn">已停用</Chip>
                       ) : (
@@ -388,7 +388,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                       )}
                     </td>
                     <td className="td cell-act">
-                      <div className="inline-flex items-center gap-1.5">
+                      <div className="td-actions">
                         <Button size="sm" disabled={busy !== null} onClick={() => probe(a)}>
                           {busy === `${a.id}:probe` ? '探测中…' : '探测'}
                         </Button>
@@ -428,7 +428,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           </span>
 
                           {r.plans && r.plans.length > 0 && (
-                            <table className="w-full text-[12px] border-collapse">
+                            <table className="data-table text-aux">
                               <thead>
                                 <tr>
                                   <th className="th">套餐</th>
@@ -440,19 +440,19 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                               <tbody>
                                 {r.plans.map((p) => (
                                   <tr key={p.planId}>
-                                    <td className="td" data-label="套餐">
+                                    <td className="td">
                                       {p.name || p.planId}
                                     </td>
-                                    <td className="td" data-label="赠送额度">
+                                    <td className="td">
                                       {p.grants.length === 0
                                         ? '—'
                                         : p.grants.map((g) => (
                                             <div key={g.name}>
-                                              {g.name}：{formatNumber(g.units)} tokens
+                                              {g.name}：{formatNumber(g.units)} Token
                                             </div>
                                           ))}
                                     </td>
-                                    <td className="td" data-label="周期">
+                                    <td className="td">
                                       {p.grants[0]?.period === 'daily' ? '每日' : '一次性'}
                                     </td>
                                     <td className="td cell-act">
@@ -467,7 +467,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           )}
 
                           {r.balance && (
-                            <table className="w-full text-[12px] border-collapse">
+                            <table className="data-table text-aux">
                               <thead>
                                 <tr>
                                   <th className="th">额度桶</th>
@@ -486,16 +486,16 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                                 ) : (
                                   r.balance.balances.map((b, i) => (
                                     <tr key={b.bucket_id || b.show_name || b.entitlement_id || String(i)}>
-                                      <td className="td" data-label="额度桶">
+                                      <td className="td">
                                         {b.show_name || b.entitlement_id || '—'}
                                       </td>
-                                      <td className="td cell-num" data-label="剩余">
+                                      <td className="td cell-num">
                                         {formatNumber(Number(b.remaining_units) || 0)}
                                       </td>
-                                      <td className="td cell-num" data-label="已用">
+                                      <td className="td cell-num">
                                         {formatNumber(Number(b.used_units) || 0)}
                                       </td>
-                                      <td className="td" data-label="到期">
+                                      <td className="td">
                                         {b.expires_at ? formatTime(new Date(Number(b.expires_at)).toISOString()) : '长期'}
                                       </td>
                                     </tr>
@@ -519,8 +519,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
         <strong>3012「unusual activity」是真风控</strong>：命中时后端会立即中止该账号本轮，并且
         <strong>不会自动换指纹重试</strong>。「换设备」是人工决策按钮，换完设备标识就变了。
         <br />
-        额度单位是 token（单包量级 1e8），与 RelayGate 的积分（credit，量级 1e3）是两套计量，
-        本页只做展示，不并入任何积分汇总。
+        Token 额度与积分是两套独立计量，本页只做展示，不并入任何积分汇总。
       </Note>
     </div>
   );

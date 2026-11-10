@@ -22,6 +22,13 @@ function emptyConfig() {
     providers: {
       trae: { type: 'builtin', builtin: 'trae', enabled: true, label: 'Trae 内置账号池' },
       workbuddy: { type: 'builtin', builtin: 'workbuddy', enabled: true, label: 'WorkBuddy 内置账号池' },
+      // Raccoon（商汤小浣熊）：内置渠道，与 trae/workbuddy 同构。
+      //
+      // 必须出现在 providers 里，否则「新增虚拟模型」对话框拿不到它 ——
+      // 那个对话框的候选下拉是**按 provider 分组**的（GET /v1/admin/model-router/
+      // available-models 遍历 listProviders()）。只把模型列进 /v1/models 不够：
+      // 两处是两个数据源，前者是「能给客户端调什么」，后者是「能配什么候选」。
+      raccoon: { type: 'builtin', builtin: 'raccoon', enabled: true, label: 'Raccoon (商汤小浣熊)' },
     },
     virtualModels: {},
   };
@@ -80,9 +87,14 @@ function normalize(raw) {
 function normalizeProvider(id, p) {
   const type = p && p.type === 'openai' ? 'openai' : 'builtin';
   const builtin = type === 'builtin' ? (p.builtin || id) : null;
+  // ⚠️ 白名单必须与 emptyConfig 的 providers 保持一致。
+  // 不在名单里的 builtin 会被**静默**归一成 'trae' —— 那意味着一个写错的
+  // provider id 会变成「悄悄走 Trae 池」，而不是报错。Raccoon 曾因漏在名单外
+  // 被归一成 trae：候选里显示 sn-* 模型，实际请求打到 Trae 上游拿 4001。
+  const BUILTIN_WHITELIST = ['trae', 'workbuddy', 'raccoon'];
   return {
     type,
-    builtin: type === 'builtin' ? (builtin === 'trae' || builtin === 'workbuddy' ? builtin : 'trae') : null,
+    builtin: type === 'builtin' ? (BUILTIN_WHITELIST.includes(builtin) ? builtin : 'trae') : null,
     label: p.label || id,
     enabled: p.enabled !== false,
     baseUrl: type === 'openai' ? String(p.baseUrl || '').replace(/\/+$/, '') : null,
@@ -194,7 +206,10 @@ function upsertProvider(id, patch) {
 
 function removeProvider(id) {
   const c = load();
-  if (c.providers[id] && c.providers[id].type === 'builtin' && (id === 'trae' || id === 'workbuddy')) {
+  // 内置 Provider 一律不可删除（含新增的 raccoon）。删除它们会让「候选引用的
+  // Provider 消失」——那些候选从此无法被调度，但配置里仍留着，属于静默失效。
+  const BUILTIN_IDS = ['trae', 'workbuddy', 'raccoon'];
+  if (c.providers[id] && c.providers[id].type === 'builtin' && BUILTIN_IDS.includes(id)) {
     return { ok: false, message: '内置 Provider 不可删除' };
   }
   delete c.providers[id];

@@ -164,7 +164,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       const r = await qoderQuota(a.id, key);
       onChanged();
       void load();
-      return { tone: 'ok', text: `剩余 ${formatNumber(r.totalRemaining)} credits（两段合计，仅供阅读）`, quota: r };
+      return { tone: 'ok', text: `剩余 ${formatNumber(r.totalRemaining)} 积分（基础 + 赠送合计，仅供参考）`, quota: r };
     });
   }
 
@@ -214,7 +214,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           刷新账号
         </Button>
         {jobs && (
-          <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
             定时任务{jobs.enabled ? '已启用' : '已停用'} · 下次执行 {formatTime(jobs.nextRunAt)}（{jobs.accounts} 个启用账号）
           </span>
         )}
@@ -222,13 +222,13 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
 
       {batch && (
         <div
-          className="rounded-lg border p-3 text-[12px] flex flex-col gap-1"
+          className="rounded-lg border p-3 text-aux flex flex-col gap-1"
           style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
         >
           <div className="font-medium">最近一轮结果</div>
           <div>
-            探测 {batch.probed} · 领取 {batch.claimed} · 已领过 {batch.already} · 列表级已领 {batch.alreadyToday} · 失败{' '}
-            {batch.failed} · 跳过 {batch.skipped}
+                    探测 {batch.probed} · 领取 {batch.claimed} · 已领过 {batch.already} · 今日活动已领 {batch.alreadyToday} · 失败{' '}
+                    {batch.failed} · 无可领跳过 {batch.skipped}
             {batch.emptyList > 0 && <strong style={{ color: 'var(--rg-state-warning)' }}> · 空列表 {batch.emptyList}</strong>}
           </div>
           {batch.emptyList > 0 && (
@@ -239,7 +239,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           )}
           {batch.claimedDetails?.map((c, i) => (
             <div key={`${c.accountId}:${i}`} style={{ color: 'var(--rg-state-success)' }}>
-              {c.label}（{c.realm}）领取 +{c.amount} credits
+              {c.label}（{c.realm}）领取 +{c.amount} 积分
               {c.expiresAt ? `，${formatTime(c.expiresAt)} 到期` : ''}
             </div>
           ))}
@@ -255,8 +255,8 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
         className="rounded-lg border p-3 flex flex-col gap-2.5"
         style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
       >
-        <div className="text-[12px] font-medium">每日积分活动领取（本地时区）</div>
-        <div className="flex items-center gap-4 flex-wrap text-[12px]">
+        <div className="text-aux font-medium">每日积分活动领取（本地时区）</div>
+        <div className="flex items-center gap-4 flex-wrap text-aux">
           <label className="inline-flex items-center gap-1.5">
             <input
               type="checkbox"
@@ -275,14 +275,14 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           </label>
           <span className="inline-flex items-center gap-1">
             每日
-            <NumInput max={23} label="领取小时" value={form.hour} onChange={(n) => setForm((f) => ({ ...f, hour: n }))} />:
+            <NumInput max={23} label="领取小时" value={form.hour} onChange={(n) => setForm((f) => ({ ...f, hour: n }))} />：
             <NumInput max={59} label="领取分钟" value={form.minute} onChange={(n) => setForm((f) => ({ ...f, minute: n }))} />
           </span>
           <Button size="sm" onClick={saveSettings} disabled={busy !== null}>
             {busy === '__settings__' ? '保存中…' : '保存设置'}
           </Button>
         </div>
-        <div className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
           上游按 UTC+8 每日 10:00 刷新可领状态、领取后 30 天有效，故默认排在本地 10:15。
           部署机时区不是 UTC+8 时请自行把时刻调整到刷新之后。
         </div>
@@ -292,11 +292,11 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
         <LoadingBlock label="正在读取 Qoder 账号" />
       ) : (accounts?.length ?? 0) === 0 ? (
         <EmptyState
-          label="还没有 Qoder 账号。"
+          label="还没有 Qoder 账号"
           hint="先在渠道总览里用「读取本机客户端」接入本机 Qoder 桌面端账号（国内版 / 国际版均可），再回来领取每日积分。"
         />
       ) : (
-        <table className="card-table w-full border-collapse text-[13px]">
+        <table className="data-table">
           <thead>
             <tr>
               <th className="th">账号</th>
@@ -314,32 +314,32 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
               return (
                 <Fragment key={a.id}>
                   <tr className="row-hover">
-                    <td className="td" data-label="账号">
-                      <div className="font-mono text-[12px] truncate" title={a.label}>
+                    <td className="td">
+                      <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {a.userId || a.id}
                       </div>
                     </td>
-                    <td className="td" data-label="区域">
+                    <td className="td">
                       <Chip tone={a.realm === 'intl' ? 'brand' : 'neutral'}>
                         {a.realm === 'intl' ? '国际版' : '国内版'}
                       </Chip>
                     </td>
-                    <td className="td cell-num" data-label="额度">
+                    <td className="td cell-num">
                       {/* 两段隔离展示：基础 + 赠送，不并入任何积分汇总 */}
                       {q ? (
-                        <span title="基础 userQuota + 赠送 addOnQuota（两段隔离，合计仅供阅读）">
+                        <span title="基础额度与赠送额度两段隔离，合计仅供参考">
                           {formatNumber(q.base?.remaining ?? 0)} + {formatNumber(q.addOn?.remaining ?? 0)}
                         </span>
                       ) : (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>未查询</span>
                       )}
                     </td>
-                    <td className="td" data-label="上次领取">
+                    <td className="td">
                       {a.rewards?.lastClaimAt ? (
-                        <span className="text-[12px]" title={a.rewards.lastClaimCampaign || undefined}>
+                        <span className="text-aux" title={a.rewards.lastClaimCampaign || undefined}>
                           {formatTime(a.rewards.lastClaimAt)}
                           {a.rewards.lastClaimAmount ? ` +${a.rewards.lastClaimAmount}` : ''}
                         </span>
@@ -347,7 +347,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                       )}
                     </td>
-                    <td className="td" data-label="状态">
+                    <td className="td">
                       {a.enabled === false ? (
                         <Chip tone="warn">已停用</Chip>
                       ) : (
@@ -357,7 +357,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                       )}
                     </td>
                     <td className="td cell-act">
-                      <div className="inline-flex items-center gap-1.5">
+                      <div className="td-actions">
                         <Button size="sm" disabled={busy !== null} onClick={() => fetchCampaigns(a)}>
                           {busy === `${a.id}:campaigns` ? '查询中…' : '查活动'}
                         </Button>
@@ -389,7 +389,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           </span>
 
                           {r.campaigns && r.campaigns.campaigns.length > 0 && (
-                            <table className="w-full text-[12px] border-collapse">
+                            <table className="data-table text-aux">
                               <thead>
                                 <tr>
                                   <th className="th">活动</th>
@@ -405,20 +405,20 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                                   const canClaim = c.actionType === 'CLAIM_BENEFIT' && c.claimStatus === 'CLAIMABLE';
                                   return (
                                     <tr key={c.campaignId}>
-                                      <td className="td" data-label="活动" title={c.description || undefined}>
+                                      <td className="td" title={c.description || undefined}>
                                         {c.title || c.campaignKey || c.campaignId}
                                       </td>
-                                      <td className="td cell-num" data-label="积分">
+                                      <td className="td cell-num">
                                         {c.kind.toUpperCase() === 'CREDITS' && c.amount ? `+${c.amount}` : '—'}
                                       </td>
-                                      <td className="td" data-label="有效期">
+                                      <td className="td">
                                         {c.validityMode === 'RELATIVE_DAYS'
                                           ? `领取后 ${c.validityDays} 天`
                                           : c.endAt
                                             ? formatTime(c.endAt)
                                             : '—'}
                                       </td>
-                                      <td className="td" data-label="状态">
+                                      <td className="td">
                                         <Chip tone={st.tone === 'ok' ? 'ok' : st.tone === 'warn' ? 'warn' : 'neutral'}>
                                           {st.text}
                                         </Chip>
@@ -440,7 +440,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           )}
 
                           {r.quota && (
-                            <table className="w-full text-[12px] border-collapse">
+                            <table className="data-table text-aux">
                               <thead>
                                 <tr>
                                   <th className="th">额度段</th>
@@ -451,26 +451,26 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                               </thead>
                               <tbody>
                                 <tr>
-                                  <td className="td" data-label="额度段">基础（userQuota）</td>
-                                  <td className="td cell-num" data-label="剩余">
+                                  <td className="td">基础额度</td>
+                                  <td className="td cell-num">
                                     {formatNumber(Number(r.quota.base?.remaining) || 0)}
                                   </td>
-                                  <td className="td cell-num" data-label="总量">
+                                  <td className="td cell-num">
                                     {formatNumber(Number(r.quota.base?.total) || 0)}
                                   </td>
-                                  <td className="td" data-label="到期">
+                                  <td className="td">
                                     {r.quota.expiresAt ? formatTime(r.quota.expiresAt) : '—'}
                                   </td>
                                 </tr>
                                 <tr>
-                                  <td className="td" data-label="额度段">赠送（addOnQuota）</td>
-                                  <td className="td cell-num" data-label="剩余">
+                                  <td className="td">赠送额度</td>
+                                  <td className="td cell-num">
                                     {formatNumber(Number(r.quota.addOn?.remaining) || 0)}
                                   </td>
-                                  <td className="td cell-num" data-label="总量">
+                                  <td className="td cell-num">
                                     {formatNumber(Number(r.quota.addOn?.total) || 0)}
                                   </td>
-                                  <td className="td" data-label="到期">—</td>
+                                  <td className="td">—</td>
                                 </tr>
                               </tbody>
                             </table>

@@ -13,6 +13,7 @@
 const config = require('../config');
 const { getModelDetailParam } = require('../upstream/client');
 const availability = require('./availability');
+const ownership = require('./platform-ownership');
 
 const CACHE_TTL_MS = Number(process.env.MODEL_CATALOG_TTL_MS || 10 * 60 * 1000);
 
@@ -220,6 +221,19 @@ async function loadCatalog({ force = false } = {}) {
         endpoint: 'get_detail_param',
         hostNote: 'Trae 官方模型配置接口（与客户端同源）',
       };
+      // 归属快照：让「这个模型 Trae 到底服务不服务」有一个与上游同步的事实源。
+      // 注意：这里有意记录**全部**模型类 config（含 invisible 项）——上游目录里
+      // 有相当一部分名字是 hidden（如 glm-5.2、glm-4.6、deepseek-v4-pro），
+      // 但 llm_utils_chat 实测仍能调用（2026-11-07 现场取证）。只记录可见项会把
+      // 这些名字判成「Trae 不服务」，进而被 WB 独占判定误拒。
+      // 工具配置（summary/title_generation 等）与 custom_model_* 占位不记录。
+      try {
+        const allNames = (detail && detail.config_info_list || [])
+          .map((c) => c && c.config_name)
+          .filter((n) => n && !isHiddenConfigName(n))
+          .map(String);
+        ownership.recordTraeModels(allNames, 'upstream-full-catalog');
+      } catch { /* 归属表写盘失败不影响目录 */ }
       return cache;
     } catch (err) {
       console.warn(`[models] catalog upstream failed: ${err.message}; fallback local`);
@@ -231,6 +245,8 @@ async function loadCatalog({ force = false } = {}) {
         endpoint: null,
         hostNote: '本地 model-config.json 回退',
       };
+      // 上游不可达时用本地登记表兜底：至少「Trae 服务哪些名字」这个事实不空。
+      try { ownership.recordTraeModels(cache.models.map((m) => m.id), 'local-fallback'); } catch { /* 同上 */ }
       return cache;
     } finally {
       inflight = null;

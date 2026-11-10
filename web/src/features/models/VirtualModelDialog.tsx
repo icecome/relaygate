@@ -17,6 +17,7 @@ import {
 } from '../../shared/api/modelRouter';
 import { useAuth } from '../../shared/api/auth';
 import { ApiError } from '../../shared/api/http';
+import { platformIdLabel } from '../../shared/lib/format';
 import { Button, Field, Note } from '../../shared/ui';
 import Modal from '../../shared/ui/Modal';
 import { useToast } from '../../shared/ui/Toast';
@@ -158,24 +159,22 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
       }
     >
       <div className="flex flex-col gap-3">
-        <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)' }}>
+        <div className="grid gap-3 grid-cols-2">
           <Field
             label="模型 ID（对外暴露名）"
             value={id}
             onChange={(e) => setId(e.target.value)}
             placeholder="例如 vm/long-context"
-            aria-label="虚拟模型 ID"
           />
           <Field
             label="描述"
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             placeholder="长上下文分层"
-            aria-label="虚拟模型描述"
           />
         </div>
 
-        <div className="grid gap-3" style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)' }}>
+        <div className="grid gap-3 grid-cols-2">
           <div className="flex flex-col gap-1 min-w-0">
             <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
               候选选择策略
@@ -191,12 +190,11 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
             </select>
           </div>
           <Field
-            label="声明上下文窗口（token，可留空）"
+            label="声明上下文窗口（Token，可留空）"
             value={contextWindow}
             inputMode="numeric"
             onChange={(e) => setContextWindow(e.target.value)}
             placeholder="200000"
-            aria-label="声明上下文窗口"
           />
         </div>
 
@@ -216,8 +214,8 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
               return (
                 <div
                   key={i}
-                  className="grid gap-2 items-end"
-                  style={{ gridTemplateColumns: 'minmax(0,0.9fr) minmax(0,1.4fr) 88px 76px 84px auto' }}
+                  // 六列在窄弹窗里每格不足 60px；1200px 以下折成两列，宽屏才铺满一行
+                  className="grid gap-2 items-end grid-cols-2 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_88px_76px_84px_auto]"
                 >
                   <div className="flex flex-col gap-1 min-w-0">
                     <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -232,7 +230,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
                       <option value="">选择上游…</option>
                       {Object.keys(catalog).map((p) => (
                         <option key={p} value={p}>
-                          {p}
+                          {platformIdLabel(p)}
                         </option>
                       ))}
                     </select>
@@ -280,7 +278,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
                     onChange={(e) => patchDraft(i, { weight: Number(e.target.value) })}
                   />
                   <Field
-                    label="窗口"
+                    label="上下文窗口"
                     type="number"
                     value={d.contextWindow}
                     placeholder="继承"
@@ -318,6 +316,8 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
           「声明上下文窗口」用于请求分发前的输入超限拦截（超过窗口 75% 直接返回
           400 context_length_exceeded），避免上游静默截断导致早期记忆丢失；
           留空则不拦截。候选级窗口留空时继承该声明。
+          候选下拉只列出可走对话接口的模型：目录中的图片与视频生成模型没有 chat 端点，
+          不在列表中；需要时可在「上游无目录时手动输入模型名」里填写。
         </Note>
       </div>
     </Modal>

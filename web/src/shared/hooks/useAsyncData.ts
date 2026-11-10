@@ -55,6 +55,18 @@ export function useAsyncData<T>(
       })
       .catch((e: unknown) => {
         if (!active || controller.signal.aborted) return;
+        /**
+         * 取消不是错误，不能当内容展示。
+         *
+         * 判据有两层，缺一不可：
+         *   1. 本 hook 自己的 controller 已 abort（卸载时）—— 上面已返回；
+         *   2. 底层请求被**别的** controller 中止（共享 Promise、或上游主动放弃）
+         *      —— 此时 status===0 且消息是「请求已取消」。这类结果必须保持
+         *      上一份数据不动，否则页面会闪一下「请求已取消」再自我恢复。
+         */
+        if (e instanceof ApiError && e.isTransport && /请求已取消|aborted/i.test(e.message)) {
+          return;
+        }
         setData(null);
         setError(e instanceof ApiError ? e.message : e instanceof Error ? e.message : '未知错误');
       })

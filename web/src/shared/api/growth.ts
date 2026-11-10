@@ -15,12 +15,14 @@ import { api } from './http';
 /**
  * 上游 travel/status 的 location 是结构化对象
  * （见 src/workbuddy/cat-trip.js normalizeStatus），idle 时为 null。
+ * 键名保持上游蛇形（duration_hours）：后端归一化时不做大小写转换，
+ * 前端类型必须与真实返回一致，否则读到 undefined。
  */
 export interface GrowthLocation {
   id?: number | null;
   code?: string | null;
   name?: string | null;
-  durationHours?: number | null;
+  duration_hours?: number | null;
 }
 
 export interface GrowthStatusRow {
@@ -48,6 +50,9 @@ export interface GrowthOverviewRow {
   streakDays?: number | null;
   makeupCards?: number | null;
   lotteryChances?: number | null;
+  /** 今日是否活跃（成长中心热力墙 today.is_active）；null=未取到（不是未活跃） */
+  todayActive?: boolean | null;
+  todayScore?: number | null;
   reason?: string;
 }
 
@@ -65,25 +70,86 @@ export const growthOverview = (key: string, signal?: AbortSignal) =>
     key,
   );
 
+/* 成长每日汇总（与 WorkDaddy 账号页同形态；本机挂载在 /v1/workbuddy/growth/daily-progress） */
+
+/**
+ * 成长任务明细。state 五态：claimed / completed / in_progress / not_accepted / unknown。
+ * automatable=true 表示该任务码在自动化名单内（可被后台任务推进）；
+ * false 表示需要用户在客户端真实操作。
+ */
+export interface GrowthTaskDetail {
+  taskCode: string;
+  title: string;
+  guide: string;
+  tag: string;
+  deadline: string | null;
+  reward: { credits: number; energy: number; buddy: boolean };
+  current: number;
+  target: number;
+  state: string;
+  automatable: boolean;
+}
+
+export interface GrowthDailyRow {
+  accountId: string;
+  label: string;
+  /** ready=取到；unavailable=该账号查询失败（不是「什么都没有」） */
+  status: 'ready' | 'unavailable';
+  reason?: string;
+  fetchedAt?: number;
+  growth?: {
+    completed: number;
+    total: number;
+    ratio: number;
+    tasks: GrowthTaskDetail[];
+  };
+  rewards?: { claimed: number; total: number; pending: number; ratio: number };
+  cat?: {
+    state: string;
+    progress: number;
+    arriveAt: number | null;
+    dailyLimitReached: boolean;
+    available: boolean;
+    activeBuddy: boolean;
+    buddies: { instanceId: number; name: string }[];
+    reward: { credits: number; energy: number };
+  };
+  actions?: {
+    gacha: { available: boolean; count: number | null; energy: number | null; cost: number | null };
+    lottery: { available: boolean; count: number | null };
+  };
+  manualTasks?: string[];
+  checkin?: { checkedIn: boolean; source: string | null };
+  active?: { todayActive: boolean | null; todayScore: number | null; streakDays: number | null };
+  /**
+   * 任务数据来源：'v2' = 完整进度与奖励；'v1' = 旧端点回退（上游不提供
+   * progress/reward 字段，计数如实为 0）；null = 未取到。界面据此说明
+   * 「零进度」是数据缺失还是真的没做。
+   */
+  taskSource?: 'v2' | 'v1' | null;
+  /** v2 失败的原因（仅在回退到 v1 时有值） */
+  taskV2Error?: string | null;
+}
+
+/** 全池成长每日汇总（只读）。force=true 时跳过 TTL 缓存重新查询上游。 */
+export const growthDailyProgress = (key: string, force = false, signal?: AbortSignal) =>
+  api<{ object: string; total: number; data: GrowthDailyRow[] }>(
+    '/v1/workbuddy/growth/daily-progress',
+    { method: 'POST', signal, body: { force } },
+    key,
+  );
+
 /* 单账号 */
 /*
- * 说明：单账号写操作（claim / draw / redeem-tier / depart 等）只在后台定时任务里
- * 使用，管理面板只做只读展示。因此这里不导出对应的前端封装，避免出现
- * 「有函数但没人调用」的死代码（此前有 4 个零引用导出）。
- * 后端端点仍然保留，供 jobs/growth-auto.js 与 CLI 使用。
+ * 说明：单账号只读端点（status / config / buddy / streak / redeem / chances / tasks）
+ * 与单账号写操作（claim / draw / redeem-tier / depart 等）由后端 handle() 生成，
+ * 但管理面板不做单账号操作入口：只读由全池视图（status-all / overview /
+ * daily-progress）覆盖，写操作归后台定时任务（jobs/growth-auto.js）。
+ * 需要逐账号排查时走 CLI（node scripts/growth-*.js）。
+ * 后端端点仍然保留，供 jobs 与 CLI 使用。
  */
 
 /* 后台任务 */
-
-export interface GrowthProgress {
-  taskId?: string;
-  status?: string;
-  done?: number;
-  total?: number;
-  current?: string;
-  errors?: string[];
-  finishedAt?: string;
-}
 
 export interface GrowthLastRun {
   ranAt?: string | null;
@@ -98,6 +164,50 @@ export interface GrowthLastRun {
 export const growthLastRun = (key: string, signal?: AbortSignal) =>
   api<GrowthLastRun & { object: string }>(
     '/v1/workbuddy/growth/last-run',
+    { method: 'POST', signal, body: {} },
+    key,
+  );
+
+/**
+ * 一键执行成长自动化（旅行 + 任务 + 补登 + 兑换 + 抽奖 + 盲盒）。
+ * 立即返回 taskId，进度轮询 /growth/progress?taskId=…。
+ * 已有任务在跑时后端回 409。
+ */
+export const growthAuto = (key: string, body: { accountId?: string } = {}) =>
+  api<{ object: string; taskId: string; startedAt: string; progressUrl: string }>(
+    '/v1/workbuddy/growth/auto',
+    { method: 'POST', body },
+    key,
+  );
+
+/** 后台任务进度（轮询）。任务不存在或已过期时后端回 404。 */
+export interface GrowthAutoProgress {
+  object: string;
+  taskId: string;
+  startedAt: number;
+  finishedAt: number | null;
+  running: boolean;
+  stage: string;
+  error: string | null;
+  currentAccount: string | null;
+  total: number;
+  doneCount: number;
+  okCount: number;
+  failCount: number;
+  results: unknown[];
+}
+
+export const growthProgress = (taskId: string, key: string, signal?: AbortSignal) =>
+  api<GrowthAutoProgress>(
+    `/v1/workbuddy/growth/progress?taskId=${encodeURIComponent(taskId)}`,
+    { method: 'POST', signal, body: {} },
+    key,
+  );
+
+/** 最近自动化任务列表（新→旧）。 */
+export const growthProgressList = (key: string, signal?: AbortSignal) =>
+  api<{ object: string; data: GrowthAutoProgress[] }>(
+    '/v1/workbuddy/growth/progress-list',
     { method: 'POST', signal, body: {} },
     key,
   );

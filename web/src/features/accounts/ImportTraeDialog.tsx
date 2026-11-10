@@ -97,7 +97,7 @@ export function ImportTraeDialog({ open, onClose, onImported }: {
             取消
           </Button>
           <Button onClick={doImportMany} disabled={busy}>
-            批量导入
+            批量导入全部
           </Button>
           <Button variant="primary" onClick={doImport} disabled={busy}>
             {busy ? '导入中…' : '导入'}
@@ -113,24 +113,24 @@ export function ImportTraeDialog({ open, onClose, onImported }: {
           placeholder="留空则使用账号自带名称"
         />
         <div>
-          <div className="text-[12px] mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
+          <div className="text-label mb-1.5">
             storage.json 内容
           </div>
           <textarea
-            className="w-full h-40 p-2.5 rounded-md border font-mono text-[12px]"
-            style={{ borderColor: 'var(--rg-border-stronger)' }}
+            className="textarea h-40"
             placeholder="粘贴单个对象或对象数组"
             value={jsonText}
             onChange={(e) => setJsonText(e.target.value)}
-            aria-label="storage.json 内容"
           />
+          <p className="text-aux mt-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+            「导入」只处理其中的第一条；「批量导入全部」要求粘贴 JSON 数组，逐条导入并回报成功 / 更新 / 失败数。
+          </p>
         </div>
         <Field
           label="refreshToken（与上面二选一）"
           value={refreshToken}
           onChange={(e) => setRefreshToken(e.target.value)}
           placeholder="仅有 refreshToken 时可直接填这里"
-          aria-label="refreshToken"
         />
         <Note>
           凭据内容仅提交到本机后端，不会发送到第三方。批量导入会解析为单个对象或对象数组，按条处理。

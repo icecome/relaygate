@@ -99,9 +99,9 @@ const REWRITE_MAP = [
   { re: /\bopenai\b/gi, to: '', keepCase: false },
 ];
 
-/** 已官方放行的客户端身份（不要动）：出现即整条消息跳过改写。 */
+/** 已官方放行的客户端身份词：出现时该句可豁免（见 scrubMessages 的顺序判定）。 */
 const OFFICIAL_HINTS = [
-  /\bhermes\b/i, /\bopencode\b/i, /\bpi\b/i,
+  /\bhermes\b/i, /\bopencode\b/i, /\b(?:pi\s+client|opencode\s+pi)\b/i,
   /\bworkbuddy\b/i, /\bcodebuddy\b/i,
 ];
 
@@ -111,24 +111,34 @@ function sentenceHitsIdentity(sentence) {
 }
 
 /**
- * 消息是否为「官方客户端身份自述」——是则跳过整条消息
- * （官方身份放行，改写反而画蛇添足）。
+ * 句子是否含官方客户端身份词。
+ *
+ * 注意：命中只表示该句**可豁免**，不是「整条消息跳过」。豁免还必须满足
+ * 「该句本身不是身份声明」，否则一句里塞进 "workbuddy" 就能让同句的
+ * "You are Codex" 漏检（见 scrubMessages）。
+ *
+ * 2026-11-10 修正：整条文本检索 DSH 这类系统提示时，含「WorkBuddy/CodeBuddy」
+ * 的句子几乎必然存在（例如把本网关名字写进运行说明），按整条消息跳过会让
+ * 全系统提示不再改写任何身份声明。改为**句级**判定。
  */
 function looksOfficialIdentity(text) {
   return OFFICIAL_HINTS.some((re) => re.test(text));
 }
 
-/** 对单句应用改写映射。keepCase=true 的规则只在句首大写被吞时用于恢复大写。 */
+/** 对单句应用改写改写。保留句首/句尾空白：句子切分靠 lookbehind，
+ *  下一句的前导空格属于本句，若被 trim 掉会与后句粘连成 "GUI.You are"。 */
 function rewriteSentence(sentence) {
   let out = sentence;
   for (const { re, to } of REWRITE_MAP) {
     out = out.replace(re, to);
   }
   // 句首大写恢复：小写开头且原句是大写开头（改写把首词换成了小写形态）
-  if (/^[a-z]/.test(out) && /^[A-Z]/.test(sentence)) {
-    out = out[0].toUpperCase() + out.slice(1);
+  if (/^[a-z]/.test(out.trimStart()) && /^[A-Z]/.test(sentence.trimStart())) {
+    out = out.replace(/^(\s*)([a-z])/, (_all, sp, ch) => sp + ch.toUpperCase());
   }
-  return out
+  const lead = /^\s*/.exec(out)[0];
+  const tail = /\s*$/.exec(out)[0];
+  const core = out.slice(lead.length, out.length - tail.length)
     .replace(/\s{2,}/g, ' ')
     // 删除同位语（"Anthropic's official CLI for Claude"）后留下的空标点：
     // ", ." → "."、",," → ","
@@ -136,6 +146,7 @@ function rewriteSentence(sentence) {
     .replace(/,\s*([。．.!？?；;])/g, '$1')
     .replace(/\s+([。,.;；！！？?])/g, '$1')
     .trim();
+  return lead + core + tail;
 }
 
 /**
@@ -170,12 +181,24 @@ function scrubMessages(messages) {
   const out = messages.map((m) => {
     if (!m || m.role !== 'system') return m;
     if (typeof m.content !== 'string' || !m.content) return m;
-    if (looksOfficialIdentity(m.content)) return m;
-    const r = scrubText(m.content);
-    if (r.changed) {
-      hits += r.hits;
+    /*
+     * 判定顺序（m-03）：只按「该句是否命中身份声明」决定是否改写。
+     *
+     * 旧顺序是「官方词命中即整句返回」—— 一句里塞进 "workbuddy" / "pi"
+     * 就能让同句的 "You are Codex" 漏检。OFFICIAL_HINTS 里的词都不在
+     * IDENTITY_PATTERNS 中：纯官方自述句（例如「本网关叫 WorkBuddy」）
+     * 本来就不命中身份声明、自然原样保留，不需要另开豁免分支；
+     * 而「官方词 + 第三方身份声明」同句时必须照常改写。
+     */
+    const parts = m.content.split(SENTENCE_SPLIT);
+    const rewritten = parts.map((p) => {
+      if (!sentenceHitsIdentity(p)) return p;
+      hits += 1;
+      return rewriteSentence(p);
+    }).join('');
+    if (rewritten !== m.content) {
       changed = true;
-      return { ...m, content: r.text };
+      return { ...m, content: rewritten };
     }
     return m;
   });

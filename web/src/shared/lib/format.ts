@@ -47,6 +47,10 @@ export const STATE_DOT_CLASS: Record<AccountState, string> = {
  * 权益额度文案。
  * unlimited 表示不限量，必须显示为「不限量」，
  * 不能渲染成数字 0 —— 那会被误读为「没有额度」。
+ *
+ * 说明：当前零调用（余额列已改用 formatNumber，PackTable 内联实现同语义
+ * 文案）。保留它是为了「不限量 ≠ 0」这条口径有一个可复用的函数实现，
+ * 新增展示位（如未来的配额卡片）应优先复用它而不是再写内联三元。
  */
 export function formatQuota(unlimited: boolean | undefined, remaining?: number | null): string {
   if (unlimited) return '不限量';
@@ -57,6 +61,31 @@ export function formatQuota(unlimited: boolean | undefined, remaining?: number |
 export function formatNumber(n: number | null | undefined): string {
   if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
   return n.toLocaleString('zh-CN');
+}
+
+/**
+ * 量级压缩：566,700,000 → 566.7M。
+ *
+ * 只给**指标卡主读数与图表轴**用（卡面可用宽度约 240px，7 位数会撑爆）。
+ * 表格单元格一律仍用 formatNumber：那里要精确值对账，压缩会让人对不上。
+ *
+ * 阈值与参考实现的 shortNumber（WorkBuddy-Switch src/components.tsx:17-22）
+ * 一致：1e6 → M，1e3 → K；额外补 1e9 → B，因为 ZCode 的 token 量级是 1e8。
+ */
+export function formatCompact(n: number | null | undefined): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
+  const abs = Math.abs(n);
+  const sign = n < 0 ? '-' : '';
+  // 三位有效数字：>=100 不带小数（566.7M 会变成 567M，够读且不占宽）
+  const trim = (v: number) => {
+    if (v >= 100) return v.toFixed(0);
+    if (v >= 10) return v.toFixed(1).replace(/\.0$/, '');
+    return v.toFixed(2).replace(/\.?0+$/, '');
+  };
+  if (abs >= 1e9) return `${sign}${trim(abs / 1e9)}B`;
+  if (abs >= 1e6) return `${sign}${trim(abs / 1e6)}M`;
+  if (abs >= 1e3) return `${sign}${trim(abs / 1e3)}K`;
+  return formatNumber(n);
 }
 
 /** 成本保留 4 位小数，避免把估算值显示得像精确账单。 */
@@ -118,18 +147,19 @@ export function coolRemaining(coolUntil: string | null | undefined, now = Date.n
 /* 平台归类 */
 
 /**
- * 账号所属平台：'trae' | 'workbuddy' | 'zcode'。
+ * 账号所属平台：'trae' | 'workbuddy' | 'zcode' | 'qoder' | 'raccoon'。
  *
  * 为什么不直接显示 `source`：source 记录的是「凭据怎么进来的」
- * （import / oauth / local / workbuddy），不是「账号属于哪个平台」。
+ * （import / oauth / local / workbuddy / login / manual），不是「账号属于哪个平台」。
  * Trae 账号无论粘贴导入还是 OAuth 登录，source 都是 import，
  * 直接展示会与「来源」这一列名的语义不符。
  *
  * 判定与后端 platform/variant.js 一致，且与筛选器同源：
  * edition 优先，WorkBuddy 的历史值含 'wb' 前缀变体，其余按 Trae 处理。
- *
- * 类型直接复用渠道注册表的 ChannelId（而不是再写一份字面量联合）：
- * 两处各写一份时，新增平台只改一处就会静默不一致。
+ * 2026-11-06 前本函数不返回 'raccoon'（账号落进 Trae 分支），导致：
+ *   - 凭据池来源筛选没有 Raccoon 选项，Raccoon 账号在「全部来源」之外不可筛；
+ *   - 行内签到分发把 Raccoon 当成 Trae 调错端点。
+ * 现按 edition 显式识别（source 仅在 edition 缺失时兜底）。
  */
 export type Platform = ChannelId;
 
@@ -143,6 +173,7 @@ export function platformOf(a: {
   const raw = edition || source;
   if (raw === 'zcode') return 'zcode';
   if (raw === 'qoder') return 'qoder';
+  if (raw === 'raccoon') return 'raccoon';
   if (raw === 'workbuddy' || raw.startsWith('wb')) return 'workbuddy';
   return 'trae';
 }
@@ -165,6 +196,8 @@ export function platformLabel(a: {
 
 /** 已知平台 id 的展示名；未知值原样返回（新增平台不至于显示空白）。 */
 export function platformIdLabel(p: Platform | string): string {
+  // 账单与日志里 WorkBuddy 的历史值是 'wb' 简写，先归一化再查表
+  if (p === 'wb') return PLATFORM_LABEL.workbuddy;
   return PLATFORM_LABEL[p as Platform] ?? String(p);
 }
 

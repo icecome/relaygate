@@ -31,6 +31,9 @@ function buildStatus() {
     models: {
       upstreamFunction: config.upstreamFunction || null,
       upstreamChatPath: config.upstreamChatPath,
+      // 只统计「探活判定为不可用」的条数。媒体模型（图片/视频生成）没有 chat 端点，
+      // 从不写入可用性表，因此不会混进这个数字——面板上的「不可用模型」始终指
+      // 「对话模型里当前调不通的」。
       unavailable: availability.snapshot().filter((m) => m.status === 'unavailable').length,
     },
     uptimeSec: Math.round(process.uptime()),

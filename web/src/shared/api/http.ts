@@ -55,8 +55,30 @@ export interface ApiEnvelope {
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
-/** key -> 飞行中的 Promise，用于 GET 去重。 */
+/**
+ * GET 去重。
+ *
+ * ⚠️ 这里有一条必须遵守的约束：**不能把同一个可中止的 Promise 共享给
+ * 不同调用方**。
+ *
+ * 原实现按 `${key}|${path}` 缓存飞行中的 Promise，但那个 Promise 绑定的是
+ * 第一个调用方的 AbortSignal。于是出现这个可复现的症状：
+ *   从总览切到凭据池 → 前一个页面的 useAsyncData 卸载时 abort →
+ *   后一个订阅者拿到的是**已被中止**的那个 Promise → 页面显示「请求已取消」，
+ *   刷新一次才正常。
+ *
+ * 修复：只在没有外部 AbortSignal 时才共享；带了 signal 的请求各自独立发。
+ * 代价是并发同路径请求可能发两次（罕见），收益是「取消」绝不会串到别的组件。
+ */
 const inflight = new Map<string, Promise<unknown>>();
+
+/** 该请求是否允许被去重复用。带 AbortSignal 的一律不共享。 */
+function dedupeKey(path: string, key: string, opts: RequestOptions): string | null {
+  if (opts.signal) return null;
+  if (opts.dedupe === false) return null;
+  // 超时时间不同的两次请求语义不同，不共享
+  return `${key}|${path}|${opts.timeoutMs ?? DEFAULT_TIMEOUT_MS}`;
+}
 
 /**
  * 管理面鉴权失效的全局处置：清掉本地密钥并回到首登引导。
@@ -91,19 +113,22 @@ function handleAuthLost(requestKey: string): void {
   }
 }
 
-function buildSignal(timeoutMs: number, external?: AbortSignal): { signal: AbortSignal; done: () => void } {
+function buildSignal(timeoutMs: number, external?: AbortSignal): { signal: AbortSignal; done: () => void; getReason: () => unknown } {
   const controller = new AbortController();
+  // 原因按请求局部持有：旧实现用模块级 lastAbortReason，并发请求 A 超时写入后，
+  // 请求 B 的 catch 会读到 A 的原因，把「用户取消」误报成「请求超时」。
+  let abortReason: unknown = null;
   const timer =
     timeoutMs > 0
       ? setTimeout(() => {
           const reason = new TimeoutError(timeoutMs);
-          lastAbortReason = reason;
+          abortReason = reason;
           controller.abort(reason);
         }, timeoutMs)
       : null;
   const onExternalAbort = () => {
-    lastAbortReason = external?.reason ?? new ApiError(0, '请求已取消');
-    controller.abort(lastAbortReason);
+    abortReason = external?.reason ?? new ApiError(0, '请求已取消');
+    controller.abort(abortReason);
   };
   if (external) {
     if (external.aborted) onExternalAbort();
@@ -111,6 +136,7 @@ function buildSignal(timeoutMs: number, external?: AbortSignal): { signal: Abort
   }
   return {
     signal: controller.signal,
+    getReason: () => abortReason,
     done: () => {
       if (timer) clearTimeout(timer);
       if (external) external.removeEventListener('abort', onExternalAbort);
@@ -120,10 +146,9 @@ function buildSignal(timeoutMs: number, external?: AbortSignal): { signal: Abort
 
 /**
  * AbortController.abort(reason) 在部分环境抛出的仍是裸 AbortError，
- * 这里依据记录的原因还原成 TimeoutError /取消错误，使上层能区分二者。
+ * 这里依据 buildSignal 局部记录的原因还原成 TimeoutError /取消错误，
+ * 使上层能区分二者。
  */
-let lastAbortReason: unknown = null;
-
 function reasonToError(reason: unknown, timeoutMs: number): ApiError {
   if (reason instanceof ApiError) return reason;
   if (reason instanceof Error && reason.name === 'TimeoutError') {
@@ -142,8 +167,7 @@ function toTransportError(reason: unknown): ApiError {
 
 async function rawRequest<T>(path: string, opts: RequestOptions, key: string): Promise<T> {
   const { method = 'GET', body, timeoutMs = DEFAULT_TIMEOUT_MS } = opts;
-  lastAbortReason = null;
-  const { signal, done } = buildSignal(timeoutMs, opts.signal);
+  const { signal, done, getReason } = buildSignal(timeoutMs, opts.signal);
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (key) headers.Authorization = `Bearer ${key}`;
@@ -178,7 +202,7 @@ async function rawRequest<T>(path: string, opts: RequestOptions, key: string): P
   } catch (e) {
       // 超时 abort 会带上 TimeoutError 原因，外部取消则是裸 AbortError
       if ((e as { name?: string } | null)?.name === 'AbortError') {
-        throw reasonToError(lastAbortReason, timeoutMs);
+        throw reasonToError(getReason(), timeoutMs);
       }
       if (e instanceof ApiError) throw e;
       throw toTransportError(e);
@@ -194,12 +218,16 @@ export async function api<T = unknown>(
 ): Promise<T> {
   const method = opts.method || 'GET';
 
-  // 仅对幂等 GET 去重：同一时刻的相同请求复用结果
-  if (method !== 'GET' || opts.dedupe === false) {
+  // 仅对幂等 GET 去重；带外部 AbortSignal 的请求不参与共享（见 dedupeKey 说明）
+  if (method !== 'GET') {
     return rawRequest<T>(path, opts, key);
   }
 
-  const cacheKey = `${key}|${path}`;
+  const cacheKey = dedupeKey(path, key, opts);
+  if (cacheKey == null) {
+    return rawRequest<T>(path, opts, key);
+  }
+
   const existing = inflight.get(cacheKey);
   if (existing) return existing as Promise<T>;
 

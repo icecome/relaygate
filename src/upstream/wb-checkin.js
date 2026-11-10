@@ -78,6 +78,21 @@ async function wbCheckinAccount(accountId) {
   result.streakDays = st.streakDays ?? null;
   result.totalCredits = st.totalCredits ?? null;
   result.checkinCredits = st.todayCredit ?? st.dailyCredit ?? null;
+  /*
+   * 连登天数落库（2026-11-10）。
+   *
+   * status 是本次签到链里**最便宜**的一次上游调用，且它已经带回 streak_days。
+   * 在此写库有两个好处：
+   *   1. 账号卡片能长期显示连登，不必为每个账号额外打一次 growth 接口
+   *      （daily-progress 一轮 = 每账号 7 次上游）；
+   *   2. 写入点与 lastCheckinAt 同源同刻，两者永远描述「同一时刻的状态」。
+   *
+   * 只在拿到数字时写：st.streakDays 为 null 表示上游没给，此时**保留旧值**
+   * 比写 null 更好（旧值至少是上次的真值，而 null 会让卡片从「12 天」跳成「—」）。
+   */
+  if (st.streakDays != null) {
+    store.update(accountId, { checkinStreakDays: st.streakDays });
+  }
 
   if (!result.enable) {
     store.update(accountId, { lastCheckinAt: at, lastCheckinResult: 'disabled' });
@@ -139,6 +154,13 @@ async function wbCheckinAccount(accountId) {
     if (confirmed.streakDays != null) result.streakDays = confirmed.streakDays;
     if (confirmed.totalCredits != null) result.totalCredits = confirmed.totalCredits;
     if (confirmed.todayCredit != null) result.checkinCredits = confirmed.todayCredit;
+  }
+  /*
+   * 连登落库：用上面已经收敛好的 result.streakDays（回读值优先于 claim 自报值）。
+   * 与前面的 status 分支同一个原则：拿到数字才写，null 不覆盖旧值。
+   */
+  if (result.streakDays != null) {
+    store.update(accountId, { checkinStreakDays: result.streakDays });
   }
   return result;
 }

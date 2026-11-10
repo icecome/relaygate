@@ -239,6 +239,58 @@ async function run() {
   });
   check('E3 旧候选路径返回 404 而非 401', r.status === 404, `-> ${r.status} ${r.body.slice(0, 90)}`);
   mrStore.removeVirtual('vm/sec-slash');
+
+  // ── 2026-11-07 事故回归：密钥指向的单个物理模型全部 403，只剩聚合虚拟模型可用 ──
+  // 两个叠加根因（修复分别落在 credentials/api-keys.js 与 models/platform-ownership.js）：
+  //   R1. 旧 ensureModelsReadScope 把 scopes=NULL 的历史密钥写成 ["models:read"]，
+  //       单模型调用缺 models:invoke → 403 scope_missing（type=auth_error，
+  //       客户端显示成「API 密钥失效」）；虚拟分支不校验 scope，故聚合模型正常。
+  //   R2. WB 独有判定只看静态 WB_MODELS 名单，glm-5.3 / minimax-m3 等两平台同名
+  //       的模型被误判 platform_mismatch → 403（同样只剩虚拟模型能走通）。
+  const { db: dbHandle } = require('../credentials/db');
+  const legacy = apiKeys.createKey({ label: 'sec-legacy-null-scopes', kind: 'access', platform: 'trae' });
+  dbHandle().prepare('UPDATE api_keys SET scopes = NULL WHERE id = ?').run(legacy.id);
+  const rePatched = apiKeys.ensureModelsReadScope();
+  check('R1 NULL scopes 迁移按平台默认物化（含 invoke）', rePatched.includes(legacy.id), JSON.stringify(rePatched));
+  const legacyAfter = apiKeys.verifyAccessKey(legacy.key);
+  check('R1 迁移后密钥具备 models:invoke', (legacyAfter.scopes || []).includes('models:invoke'), JSON.stringify(legacyAfter && legacyAfter.scopes));
+  // 坏行形态（上一版迁移写出的 ["models:read"]）由 ensureInvokeScope 修复
+  const broken = apiKeys.createKey({ label: 'sec-broken-read-only', kind: 'access', platform: 'workbuddy' });
+  dbHandle().prepare('UPDATE api_keys SET scopes = ? WHERE id = ?').run(JSON.stringify(['models:read']), broken.id);
+  const repaired = apiKeys.ensureInvokeScope();
+  check('R1 只读 scope 坏行被修复为可用密钥', repaired.some((x) => x.id === broken.id), JSON.stringify(repaired.map((x) => x.id)));
+  const brokenAfter = apiKeys.verifyAccessKey(broken.key);
+  check('R1 修复后 wb 密钥可调用 wb/glm-5.3', canUseModel(brokenAfter.platform, 'wb/glm-5.3', brokenAfter).ok === true, JSON.stringify(canUseModel(brokenAfter.platform, 'wb/glm-5.3', brokenAfter)));
+  apiKeys.deleteKey(legacy.id);
+  apiKeys.deleteKey(broken.id);
+
+  // R2：平台归属判定（platform-ownership 事实源）——两平台同名的模型不再被误判
+  const ownership = require('../models/platform-ownership');
+  ownership._resetForTest();
+  // 写一份临时状态：目录快照 + 实测结论，模拟「修复脚本跑过一轮」后的现场
+  const osMod = require('os');
+  const WS_OWNERSHIP = path.join(WS, '.trae-api', 'model-ownership.json');
+  fs.mkdirSync(path.dirname(WS_OWNERSHIP), { recursive: true });
+  fs.writeFileSync(WS_OWNERSHIP, JSON.stringify({
+    version: 2,
+    trae: { at: Date.now(), ids: ['glm-5.3', 'minimax-m3', 'doubao-1-6', 'step-5-preview'], source: 'upstream-full-catalog' },
+    workbuddy: { at: Date.now(), ids: ['glm-5.3', 'hy3', 'hunyuan-chat', 'kimi-k2.6'], source: 'test' },
+    probes: {
+      'glm-5.3': { at: Date.now(), ok: true, platform: 'trae' },
+      hy3: { at: Date.now(), ok: false, platform: 'trae', note: "We're sorry, the param is invalid." },
+    },
+  }));
+  ownership._resetForTest();
+  check('R2 glm-5.3 两平台同名 → 非 WB 独有', ownership.isWorkBuddyExclusive('glm-5.3') === false, JSON.stringify(ownership.explain('glm-5.3')));
+  check('R2 hy3 只有 WB（且 Trae 实测失败）→ WB 独有', ownership.isWorkBuddyExclusive('hy3') === true, JSON.stringify(ownership.explain('hy3')));
+  check('R2 hunyuan-chat 只有 WB → WB 独有', ownership.isWorkBuddyExclusive('hunyuan-chat') === true, JSON.stringify(ownership.explain('hunyuan-chat')));
+  const traeKeyForR2 = apiKeys.createKey({ label: 'sec-r2-trae', kind: 'access', platform: 'trae' });
+  check('R2 trae 密钥调 glm-5.3 放行（此前被误判 403）', canUseModel('trae', 'glm-5.3', traeKeyForR2).ok === true, JSON.stringify(canUseModel('trae', 'glm-5.3', traeKeyForR2)));
+  check('R2 trae 密钥调 hy3 仍拒绝（真 WB 独有）', canUseModel('trae', 'hy3', traeKeyForR2).ok === false, JSON.stringify(canUseModel('trae', 'hy3', traeKeyForR2)));
+  check('R2 通用密钥 glm-5.3 分派给 trae（此前白占 WB 配额）', require('../middleware/model-access').platformOfModel('glm-5.3') === 'trae', '');
+  check('R2 通用密钥 hy3 分派给 workbuddy', require('../middleware/model-access').platformOfModel('hy3') === 'workbuddy', '');
+  check('R2 @max 档位后缀不改变归属', ownership.isWorkBuddyExclusive('glm-5.3@max') === false && ownership.ownerPlatformOf('step-5-preview@max') === 'trae', JSON.stringify(ownership.explain('glm-5.3@max')));
+  apiKeys.deleteKey(traeKeyForR2.id);
 }
 
 // app.listen 在 require 时已发起，等端口就绪后再断言

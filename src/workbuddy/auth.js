@@ -11,9 +11,9 @@
  *   - chat:        POST {chatHost}/v2/chat/completions（OpenAI 兼容 SSE）
  *   - 刷新:        POST https://www.codebuddy.cn/v2/plugin/auth/token/refresh（X-Refresh-Token 头，空体 {}）
  *   - 余额/验证:   POST {billingBase}/billing/meter/get-user-resource-summary
- *   统一认证头：Authorization Bearer + 桌面端身份（UA "WorkBuddy/5.8.3 … CLI/2.161.0"、
- *   X-IDE-Type/Name/Version、X-Private-Data、x-codebuddy-request）+ X-User-Id +
- *   X-Enterprise-Id + X-Domain + X-Product: SaaS
+ *   统一认证头：Authorization Bearer + 桌面端身份（UA "WorkBuddy/5.9.3 … CLI/2.165.0"、
+ *   X-IDE-Type/Name/Version、X-Private-Data、x-codebuddy-request、acp-connection-id、
+ *   X-Agent-Runtime/X-Agent-Type）+ X-User-Id + X-Domain + X-Product: SaaS
  *   红线：chat 请求绝不携带 X-Refresh-Token。
  *
  * 2026-10-21 渠道校验事故（HTTP 400 code=11128「Illegal API invocation from an
@@ -183,7 +183,13 @@ function chatHeaders(info, opts = {}) {
   const r = validRegion(info.region);
   const domain = variant.hostFor(DOMAINS, r);
   const conversationId = String(opts.conversationId || crypto.randomUUID());
-  const requestId = String(opts.requestId || crypto.randomUUID());
+  const conversationRequestId = String(opts.requestId || crypto.randomUUID());
+  // 客户端 5.9.3（cli 2.165.0）实测形状（app.asar main/server.js#applyGatewayHeaders +
+  // cli/dist/codebuddy-lite-wb.mjs#buildConversationHeaders）：
+  //   - 多出 acp-connection-id（会话级 UUID，同会话稳定）、X-Agent-Runtime、X-Agent-Type；
+  //   - X-Request-ID 与 X-Conversation-Message-ID 是同一个「去连字符 UUID」（messageId），
+  //     不再是 conversationRequestId；X-Conversation-Request-ID 才是会话请求键。
+  const messageId = crypto.randomUUID().replace(/-/g, '');
   const base = {
     'Accept': 'application/json',
     'Content-Type': 'application/json',
@@ -198,11 +204,14 @@ function chatHeaders(info, opts = {}) {
     'X-IDE-Version': APP_VERSION,
     'X-Private-Data': WB_IDENTITY.privateData,
     'x-codebuddy-request': '1',
+    'acp-connection-id': String(opts.acpConnectionId || crypto.randomUUID()),
     'X-Conversation-ID': conversationId,
-    'X-Conversation-Request-ID': requestId,
-    'X-Conversation-Message-ID': crypto.randomUUID(),
-    'X-Request-ID': requestId,
+    'X-Conversation-Request-ID': conversationRequestId,
+    'X-Conversation-Message-ID': messageId,
+    'X-Request-ID': messageId,
     'X-Agent-Intent': opts.intent || 'craft',
+    'X-Agent-Runtime': opts.runtime || 'local-agent',
+    'X-Agent-Type': opts.agentType || 'main',
     'X-Agent-Purpose': opts.purpose || 'conversation',
   };
   return Object.assign(base, traceHeaders(), opts.extra || {});

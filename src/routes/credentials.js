@@ -5,12 +5,14 @@
  */
 const { Router } = require('express');
 const store = require('../credentials/store');
+const transfer = require('../credentials/transfer');
 const { importAccount, importMany, ensureAllMissingDevices, resetAccountDevices, backfillTraeExchangeDefaults } = require('../credentials/import');
 const oauth = require('../credentials/oauth');
 const pool = require('../credentials/pool');
 const { checkinAccount, checkinAllEnabled } = require('../upstream/checkin');
 const { refreshBalance, refreshBalanceAllEnabled } = require('../upstream/balance');
 const { summarizeExpiry } = require('../credentials/credits');
+const entitlementView = require('../credentials/entitlement-view');
 const { authenticateAdmin, checkAdminToken, extractToken } = require('../middleware/auth');
 const { round2 } = require('../lib/round');
 
@@ -54,6 +56,12 @@ function withExpiry(account) {
     // Qoder 的两段额度（基础 userQuota + 赠送 addOnQuota）同为隔离口径，
     // 单独透出，不与 packs/balance 混算（与 ZCode 的 tokenRemaining 同原则）。
     quota: snap.quota && typeof snap.quota === 'object' ? snap.quota : undefined,
+    // Raccoon 的分池明细（奖励 / 每日 / 充值）。balance 只给总数，分池在这个
+    // 隔离键里；不补这行前端只能显示一个总数，看不到「每日积分明天清零」这类
+    // 事实。与其余三个隔离键同原则：原样透出，不并入 packs 与任何积分汇总。
+    raccoonPoints: snap.raccoonPoints && typeof snap.raccoonPoints === 'object'
+      ? snap.raccoonPoints
+      : undefined,
     entitlementSnapshotUpdatedAt: snap.updatedAt ? snap.updatedAt : null,
   };
 }
@@ -85,9 +93,32 @@ function initCredentials() {
 }
 
 // 列出账号（已脱敏）
+//
+// `?slim=1`：把每条账号的 packs 明细换成 packDigest 摘要，并去掉 devices /
+// fingerprint。列表页每 60 秒轮询一次，实测 23 个账号的完整响应 121 KB，
+// 其中 ≈100 KB 是 743 条权益包——而列表只用到六个聚合值。摘要由
+// credentials/entitlement-view.js 计算，与 summarizeExpiry / FEFO 共用同一套
+// 日历日判定，不会出现面板与调度差一天的口径漂移。
+// 完整 packs 仍可通过 GET /v1/credentials/:id 单独取（详情弹窗按需拉取）。
 router.get('/', admin, (req, res) => {
-  res.json({ object: 'list', data: store.list().map(withExpiry) });
+  const rows = store.list().map(withExpiry);
+  if (!isSlim(req)) {
+    return res.json({ object: 'list', data: rows });
+  }
+  const now = Date.now();
+  return res.json({
+    object: 'list',
+    slim: true,
+    rollup: entitlementView.rollupOf(rows, now),
+    data: rows.map((a) => entitlementView.slimAccount(a, now)),
+  });
 });
+
+/** 是否请求列表精简投影。只认字面量 1/true，避免 `?slim=0` 被读成真。 */
+function isSlim(req) {
+  const v = String(req.query.slim == null ? '' : req.query.slim).toLowerCase();
+  return v === '1' || v === 'true';
+}
 
 // 新增（单条）/ 批量导入凭据
 router.post('/', admin, (req, res) => {
@@ -109,19 +140,31 @@ router.post('/', admin, (req, res) => {
 });
 
 // 账号池摘要（供仪表盘）
+//
+// `?slim=1` 与列表端点同语义：packs 换成摘要，并附带跨账号 rollup。
+// SummaryProvider 是全局单例（侧栏可用数、总览页额度卡都读它），
+// 它每 60 秒随余额轮询重拉一次——不瘦身的话同一批 743 条包会被下发两遍。
 router.get('/summary', admin, (req, res) => {
   const list = store.list().map(withExpiry);
   const enabled = list.filter((a) => a.enabled).length;
   const now = Date.now();
   const cooling = list.filter((a) => a.coolUntil && new Date(a.coolUntil).getTime() > now).length;
-  res.json({
+  const base = {
     total: list.length,
     enabled,
     disabled: list.length - enabled,
     cooling,
     expiring3d: round2(list.reduce((s, a) => s + (a.expiring3d || 0), 0)),
     expiring7d: round2(list.reduce((s, a) => s + (a.expiring7d || 0), 0)),
-    accounts: list,
+  };
+  if (!isSlim(req)) {
+    return res.json({ ...base, accounts: list });
+  }
+  return res.json({
+    ...base,
+    slim: true,
+    rollup: entitlementView.rollupOf(list, now),
+    accounts: list.map((a) => entitlementView.slimAccount(a, now)),
   });
 });
 
@@ -131,7 +174,17 @@ router.get('/summary', admin, (req, res) => {
 // WorkBuddy 账号会被静默跳过（m-39）。
 router.post('/checkin', admin, async (req, res) => {
   try {
-    const r = await checkinAllEnabled({ spreadMinutes: 0 });
+    // 轮级互斥：与调度器签到链 / /checkin-all 共用同一把锁，
+    // 否则两批并发跑同一批账号，通知会报出「领取 3 · 已在别轮签过 5」的误导结果
+    const { withCheckinRound } = require('../upstream/checkin-lock');
+    const r = await withCheckinRound(() => checkinAllEnabled({ spreadMinutes: 0 }), { label: 'route:/checkin' });
+    if (r && r.skipped) {
+      return res.status(409).json({
+        object: 'checkin.batch',
+        skipped: true,
+        error: { message: '另一轮签到正在进行，本次未重复请求上游', type: 'conflict' },
+      });
+    }
     res.json({ ...r, object: 'checkin.batch' });
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: 'internal_error' } });
@@ -374,6 +427,50 @@ router.post('/device/reset-all', admin, (req, res) => {
 // 片段在本机完成 GetRefreshToken + ExchangeToken（带 trae.cn cookie），并把结果 POST 到本端点。
 // 浏览器控制台无法携带管理密钥，故该端点免 admin、以 Origin 白名单限制来源。
 
+// 账号加密导出（跨机迁移）：POST /v1/credentials/transfer/export {password, accountIds?}。
+// 返回文件名与信封 JSON 内容（前端触发下载）；凭据在信封内由用户密码保护。
+// accountIds 按账号表 id 选择导出范围；参数名历史上叫 uids，两个键都接受。
+router.post('/transfer/export', admin, (req, res) => {
+  try {
+    const body = req.body || {};
+    const selection = body.accountIds !== undefined ? body.accountIds : body.uids;
+    const r = transfer.buildExport(body.password, selection);
+    res.json({ object: 'credentials_transfer_export', ...r });
+  } catch (err) {
+    res.status(transferStatus(err)).json({ error: { message: err.message, type: 'invalid_request_error' } });
+  }
+});
+
+// 账号加密导入：POST /v1/credentials/transfer/import {content, password}。
+// content 是导出信封 JSON 全文；导入后按 userId 去重，新账号默认 enabled=false。
+router.post('/transfer/import', admin, (req, res) => {
+  try {
+    const body = req.body || {};
+    const content = typeof body === 'string' ? body : String(body.content || body.data || '');
+    if (!content) {
+      return res.status(400).json({ error: { message: '未读取到有效内容，请选择导出文件', type: 'invalid_request_error' } });
+    }
+    const r = transfer.importAccounts(content, body.password);
+    console.log(`[transfer] 导入完成：新建 ${r.imported.length} · 更新 ${r.updated.length} · 跳过 ${r.skipped}/${r.total}`);
+    res.json({ object: 'credentials_transfer_import', ok: true, ...r });
+  } catch (err) {
+    res.status(transferStatus(err)).json({ error: { message: err.message, type: 'invalid_request_error' } });
+  }
+});
+
+/**
+ * transfer 错误 → HTTP 状态。
+ *
+ * 用结构化 `err.status`（TransferInputError 带 400），**不再**按消息文本正则分类：
+ * 文本是活文案，「账号选择必须是数组」「请至少选择一个账号」这类不含
+ * 密码/损坏/版本关键词的输入错误会被文本正则误判成 500（客户端拿不到可展示原因）。
+ * 未分类的异常（写库失败等）仍按 500。
+ */
+function transferStatus(err) {
+  const s = err && Number(err.status);
+  return Number.isInteger(s) && s >= 400 && s < 600 ? s : 500;
+}
+
 const OAUTH_COMPLETE_CORS = { 'Access-Control-Allow-Methods': 'POST, OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
 
 function oauthCompleteOriginAllowed(origin) {
@@ -433,7 +530,11 @@ router.post('/oauth/complete', async (req, res) => {
 // 手动补交回调：粘贴完整回调 URL（仅解析参数，不向该地址发起任何请求）
 router.post('/oauth/callback', admin, async (req, res) => {
   try {
-    const callbackUrl = req.body && req.body.callbackUrl;
+    // 请求体字段名兼容 `callbackUrl` 与 `url` 两种写法。
+    // 前端此前发的是 `{url}`、本端点只读 `callbackUrl`，于是「解析并导入」按钮
+    // 永远命中 400「callbackUrl is required」——接口存在但从未真正可用。
+    // 两个键都读，任何一边的调用方都能用；缺省文案同时给出两个键名。
+    const callbackUrl = req.body && (req.body.callbackUrl || req.body.url);
     if (!callbackUrl) {
       return res.status(400).json({ error: { message: 'callbackUrl is required', type: 'invalid_request_error' } });
     }

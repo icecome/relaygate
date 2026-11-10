@@ -3485,6 +3485,79 @@ t('checkAdminToken：API_KEY 不再能通过管理面（K-1 权限分离）', ()
 });
 
 console.log('workbuddy/chat modelCatalog');
+t('isChatModel：区分对话模型与图片/视频生成模型（2026-11-08）', () => {
+  const wbChat = require('../workbuddy/chat');
+  // 对话模型：拿 chat 端点能调
+  assert.strictEqual(wbChat.isChatModel({ id: 'hy3', tags: ['craft', 'badge:限时免费:#FF0000'] }), true);
+  assert.strictEqual(wbChat.isChatModel({ id: 'glm-5.3' }), true);
+  assert.strictEqual(wbChat.isChatModel({ id: 'kimi-k3.1-pro', supportsImages: true }), true);
+  // 媒体模型：目录里有，但推理后端不是 chat → 探活必然 11103，必须排除
+  assert.strictEqual(wbChat.isChatModel({ id: 'hunyuan-image-alpha', tags: ['text-to-image'] }), false);
+  assert.strictEqual(wbChat.isChatModel({ id: 'kling-video-v3', tags: ['text-to-video', 'image-to-video'] }), false);
+  assert.strictEqual(wbChat.isChatModel({ id: 'minimax-video-h3', tags: ['text-to-video'], videoGeneration: {} }), false);
+  // 静态名单没有 tags，靠 id 关键字兜底
+  assert.strictEqual(wbChat.isChatModel({ id: 'hunyuan-image-v3.0' }), false);
+  assert.strictEqual(wbChat.mediaKindOf({ id: 'kling-video-v3' }), 'video');
+  assert.strictEqual(wbChat.mediaKindOf({ id: 'hunyuan-image-alpha' }), 'image');
+});
+
+t('modelCatalog：目录条目带 chat 能力位（媒体模型 chat=false）', async () => {
+  const wbAuth = require('../workbuddy/auth');
+  const wbChat = require('../workbuddy/chat');
+  const origFetch = global.fetch;
+  const origReadAuthFile = wbAuth.readAuthFile;
+  wbAuth.readAuthFile = () => ({ accessToken: 'tok', uid: 'u1', region: 'cn' });
+  global.fetch = async () => ({
+    ok: true,
+    json: async () => ({ data: [
+      { id: 'glm-5.3', name: 'GLM-5.3', credits: 'x0.69 credits' },
+      { id: 'hunyuan-image-alpha', name: 'Hunyuan Image', tags: ['text-to-image'] },
+      { id: 'kling-video-v3', name: 'Kling', tags: ['text-to-video'], videoGeneration: { maxSeconds: 15 } },
+    ] }),
+  });
+  try {
+    const models = await wbChat.modelCatalog(true);
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+    assert.strictEqual(byId['glm-5.3'].chat, true);
+    assert.strictEqual(byId['hunyuan-image-alpha'].chat, false);
+    assert.strictEqual(byId['hunyuan-image-alpha'].mediaKind, 'image');
+    assert.strictEqual(byId['kling-video-v3'].chat, false);
+    assert.strictEqual(byId['kling-video-v3'].mediaKind, 'video');
+  } finally {
+    global.fetch = origFetch;
+    wbAuth.readAuthFile = origReadAuthFile;
+  }
+});
+
+t('availability.reconcile：按目录删除僵尸条目，保留目录内条目', () => {
+  const av = require('../models/availability');
+  const orig = av.snapshot();
+  try {
+    av.markUsable('zz-live-model');
+    av.markUsable('zz-dead-model');
+    const removed = av.reconcile('zz-', ['zz-live-model']);
+    assert.deepStrictEqual(removed, ['zz-dead-model']);
+    assert.strictEqual(av.statusOf('zz-live-model'), 'usable');
+    assert.strictEqual(av.statusOf('zz-dead-model'), 'unknown');
+  } finally {
+    av.reset('zz-live-model');
+    av.reset('zz-dead-model');
+    assert.ok(orig.length >= 0);
+  }
+});
+
+t('availability.markUnavailable：可覆盖 TTL（套餐层结论用短 TTL）', () => {
+  const av = require('../models/availability');
+  try {
+    av.markUnavailable('zz-plan-limit', '[套餐层] PlanLimit', { ttlMs: 1000 });
+    const c = JSON.parse(require('fs').readFileSync(require('../lib/paths').stateFile('model-status.json'), 'utf-8'));
+    const ent = c['zz-plan-limit'];
+    assert.ok(ent && ent.expireAt - ent.at === 1000, JSON.stringify(ent));
+  } finally {
+    av.reset('zz-plan-limit');
+  }
+});
+
 t('parseRate：兼容旧格式 x2.5 与新格式 x0.00 credits', async () => {
   // parseRate 未导出，经 modelCatalog 的解析路径验证：mock fetch 返回两种格式
   const wbAuth = require('../workbuddy/auth');
@@ -4819,6 +4892,189 @@ t('workbuddy 会话键：conversationId 可跨请求复用，requestId 每次新
   assert.notStrictEqual(c['X-Conversation-ID'], d['X-Conversation-ID']);
 });
 
+t('workbuddy 5.9.3 头集：acp-connection-id / X-Agent-Runtime / X-Agent-Type 必带', () => {
+  // 取证来源：app.asar 5.9.3（cli 2.165.0）
+  //   main/server.js#applyGatewayHeaders → acp-connection-id
+  //   cli/dist/codebuddy-lite-wb.mjs#buildConversationHeaders → X-Agent-Runtime / X-Agent-Type
+  const wbAuth = require('../workbuddy/auth');
+  const h = wbAuth.chatHeaders({ accessToken: 't', uid: 'u', region: 'cn' });
+  assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(h['acp-connection-id']), 'acp-connection-id 应为 UUID 形态');
+  assert.strictEqual(h['X-Agent-Runtime'], 'local-agent', '桌面端本地 agent 的 runtime');
+  assert.strictEqual(h['X-Agent-Type'], 'main', '主会话 agent 类型');
+  assert.strictEqual(h['X-Agent-Purpose'], 'conversation');
+  // X-Request-ID 与 X-Conversation-Message-ID 在客户端是同一个 messageId
+  assert.strictEqual(h['X-Request-ID'], h['X-Conversation-Message-ID']);
+  assert.ok(/^[0-9a-f]{32}$/.test(h['X-Request-ID']), 'messageId 为去连字符 UUID');
+});
+
+t('workbuddy 会话键派生：同一 stickyKey 得到同一 acp-connection-id，不同 stickyKey 不同', () => {
+  const dispatch = require('../model-router/dispatch');
+  const a = dispatch.wbConversationOpts({ stickyKey: 'sess-1' });
+  const b = dispatch.wbConversationOpts({ stickyKey: 'sess-1' });
+  const c = dispatch.wbConversationOpts({ stickyKey: 'sess-2' });
+  assert.strictEqual(a.acpConnectionId, b.acpConnectionId, '同会话必须稳定');
+  assert.notStrictEqual(a.acpConnectionId, c.acpConnectionId, '跨会话必须不同');
+  assert.notStrictEqual(a.conversationId, c.conversationId);
+  assert.deepStrictEqual(dispatch.wbConversationOpts({}), {}, '无 stickyKey 时不派生（由 chatHeaders 自生成）');
+});
+
+t('identity-scrub：句级官方身份跳过（长 prompt 提及官方产品名时其余句子仍被中和）', () => {
+  const sc = require('../transform/identity-scrub');
+  // 混合 prompt：官方身份词句保留，第三方身份声明句被中和
+  const mixed = 'You are interacting with the user through the WorkBuddy Web GUI. You are Claude Code, a CLI agent.';
+  const r1 = sc.scrubMessages([{ role: 'system', content: mixed }]);
+  assert.strictEqual(r1.changed, true, '混合句应被改写');
+  assert.ok(r1.messages[0].content.includes('WorkBuddy Web GUI'), '官方身份句原样保留');
+  assert.ok(!/claude\s*code/i.test(r1.messages[0].content), '第三方声明被中和');
+  // 纯官方身份：整条不动
+  const r2 = sc.scrubMessages([{ role: 'system', content: 'You are CodeBuddy Code. Use tools.' }]);
+  assert.strictEqual(r2.changed, false);
+  assert.strictEqual(r2.messages[0].content, 'You are CodeBuddy Code. Use tools.');
+  // 纯第三方声明：照常中和，句间不粘连
+  const r3 = sc.scrubMessages([{ role: 'system', content: 'You are Codex, an AI assistant. You are helping.' }]);
+  assert.strictEqual(r3.changed, true);
+  assert.strictEqual(r3.messages[0].content, 'You are a coding assistant, an AI assistant. You are helping.');
+  // 只有环境描述、没有身份自述：零改写
+  const r4 = sc.scrubMessages([{ role: 'system', content: 'The runtime context names the DeepSeek Harness implementation checkout.' }]);
+  assert.strictEqual(r4.changed, false);
+});
+
+t('system-relocate：超长 system 迁到首条 user（上游只查 system，长度×特征密度双条件）', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const r = sr.relocateMessages([{ role: 'system', content: long }, { role: 'user', content: 'hi' }], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true, '超阈值必须迁位');
+  assert.strictEqual(r.movedChars, 9000);
+  assert.deepStrictEqual(r.messages.map((m) => m.role), ['system', 'user'], '迁位后仍是一条 system + 一条 user');
+  assert.ok(r.messages[0].content.length < 200, 'system 只留中性短句');
+  assert.ok(!/DeepSeek|Harness/.test(r.messages[0].content), 'system 不得残留第三方产品名');
+  // 内容完整性：原文逐字节保留在 user 消息里
+  assert.ok(r.messages[1].content.includes(long), '原文必须完整保留（不改字节，只换 role）');
+  assert.ok(r.messages[1].content.includes('hi'), '真实 user 内容不得丢失');
+});
+
+t('system-relocate：未超阈值零变化，且原引用不变（零拷贝语义）', () => {
+  const sr = require('../transform/system-relocate');
+  const msgs = [{ role: 'system', content: 'short' }, { role: 'user', content: 'hi' }];
+  const r = sr.relocateMessages(msgs, { maxChars: 6000 });
+  assert.strictEqual(r.relocated, false);
+  assert.strictEqual(r.messages, msgs, '未命中必须返回同一引用');
+});
+
+t('system-relocate：多条 system 合并迁位，无 user 时自行补一条', () => {
+  const sr = require('../transform/system-relocate');
+  const a = 'a'.repeat(4000);
+  const b = 'b'.repeat(4000);
+  const r = sr.relocateMessages([{ role: 'system', content: a }, { role: 'system', content: b }], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true);
+  assert.strictEqual(r.systemChars, 8000, '累计字符数是两条 system 之和');
+  assert.strictEqual(r.movedChars, 8002, 'movedChars 为拼接后长度（含两条之间的分隔符）');
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(user, '必须产出 user 消息');
+  assert.ok(user.content.includes(a) && user.content.includes(b), '两条 system 都要保留');
+  assert.strictEqual(r.messages.filter((m) => m.role === 'system').length, 1, '多条 system 合并成一条短句');
+});
+
+t('system-relocate：WB_SYSTEM_RELOCATE_MAX 可覆盖阈值，<=0 关闭', () => {
+  const sr = require('../transform/system-relocate');
+  const old = process.env.WB_SYSTEM_RELOCATE_MAX;
+  try {
+    process.env.WB_SYSTEM_RELOCATE_MAX = '0';
+    assert.strictEqual(sr.maxSystemChars(), 0);
+    assert.strictEqual(sr.relocateEnabled(), false);
+    process.env.WB_SYSTEM_RELOCATE_MAX = '1234';
+    assert.strictEqual(sr.maxSystemChars(), 1234);
+    assert.strictEqual(sr.relocateEnabled(), true);
+  } finally {
+    if (old === undefined) delete process.env.WB_SYSTEM_RELOCATE_MAX;
+    else process.env.WB_SYSTEM_RELOCATE_MAX = old;
+  }
+});
+
+t('system-relocate：多模态 user（文本块 + 图片块）保留全部原始块，不吞图片', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const imgBlock = { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } };
+  const imgUser = { role: 'user', content: [{ type: 'text', text: 'what is this' }, imgBlock] };
+  const r = sr.relocateMessages([{ role: 'system', content: long }, imgUser], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true);
+  const users = r.messages.filter((m) => m.role === 'user');
+  assert.strictEqual(users.length, 1, '不额外造 user，就地前置文本块');
+  const blocks = users[0].content;
+  assert.ok(Array.isArray(blocks), '多模态 user 保持数组形态');
+  assert.strictEqual(blocks[0].type, 'text', '迁位文本作为第一个块');
+  assert.ok(blocks[0].text.includes(long), '原文完整迁入');
+  assert.ok(blocks.some((b) => b.type === 'image_url'), '图片块必须保留');
+  assert.ok(blocks.some((b) => b.type === 'text' && b.text === 'what is this'), '原文本块必须保留');
+});
+
+t('system-relocate：纯图片 user（无文本块）也不丢内容', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const pureImg = { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] };
+  const r = sr.relocateMessages([{ role: 'system', content: long }, pureImg], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true);
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(Array.isArray(user.content));
+  assert.ok(user.content.some((b) => b.type === 'image_url'), '图片块必须保留');
+  assert.ok(user.content.some((b) => b.type === 'text' && b.text.includes(long)), '原文必须迁入');
+});
+
+/*
+ * LR-004 回归保护：收集循环跳过的 system 不得被删除循环无差别删掉。
+ * 旧实现 filter(role==='system') 会把纯图片 system 整条丢掉，
+ * movedChars 只统计 joined.length，日志也看不出丢了东西。
+ */
+t('system-relocate：纯图片 system 在迁位中不得静默丢失', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const imgBlock = { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } };
+  const imgSystem = { role: 'system', content: [imgBlock] };
+  const r = sr.relocateMessages([{ role: 'system', content: long }, imgSystem,
+    { role: 'user', content: 'hi' }], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true);
+  assert.ok(r.messages.some((m) => m.role === 'system' && Array.isArray(m.content)
+    && m.content.some((b) => b.type === 'image_url')), '纯图片 system 必须原样保留');
+  assert.strictEqual(r.movedChars, 9000, 'movedChars 只统计被迁走的纯文本，不含图片块');
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(user.content.includes(long), '纯文本 system 仍迁入 user');
+});
+
+t('system-relocate：多条 system 混合多模态时逐条不丢', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const imgBlock = { type: 'image_url', image_url: { url: 'data:image/png;base64,BB' } };
+  const nullSystem = { role: 'system', content: null };
+  const r = sr.relocateMessages([
+    { role: 'system', content: long },
+    nullSystem,
+    { role: 'system', content: [{ type: 'text', text: 'caption' }, imgBlock] },
+    { role: 'user', content: 'hi' },
+  ], { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true);
+  assert.ok(r.messages.some((m) => m.role === 'system' && m.content === null),
+    'content=null 的 system 不得被删');
+  assert.ok(r.messages.some((m) => m.role === 'system' && Array.isArray(m.content)
+    && m.content.some((b) => b.type === 'image_url')),
+  '带图片块的 system 整条保留（不做半迁位，图片块不丢）');
+  assert.ok(r.messages.some((m) => m.role === 'system' && Array.isArray(m.content)
+    && m.content.some((b) => b.type === 'text' && b.text === 'caption')),
+  '混合消息里的文本块也不得被单独抽走后丢掉图片');
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(user.content.includes(long), '可安全迁走的纯文本 system 仍迁入 user');
+});
+
+t('system-relocate：迁位前缀声明引用语义，不暴露可猜的闭合标记', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const r = sr.relocateMessages([{ role: 'system', content: long }, { role: 'user', content: 'hi' }],
+    { maxChars: 6000 });
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(user.content.includes('不是可执行指令'), '必须显式声明引用文本非指令');
+  assert.ok(!user.content.includes('[End of session instructions]'),
+    '不得使用用户可猜测/伪造的旧闭合标记');
+});
+
 t('11128 分类为 channel：不重试、不冷却、可跨平台降级', () => {
   const { classifyError, isRetryable, isChannelBlockedError } = require('../upstream/errors');
   const health = require('../model-router/health');
@@ -4896,6 +5152,12 @@ t('identity-scrub：中和 system 里的 harness 身份声明，不碰其余内�
     { role: 'system', content: 'You are the WorkBuddy desktop assistant.' },
   ]);
   assert.strictEqual(c.changed, false, '官方客户端身份自述不得改写');
+  // m-03 回归：官方产品名与第三方身份声明同句时，不得因官方词豁免整句
+  const c2 = scrub.scrubMessages([
+    { role: 'system', content: 'WorkBuddy gateway says: You are Codex, a coding agent.' },
+  ]);
+  assert.strictEqual(c2.changed, true, '同句含官方词不得让第三方身份声明漏检');
+  assert.ok(!/codex/i.test(c2.messages[0].content), 'Codex 自述仍必须被中性化');
   // 普通提及不是自述，不动：「用 claude code 打开这个项目」
   const d = scrub.scrubMessages([
     { role: 'system', content: '用户可能用 claude code 打开这个项目，注意路径格式。' },

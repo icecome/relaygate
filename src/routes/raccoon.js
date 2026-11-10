@@ -30,14 +30,16 @@ const credits = require('../raccoon/credits');
 const chat = require('../raccoon/chat');
 const product = require('../raccoon/product');
 const localClient = require('../raccoon/local');
+const raccoonDispatch = require('../raccoon/dispatch');
+const raccoonStream = require('../raccoon/stream');
 const keepaliveJobs = require('../jobs/raccoon-keepalive');
 const qr = require('../lib/qr');
 const { authenticateAdmin, authenticate } = require('../middleware/auth');
 const { keyRateLimit } = require('../middleware/rate-limit');
 const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
-const { createLineFeeder } = require('../lib/sse-lines');
 const { canUseModel, isRaccoonOnlyModel } = require('../middleware/model-access');
+const { replyUpstreamError, clientMessage } = require('../lib/upstream-error');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
@@ -115,7 +117,17 @@ router.get('/status', admin, (_req, res) => {
       // 独立账号池：不进 Trae 转发池（pool.editionOk 的默认分支只取 Trae 系）
       inPool: false,
       modelsEndpoint: '/v1/raccoon/models',
+      // 统一端点也分派 sn-* 到这里（2026-11-09 起），客户端只需配一个 baseURL
+      unifiedEndpoint: '/v1/chat/completions',
     },
+    /**
+     * 限流闸门的实时状态。
+     *
+     * 为什么暴露它：上游限流是**出站 IP 维度**的（实测换账号换模型同时 429），
+     * 用户看到「429」时最需要知道的是「多久恢复、是我这台机器的问题还是账号的」。
+     * 面板上没有这个数字，用户只能盲目重试 —— 而重试会延长恢复窗口。
+     */
+    limiter: raccoonDispatch.limiter.snapshot(),
     login: {
       // 面板承载登录：不需要本机装客户端
       mode: 'qrcode',
@@ -159,6 +171,28 @@ router.get('/accounts/:id/daily-usage', admin, async (req, res) => {
   } catch (e) {
     res.status(502).json({ error: { message: e.message, type: 'raccoon_upstream_error' } });
   }
+});
+
+/**
+ * 限流闸门状态 + 「现在能不能发请求」的判定。
+ *
+ * 供转发客户端在 429 之后自查：与其盲目重试（那会延长上游的恢复窗口），
+ * 不如先问这里「还要等多久」。返回 `blocked=false` 才值得发下一次请求。
+ *
+ * 不需要管理密钥 —— 它不含任何凭据，只有时间戳与计数，且转发面密钥已经
+ * 由外层 authenticate 校验过。放在这里而不是 admin 面，是因为真正需要它的
+ * 是**调用方**（DSH / 脚本），不是人。
+ */
+router.get('/limiter', authenticate, (_req, res) => {
+  const snap = raccoonDispatch.limiter.snapshot();
+  const globalLeft = raccoonDispatch.limiter.globalCoolingFor();
+  res.json({
+    object: 'raccoon.limiter',
+    blocked: globalLeft > 0,
+    retryAfterMs: globalLeft,
+    retryAfterSec: globalLeft > 0 ? Math.ceil(globalLeft / 1000) : 0,
+    ...snap,
+  });
 });
 
 // ---- 每日保活（「当日登录」延长每日积分有效期） ----
@@ -477,7 +511,9 @@ router.post('/local/import', admin, async (_req, res) => {
  * 如实说明 —— 面板据此提示「倍率可能不是最新」，而不是假装拿到了。
  */
 router.get('/models', admin, async (_req, res) => {
-  const acct = pickAccount();
+  // 目录是只读操作，不占对话并发槽、不受 chat 限流：用专门的选号器，
+  // 避免所有号在冷却/并发满时静默回退到过期的 fallback 倍率表。
+  const acct = require('../raccoon').pickCatalogAccount();
   if (!acct) {
     return res.json({
       object: 'list',
@@ -500,20 +536,11 @@ function chatError(res, status, message, code) {
 }
 
 /**
- * 选一个可用的 Raccoon 账号。
- *
- * 本期单账号：取第一个 enabled 的账号（与 Qoder 同策略）。刻意不做轮询/择优——
- * 上游并发与限额阈值未验证，贸然轮询会把号打挂。
- *
- * 注意 store.list() 会剥离 token（safeTok），所以这里只能用 enabled 过滤，
- * 凭据的存在性由后续请求的报错兜底；最后必须 store.get() 取全量。
+ * 「客户端断开」信号统一由 index.js 入口中间件写入 `res.locals.clientSignal`
+ * （close 且 !writableFinished 才 abort，语义比路由内自建更严谨）。
+ * 显式端点直接复用它；raccoon/stream.js#pipeToClient 的 reader.cancel() 是
+ * 流级清理，职责不同，继续保留。
  */
-function pickAccount() {
-  const candidate = store.list()
-    .filter((a) => a.enabled && variant.isEdition(a.edition, variant.RACCOON))
-    .sort((x, y) => (x.lastPickedAt || 0) - (y.lastPickedAt || 0))[0];
-  return candidate ? store.get(candidate.id) : null;
-}
 
 router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) => {
   const body = req.body || {};
@@ -522,6 +549,8 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
   let requestError = null;
   let lastUsage = null;
   let usedAccountId = null;
+  let finishReason = null;
+  let cooledInfo = null;
   const reqTools = Array.isArray(body.tools) && body.tools.length ? body.tools : null;
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -557,90 +586,50 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     return chatError(res, 403, access.message, 'MODEL_ACCESS_DENIED');
   }
 
-  let acct = pickAccount();
-  if (!acct) {
-    logRequest({
-      endpoint: '/v1/raccoon/chat/completions', method: 'POST', model,
-      account: null, status: 503, toolCalls: 0, toolsIn: reqTools ? reqTools.length : 0,
-      durationMs: Date.now() - startedAt, error: 'no enabled raccoon account', platform: 'raccoon',
-    });
-    return chatError(res, 503,
-      '没有可用的 Raccoon 账号。请在「凭据池 → 渠道接入 → Raccoon」用微信扫码登录。',
-      'NO_RACCOON_ACCOUNT');
-  }
-
-  // 凭据过期则先续期一次（不在上游请求里重试，避免重复计费）
-  if (product.isExpired({
-    access_token: acct.token, refresh_token: acct.refreshToken,
-    expires_at: acct.expiredAt ? String(new Date(acct.expiredAt).getTime()) : undefined,
-  })) {
-    try {
-      acct = await auth.refreshAccount(acct);
-    } catch (e) {
-      return chatError(res, 401, `Raccoon 凭据已过期且续期失败：${e.message}`, 'AUTH');
-    }
-  }
-
-  usedAccountId = acct.id;
-  store.update(acct.id, { lastPickedAt: Date.now() });
-
   // 逐字透传调用方字段（只补 extra_body.thinking），不做白名单裁剪 ——
   // 裁剪的代价是丢字段（tools 一旦丢了模型就会在正文里臆造工具调用）。
   const upBody = chat.buildUpstreamBody({ ...body, model, stream: stream !== false });
 
   try {
-    if (stream !== false) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders();
-
-      const up = await chat.chatStream(acct, upBody);
-      const reader = up.body.getReader();
-      const dec = new TextDecoder();
-      // 旁路窥探 usage：不影响转发给客户端的字节（上游 usage 在 [DONE] 前一帧）
-      const feeder = createLineFeeder((line) => {
-        const t = line.trim();
-        if (!t.startsWith('data:')) return;
-        const payload = t.slice(5).trim();
-        if (!payload || payload === '[DONE]') return;
-        try {
-          const ev = JSON.parse(payload);
-          if (ev && ev.usage && (ev.usage.prompt_tokens || ev.usage.completion_tokens || ev.usage.total_tokens)) {
-            lastUsage = ev.usage;
-          }
-        } catch { /* 非 JSON 帧忽略 */ }
-      });
-      for (;;) {
-        // eslint-disable-next-line no-await-in-loop
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = dec.decode(value, { stream: true });
-        feeder.feed(text);
-        if (text && !res.writableEnded) res.write(text);
+    // 并发闸门 + 撞墙冷却 + 换号，全部走 dispatch.run（统一端点共用同一份实现）。
+    // 这里传 onAccount 只为了日志能记到真实账号。
+    const runResult = await raccoonDispatch.run(async (acct, runOpts) => {
+      usedAccountId = acct.id;
+      store.update(acct.id, { lastPickedAt: Date.now() });
+      if (stream !== false) {
+        const up = await chat.chatStream(acct, upBody, { signal: runOpts.signal });
+        // 上游头一到就下发我们的头：早一毫秒开始，TTFT 更好，且此后失败走错误帧
+        raccoonStream.setSseHeaders(res);
+        const r = await raccoonStream.pipeToClient(up.body, res);
+        return { streamed: true, ...r };
       }
-      feeder.flush();
-      if (!res.writableEnded) res.end();
+      const data = await chat.chatNonStream(acct, upBody, { signal: runOpts.signal });
+      return { streamed: false, data };
+    }, {
+      model,
+      signal: res.locals.clientSignal || null,
+      onAccount: (id) => { usedAccountId = id; },
+    });
+
+    const out = runResult.result;
+    if (!out.streamed) {
+      lastUsage = out.data && out.data.usage;
+      const choice = out.data && out.data.choices && out.data.choices[0];
+      finishReason = choice && choice.finish_reason ? choice.finish_reason : null;
+      if (!res.writableEnded) res.json(out.data);
     } else {
-      const data = await chat.chatNonStream(acct, upBody);
-      lastUsage = data && data.usage;
-      return res.json(data);
+      lastUsage = out.usage;
+      finishReason = out.finishReason;
     }
   } catch (err) {
-    requestError = err.message;
-    if (!res.writableEnded) {
-      if (res.headersSent) {
-        // SSE 头已下发：补错误帧后结束，避免 ERR_HTTP_HEADERS_SENT
-        try {
-          res.write(`data: ${JSON.stringify({ error: { message: err.message, type: 'upstream_error' } })}\n\n`);
-          res.write('data: [DONE]\n\n');
-        } catch { /* 客户端已断开 */ }
-        res.end();
-      } else {
-        const status = err.status && err.status >= 400 && err.status < 600 ? err.status : 502;
-        chatError(res, status, err.message, err.code || undefined);
-      }
-    }
+    // 客户端只拿泛化文案；上游原始报文（err.message / err.body）由
+    // replyUpstreamError 写进服务端日志，限流分类仍读 err.body，不受影响。
+    requestError = clientMessage(err);
+    cooledInfo = err.raccoonCooldown || null;
+    replyUpstreamError(res, err, {
+      tag: 'raccoon',
+      writeFrame: (r, msg) => raccoonStream.writeErrorFrame(r, msg),
+    });
   } finally {
     const usageFields = usageToLogFields(lastUsage);
     const cost = usageFields.totalTokens
@@ -652,13 +641,15 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     logRequest({
       endpoint: '/v1/raccoon/chat/completions', method: 'POST', model,
       account: usedAccountId,
-      status: requestError ? 502 : 200,
+      status: requestError ? (cooledInfo ? 429 : 502) : 200,
       toolCalls: 0, toolsIn: reqTools ? reqTools.length : 0,
       durationMs: Date.now() - startedAt,
       error: requestError,
       platform: 'raccoon',
       pricedModel: model,
       routedTo: `raccoon/${model}`,
+      ...(finishReason ? { finishReason } : {}),
+      ...(cooledInfo ? { raccoonCooledForMs: cooledInfo.cooldownMs, raccoonCooldownStreak: cooledInfo.streak } : {}),
       ...usageFields,
       ...(cost != null ? { estimatedCost: cost } : {}),
     });

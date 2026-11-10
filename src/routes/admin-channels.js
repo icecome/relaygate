@@ -150,7 +150,17 @@ function onboardingFor(v) {
   const kinds = Array.isArray(v.onboarding) ? v.onboarding : [];
   return kinds.map((kind) => {
     try {
-      if (kind === 'oauth') return { kind, label: 'OAuth 登录', available: true, detail: '' };
+      if (kind === 'oauth') {
+        // 两条 OAuth 语义不同：Trae 的 oauth 是「授权后回调本机监听器」换 refreshToken；
+        // WorkBuddy 的 oauth 是「无感登录」（state + 轮询，不退出当前客户端，
+        // 新账号直接入库，见 workbuddy/oauth.js）。标签与说明按平台区分，
+        // 否则用户会以为 WorkBuddy 也要动本机客户端。
+        const label = v.id === variant.WORKBUDDY ? '无感登录新账号' : 'OAuth 登录';
+        const detail = v.id === variant.WORKBUDDY
+          ? '不退出当前账号：在系统浏览器完成授权后，新账号自动加入凭据池'
+          : '';
+        return { kind, label, available: true, detail };
+      }
       if (kind === 'paste') {
         return { kind, label: '粘贴凭据导入', available: true, detail: PASTE_HINT[v.id] || '' };
       }

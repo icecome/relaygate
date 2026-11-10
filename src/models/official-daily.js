@@ -40,11 +40,12 @@ function readRowsMatching(dir, suffix) {
 /**
  * 聚合最近 N 天的官方账单积分（按日）。
  * @param {number} days
+ * @param {string} [accountId] 可选：只看某一个账号（缓存文件名 <accountId>-<date>.json）
  * @returns {{byDay: {date:string, traeCredit:number, traeTokens:number, traeSessions:number, wbCredit:number, wbRequests:number, totalCredit:number, covered:boolean}[], traeCreditTotal:number, wbCreditTotal:number}}
  *   covered=true 表示该日两路账单缓存都存在（不代表有消耗，只代表「查过且入账」）；
  *   Trae 账单按会话入账有 1~2 天滞后，最近一两天 traeCredit=0 多半是未入账，不是没消耗。
  */
-function dailyCredits(days) {
+function dailyCredits(days, accountId) {
   const byDay = new Map();
   const dayKey = (offset) => {
     const d = new Date();
@@ -62,12 +63,16 @@ function dailyCredits(days) {
     });
   }
   const daySet = new Set(byDay.keys());
+  // 账号筛选：缓存文件名固定为 <accountId>-<date>.json，直接按前缀过滤即可，
+  // 不需要读文件头（也避免把非目标账号的账单行读进内存）。
+  const matchesAccount = (f) => (accountId ? f.startsWith(String(accountId) + '-') : true);
 
   // Trae 会话账单：缓存文件名 <accountId>-<date>.json
   const tdir = traeDir();
   const traeDays = new Set();
   if (fs.existsSync(tdir)) {
     for (const f of fs.readdirSync(tdir)) {
+      if (!matchesAccount(f)) continue;
       const m = f.match(/-(\d{4}-\d{2}-\d{2})\.json$/);
       if (!m || !daySet.has(m[1])) continue;
       traeDays.add(m[1]);
@@ -87,6 +92,7 @@ function dailyCredits(days) {
   const wbDays = new Set();
   if (fs.existsSync(wdir)) {
     for (const f of fs.readdirSync(wdir)) {
+      if (!matchesAccount(f)) continue;
       const m = f.match(/-(\d{4}-\d{2}-\d{2})\.json$/);
       if (!m || !daySet.has(m[1])) continue;
       wbDays.add(m[1]);

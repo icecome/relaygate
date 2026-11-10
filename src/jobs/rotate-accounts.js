@@ -685,11 +685,34 @@ async function waitForIdentity(uid, timeoutMs) {
   return false;
 }
 
-/** 查询各账号今日活跃状态（只读，不切换）。 */
+/**
+ * 查询各账号今日活跃状态 + 成长计划连登（只读，不切换）。
+ *
+ * ## 连登（streak）从哪来、为什么加在这里
+ *
+ * 2026-11-10：连登属于**成长计划**维度，正确落点是运维 → 账号轮换页，
+ * 而不是凭据列表。本函数正是那个页面的数据源（`GET /v1/admin/rotate/status`
+ * 的 `heatmap` 字段），每轮检查顺带取连登，用户打开轮换页就能看到。
+ *
+ * 两个上游接口，不能混：
+ *   - `/activity/growth/heatmap` → 今日分数、是否活跃、档位（本函数原有）
+ *   - `/activity/growth/streak`  → 连续活跃天数、月累计、下一档（本次新增）
+ * heatmap **不返回** streak，所以必须单独调一次 `fetchStreak`
+ * （`workbuddy/cat-trip.js` 已封装好解析）。
+ *
+ * ## 三条失败边界
+ *
+ * 1. `streakDays: null` = 没取到（上游报错/无权限），**不是 0**。
+ *    0 的含义是「今天断了」，与「不知道」在面板上必须长得不一样。
+ * 2. streak 失败不影响 heatmap 行：两件事独立，一个挂了另一个照常显示。
+ * 3. 只在 heatmap 成功的账号上取 streak —— 连 heatmap 都失败的号，
+ *    再打一次 streak 只会把失败时间翻倍（两次 15s 超时）。
+ */
 async function checkStatus() {
   const store = require('../credentials/store');
   const wbAuth = require('../workbuddy/auth');
   const auth = require('../auth');
+  const growth = require('../workbuddy/cat-trip');
   const accounts = store.list().filter((a) => a.edition === 'workbuddy');
   const out = [];
   for (const a of accounts) {
@@ -709,13 +732,79 @@ async function checkStatus() {
       const j = await r.json();
       const t = (j.data && j.data.today) || {};
       const level = (s) => s <= 0 ? '尚未登场' : s <= 10 ? '轻轻路过' : s <= 30 ? '持续输出' : s <= 60 ? '效率拉满' : '卷王模式';
+
+      /*
+       * 连登：单独打 streak 接口。失败不抛 —— 这条链在「成长计划」面板
+       * 每次打开都会跑，一次上游抖动不该让整行变红。
+       * 用 null 表达「没取到」，与 0（今天断了）区分开。
+       *
+       * ⚠️ 失败原因必须带出来（`streakReason`）。
+       * 第一版这里是 `catch { /* 保留 null *\/ }` + `if (s && s.ok)`，
+       * 于是 401/403/code≠0 全部被吞成 null：面板上只看到一整列「—」，
+       * 完全无法判断是「没权限」「登录态失效」还是「上游改了字段名」。
+       * 实测踩到过——用户看到全空只能猜。现在把 reason/code 一并透出，
+       * UI 悬停即可看到确切原因。
+       */
+      let streakDays = null;
+      let streakNextTier = null;
+      let streakNextTierRemaining = null;
+      let streakReason = null;
+      let streakCode = null;
+      try {
+        const s = await growth.fetchStreak(info);
+        if (s && s.ok) {
+          /*
+           * days 可能是 0（今天断了），也可能上游压根没这个字段。
+           * 用 `== null` 判空而不是 `!s.days`：后者会把 0 当成「没取到」，
+           * 那正好把「连登断了」显示成「不知道」，是反的。
+           */
+          streakDays = s.days == null ? null : Number(s.days);
+          streakNextTier = s.nextTier || null;
+          streakNextTierRemaining = s.nextTierRemaining == null ? null : Number(s.nextTierRemaining);
+          if (streakDays == null) {
+            streakReason = '上游 streak 响应里没有 days 字段（可能改了字段名或该账号未开通成长中心）';
+          }
+        } else {
+          streakReason = (s && (s.reason || s.msg)) || '上游未返回连登数据';
+          streakCode = (s && s.code != null) ? s.code : null;
+        }
+      } catch (e) {
+        streakReason = e && e.message ? e.message : '请求连登接口失败';
+      }
+
       out.push({
         accountId: a.id, label: a.label, uid: a.userId,
         score: t.score ?? 0, isActive: !!t.is_active,
         level: level(t.score || 0), statusText: t.status_text || '',
+        streakDays,
+        streakNextTier,
+        streakNextTierRemaining,
+        // 失败原因：面板悬停展示。null 表示这次取到了值。
+        streakReason,
+        streakCode,
+        checkedAt: new Date().toISOString(),
       });
     } catch (err) {
-      out.push({ accountId: a.id, label: a.label, uid: a.userId, error: err.message });
+      /*
+       * 失败行也必须保持**行形状一致**：带上 streakDays 等字段（值为 null）。
+       *
+       * 实测踩过的坑：此前这里只 push `{accountId, label, uid, error}`，
+       * 前端用 `'streakDays' in row` 判断「后端是否支持连登」——错误行没有该键，
+       * 于是同步失败时面板会误报「当前后端版本未下发连登字段」，
+       * 把一个上游网络问题说成了版本问题。
+       *
+       * 形状一致后，前端只需按值判空，不必区分「字段缺失」与「取值为 null」。
+       */
+      out.push({
+        accountId: a.id, label: a.label, uid: a.userId,
+        score: null, isActive: null, level: null, statusText: '',
+        streakDays: null, streakNextTier: null, streakNextTierRemaining: null,
+        // 整行失败（连 heatmap 都没拿到）时，连登自然也拿不到，原因即行级错误
+        streakReason: null,
+        streakCode: null,
+        checkedAt: new Date().toISOString(),
+        error: err.message,
+      });
     }
   }
   return out;

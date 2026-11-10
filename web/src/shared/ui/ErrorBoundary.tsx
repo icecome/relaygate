@@ -92,7 +92,7 @@ export default class ErrorBoundary extends Component<Props, State> {
     if (!error) return this.props.children;
     const chunkFailure = isChunkLoadError(error);
     return (
-      <div className="min-h-screen flex items-center justify-center p-4 bg-white">
+      <div className="min-h-screen flex items-center justify-center p-4 bg-[var(--rg-bg-base)]">
         <div className="panel w-[min(560px,100%)]">
           <div className="panel-body">
             <h1 className="text-block mb-2">面板渲染出错</h1>
@@ -101,14 +101,7 @@ export default class ErrorBoundary extends Component<Props, State> {
                 ? '页面引用的某个模块文件已失效，通常是网关重新构建后当前页面仍为旧版本所致。已尝试自动刷新；若仍反复出现，需确认前端与后端版本一致后重新构建。'
                 : '页面组件抛出异常，界面已停止渲染。可先重新加载；若反复出现，需把下面的错误摘要一并反馈。'}
             </p>
-            <pre
-              className="rounded-md border p-3 mb-4 font-mono text-[12px] whitespace-pre-wrap break-all"
-              style={{
-                borderColor: 'var(--rg-border)',
-                background: 'var(--rg-state-error-surface)',
-                color: 'var(--rg-state-error)',
-              }}
-            >
+            <pre className="code-block mb-4" style={{ color: 'var(--rg-state-error)' }}>
               {error.message || String(error)}
             </pre>
             <div className="flex gap-2">

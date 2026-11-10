@@ -8,16 +8,19 @@ import {
   deleteProvider,
   deleteVirtual,
   getRouterOverview,
+  getVirtualRouteCheck,
   patchCandidate,
   reloadRouter,
   resyncAutoTiers,
   unfreezeVirtual,
   upsertVirtual,
   type HealthRow,
+  type RouterProvider,
+  type VirtualRouteCheck,
 } from '../../shared/api/modelRouter';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
-import { formatDuration, formatNumber, percent } from '../../shared/lib/format';
+import { formatDuration, formatNumber, percent, platformIdLabel } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -34,6 +37,8 @@ import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
 import { VirtualModelDialog } from './VirtualModelDialog';
+import { ProviderDialog } from './ProviderDialog';
+import Modal from '../../shared/ui/Modal';
 
 /**
  * 候选不可用原因的中文说明。
@@ -51,7 +56,7 @@ const REASON_TEXT: Record<string, string> = {
 function formatRate(rate: number | null | undefined): string {
   if (typeof rate !== 'number' || !Number.isFinite(rate)) return '—';
   if (rate === 0) return '免费';
-  return `x${rate}`;
+  return `×${rate}`;
 }
 
 export default function ModelRouterPage() {
@@ -63,6 +68,31 @@ export default function ModelRouterPage() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   // 新增虚拟模型弹窗：此前面板只有停用/解冻/删除，创建只能手改 model-router.json
   const [createOpen, setCreateOpen] = useState(false);
+  // Provider 新增 / 编辑弹窗：null = 关闭，{ provider: null } = 新建
+  const [providerDialog, setProviderDialog] = useState<{ provider: RouterProvider | null } | null>(null);
+  // 路由体检结果：把 route-check/:id 的 wouldPick 落到界面，回答「这次会落到谁」
+  const [routeCheck, setRouteCheck] = useState<{
+    id: string;
+    loading: boolean;
+    error: string | null;
+    data: VirtualRouteCheck | null;
+  } | null>(null);
+
+  /** 打开某个虚拟模型的路由体检。不发送真实上游请求，纯解释。 */
+  async function openRouteCheck(id: string) {
+    setRouteCheck({ id, loading: true, error: null, data: null });
+    try {
+      const data = await getVirtualRouteCheck(id, key);
+      setRouteCheck({ id, loading: false, error: null, data });
+    } catch (e) {
+      setRouteCheck({
+        id,
+        loading: false,
+        error: e instanceof ApiError ? e.message : '路由体检失败',
+        data: null,
+      });
+    }
+  }
 
   function toggleExpanded(id: string) {
     setExpanded((prev) => {
@@ -265,15 +295,35 @@ export default function ModelRouterPage() {
 
         <MetricGrid items={metrics} />
 
-        <Panel title="上游 Provider" description="凭据来源与可用模型范围" flush>
+        <Panel
+          title="上游 Provider"
+          description="凭据来源与可用模型范围"
+          flush
+          actions={
+            <>
+              <Button size="sm" variant="primary" onClick={() => setProviderDialog({ provider: null })}>
+                新增 Provider
+              </Button>
+            </>
+          }
+          footer={
+            <>
+              第三方端点的密钥不落在 model-router.json：后端只存环境变量名，
+              运行时从 <code className="font-mono">process.env[apiKeyEnv]</code> 取。
+              填了变量名但没写进 .env 或没重启进程，请求会得到 401「provider 缺少 API Key」。
+            </>
+          }
+        >
           {overview.loading && !overview.data ? (
             <LoadingBlock />
           ) : (overview.data?.providers ?? []).length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              尚未配置上游 Provider
-            </div>
+            <EmptyState
+              label="尚未配置上游 Provider"
+              hint="内置 Provider 由凭据池账号生成；要接外部模型 API，点右上角「新增 Provider」填 Base URL 与环境变量名。"
+              action={{ label: '新增 Provider', onClick: () => setProviderDialog({ provider: null }) }}
+            />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">名称</th>
@@ -291,13 +341,13 @@ export default function ModelRouterPage() {
                   <tr key={p.id} className="row-hover">
                     <td className="td">
                       <div className="text-[13px]">{p.label}</div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {p.id}
                       </div>
                     </td>
                     <td className="td">
                       {p.type === 'builtin' ? (
-                        <Chip tone="brand">内置 · {p.builtin}</Chip>
+                        <Chip tone="brand">内置 · {p.builtin ? platformIdLabel(p.builtin) : '—'}</Chip>
                       ) : (
                         <Chip tone="neutral">第三方 OpenAI 兼容接口</Chip>
                       )}
@@ -307,11 +357,22 @@ export default function ModelRouterPage() {
                         {p.enabled ? '启用' : '已停用'}
                       </Chip>
                     </td>
-                    <td className="td font-mono text-[12px]">
+                    <td className="td td-mono">
                       {p.type === 'builtin' ? (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>使用凭据池账号</span>
                       ) : p.hasApiKey ? (
-                        p.apiKeyEnv ?? '已配置'
+                        /*
+                         * hasApiKey 只代表「填了环境变量名」（store.listProviders
+                         * 的 hasApiKey: !!p.apiKeyEnv），不代表进程里这个变量有值。
+                         * 措辞必须是「已声明」而不是「已配置」，否则用户会以为
+                         * 保存成功就等于密钥可用，然后在 401 里查半天。
+                         */
+                        <span title="后端只校验变量名是否存在，不校验进程环境里有没有值">
+                          {p.apiKeyEnv ?? '已声明'}
+                          <span className="ml-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            · 未验证
+                          </span>
+                        </span>
                       ) : (
                         <span style={{ color: 'var(--rg-state-warning)' }}>
                           未配置{p.apiKeyEnv ? ` ${p.apiKeyEnv}` : ''}
@@ -322,22 +383,27 @@ export default function ModelRouterPage() {
                       {p.models?.length ? formatNumber(p.models.length) : '全部'}
                     </td>
                     <td className="td cell-num">{p.timeoutMs ? formatDuration(p.timeoutMs) : '—'}</td>
-                    <td className="td font-mono text-[11px] break-all">{p.baseUrl || '—'}</td>
+                    <td className="td font-mono text-aux break-all">{p.baseUrl || '—'}</td>
                     <td className="td cell-act">
-                      {p.type === 'builtin' ? (
-                        <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                          内置，不可删除
-                        </span>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="danger"
-                          disabled={busy === `provider:${p.id}`}
-                          onClick={() => removeProvider(p.id, p.label)}
-                        >
-                          删除
+                      <div className="td-actions">
+                        <Button size="sm" onClick={() => setProviderDialog({ provider: p })}>
+                          编辑
                         </Button>
-                      )}
+                        {p.type === 'builtin' ? (
+                          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            内置，不可删除
+                          </span>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            disabled={busy === `provider:${p.id}`}
+                            onClick={() => removeProvider(p.id, p.label)}
+                          >
+                            删除
+                          </Button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -355,7 +421,7 @@ export default function ModelRouterPage() {
               新增虚拟模型
             </Button>
           }
-          footer="保存可能返回业务层失败（请求成功但结果未成功），此时会在对应表单内显示后端返回的原因。"
+          footer="保存可能只成功一部分，此时会在对应表单内显示后端返回的原因。"
         >
           {overview.loading && !overview.data ? (
             <LoadingBlock />
@@ -366,12 +432,12 @@ export default function ModelRouterPage() {
               action={{ label: '新增虚拟模型', onClick: () => setCreateOpen(true) }}
             />
           ) : (
-            <table className="w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">虚拟模型</th>
                   <th className="th">策略</th>
-                  <th className="th">来源</th>
+                  <th className="th">生成方式</th>
                   <th className="th">声明上下文窗口</th>
                   <th className="th cell-num">候选</th>
                   <th className="th">健康度</th>
@@ -404,33 +470,50 @@ export default function ModelRouterPage() {
                         return a.priority - b.priority || String(a.id).localeCompare(String(b.id));
                       })
                     : enabledOnes;
+                  // 轮转池成员判定。
+                  //
+                  // ⚠️ 这里是「weighted 策略」与「rotateTopN」两件事的交汇处，曾经
+                  // 混成一句，导致一个真实故障：用户选「加权轮转」、给每个候选都填了
+                  // 权重，保存后界面上**只有第一个候选**显示权重（其余显示 —），
+                  // 而且实际调度也确实只用了第一个 —— 权重完全没生效。
+                  //
+                  // 根因：manual VM（auto=false）的 rotateTopN 默认是 0，而
+                  // `poolSize > 0 ? slice(0,N) : slice(0,1)` 在 0 时只取第一个。
+                  // 那句 fallback 原本是为 **priority** 策略写的（优先级策略确实
+                  // 固定用第一个候选，其余是降级备胎），但 weighted 策略下
+                  // 「池」就是**全部启用的候选** —— 没有池，权重就没有意义。
+                  //
+                  // 现在按策略分开：
+                  //   - weighted：全部启用的候选都在池里（rotateTopN 若显式声明，
+                  //     仍按声明截断 —— 那是 autotier 生成模型时的语义）；
+                  //   - priority：沿用「取第一个」的旧语义（降级按顺序回退）。
                   const poolSize = v.rotateTopN ?? 0;
-                  const poolIds = new Set(
-                    poolSize > 0
-                      ? costSorted.slice(0, poolSize).map((c) => c.id)
-                      : costSorted.slice(0, 1).map((c) => c.id),
-                  );
+                  const weighted = v.strategy === 'weighted';
+                  const poolList = weighted && poolSize <= 0
+                    ? costSorted
+                    : (poolSize > 0 ? costSorted.slice(0, poolSize) : costSorted.slice(0, 1));
+                  const poolIds = new Set(poolList.map((c) => c.id));
                   for (const c of v.candidates) if (c.pinned && c.enabled !== false) poolIds.add(c.id);
                   const usableCount = v.candidates.filter((c) => c.usable !== false).length;
                   return (
                     <Fragment key={v.id}>
                       <tr className="row-hover">
                         <td className="td">
-                          <div className="font-mono text-[12px] font-semibold">{v.id}</div>
+                          <div className="font-mono text-aux font-semibold">{v.id}</div>
                           {v.description && (
-                            <div className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                               {v.description}
                             </div>
                           )}
                         </td>
                         <td className="td">
-                          <Chip tone="brand">{v.strategy === 'weighted' ? '加权' : '优先级'}</Chip>
+                          <Chip tone="brand">{v.strategy === 'weighted' ? '加权轮转' : '优先级'}</Chip>
                           {v.auto && (
                             <div
                               className="mt-1 flex items-center gap-1"
                               title="轮转池大小：按排序取前 N 个候选做加权轮转（sort=rate 时为倍率升序）。0 表示关闭轮转，固定使用排序第一位的候选。"
                             >
-                              <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                                 轮转
                               </span>
                               <Stepper
@@ -443,14 +526,22 @@ export default function ModelRouterPage() {
                               />
                             </div>
                           )}
-                          {!v.auto && poolIds.size > 0 && (
-                            <div className="text-[11px] mt-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          {(!v.auto || v.strategy === 'weighted') && poolIds.size > 0 && (
+                            <div
+                              className="text-aux mt-1"
+                              style={{ color: 'var(--rg-text-tertiary)' }}
+                              title={
+                                v.strategy === 'weighted'
+                                  ? '加权轮转：池内全部启用候选按权重随机排序，权重越大越常被排到前面（排第一的候选即本次命中的上游）。'
+                                  : '优先级：按优先级升序固定取第一个候选，其余候选仅在失败/限流时按顺序回退。'
+                              }
+                            >
                               轮转 {poolIds.size} 个候选
                             </div>
                           )}
                         </td>
-                        <td className="td">{v.auto ? '自动分层' : '手动'}</td>
-                        <td className="td font-mono text-[12px]">
+                        <td className="td">{v.auto ? '自动分层同步' : '手工维护'}</td>
+                        <td className="td td-mono">
                           {v.contextWindow ? formatNumber(v.contextWindow) : '未声明窗口'}
                         </td>
                         <td className="td cell-num">
@@ -472,14 +563,26 @@ export default function ModelRouterPage() {
                           ) : (
                             <div className="min-w-[120px]">
                               <ProgressBar ratio={rate} tone={cooling ? 'warn' : 'brand'} />
-                              <div className="text-[11px] mt-1 font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                {cooling ? '冷却中' : `${okCount}/${okCount + failCount}`}
+                              <div className="text-aux mt-1 font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                                {cooling
+                                  ? `冷却中 · 成功 ${okCount} / ${okCount + failCount}`
+                                  : `成功 ${okCount} / ${okCount + failCount}`}
                               </div>
                             </div>
                           )}
                         </td>
                         <td className="td cell-act">
-                          <div className="inline-flex items-center gap-1.5">
+                          <div className="td-actions">
+                            {/*
+                              「试算」= GET /v1/admin/model-router/route-check/:id。
+                              这条接口从 2026-10 就存在（routes/model-router.js:145），
+                              返回 wouldPick / usableCount / 逐候选 reasons / failover，
+                              是「路由混乱」这个问题唯一能从数据上回答的入口。
+                              此前面板零调用，用户只能自己数 priority。
+                            */}
+                            <Button size="sm" disabled={isBusy} onClick={() => void openRouteCheck(v.id)}>
+                              试算
+                            </Button>
                             <Button size="sm" disabled={isBusy} onClick={() => toggleVirtual(v.id, v.enabled)}>
                               {v.enabled ? '停用' : '启用'}
                             </Button>
@@ -494,18 +597,25 @@ export default function ModelRouterPage() {
                       </tr>
                       {open && (
                         <tr>
-                          <td className="td" colSpan={8} style={{ background: 'var(--rg-bg-secondary)' }}>
-                            <table className="w-full border-collapse text-[12px]">
+                          <td className="td" colSpan={7} style={{ background: 'var(--rg-bg-secondary)' }}>
+                            {/*
+                              嵌套候选表必须自带 table-fixed + 列宽：
+                              外层表是 auto 布局（未加 .table-fixed），所以内表若
+                              也不定宽，列宽会随「当前展开的候选内容」反推 ——
+                              展开不同虚拟模型时整表横向位移，横向滚动条位置也随之跳。
+                            */}
+                            <table className="data-table table-fixed text-aux">
                               <thead>
                                 <tr>
+                                  {/* 列宽合计 704px：候选列吃剩余宽度，其余定宽 */}
                                   <th className="th">候选</th>
-                                  <th className="th">上游</th>
-                                  <th className="th cell-num">优先</th>
-                                  <th className="th cell-num">权重</th>
-                                  <th className="th cell-num">倍率</th>
-                                  <th className="th cell-num">窗口</th>
-                                  <th className="th">状态</th>
-                                  <th className="th cell-act">操作</th>
+                                  <th className="th" style={{ width: 120 }}>上游</th>
+                                  <th className="th cell-num" style={{ width: 56 }}>优先</th>
+                                  <th className="th cell-num" style={{ width: 56 }}>权重</th>
+                                  <th className="th cell-num" style={{ width: 72 }}>倍率</th>
+                                  <th className="th cell-num" style={{ width: 92 }}>窗口</th>
+                                  <th className="th" style={{ width: 168 }}>状态</th>
+                                  <th className="th cell-act" style={{ width: 168 }}>操作</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -565,7 +675,7 @@ export default function ModelRouterPage() {
                                         )}
                                       </td>
                                       <td className="td cell-act">
-                                        <div className="inline-flex items-center gap-1.5">
+                                        <div className="td-actions">
                                           <Button
                                             size="sm"
                                             disabled={rowBusy}
@@ -604,7 +714,7 @@ export default function ModelRouterPage() {
 
         {(overview.data?.health ?? []).length > 0 && (
           <Panel title="候选健康明细" description="按候选展示成功率、延迟与最近一次错误" flush>
-            <table className="w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">虚拟模型</th>
@@ -620,8 +730,8 @@ export default function ModelRouterPage() {
               <tbody>
                 {(overview.data?.health ?? []).map((h) => (
                   <tr key={`${h.virtualId}-${h.candidateId}`} className="row-hover">
-                    <td className="td font-mono text-[12px]">{h.virtualId}</td>
-                    <td className="td font-mono text-[12px]">{h.candidateId}</td>
+                    <td className="td td-mono">{h.virtualId}</td>
+                    <td className="td td-mono">{h.candidateId}</td>
                     <td className="td cell-num">{h.ok}</td>
                     <td className="td cell-num">{h.fail}</td>
                     <td className="td cell-num">
@@ -639,7 +749,7 @@ export default function ModelRouterPage() {
                         </Chip>
                       )}
                     </td>
-                    <td className="td font-mono text-[11px] break-all">{h.lastError || '—'}</td>
+                    <td className="td font-mono text-aux break-all line-clamp-2" title={h.lastError || undefined}>{h.lastError || '—'}</td>
                   </tr>
                 ))}
               </tbody>
@@ -650,6 +760,7 @@ export default function ModelRouterPage() {
         <Note>
           自动分层的候选由网关按模型目录的上下文窗口生成，面板可逐个停用或置顶；
           这些手工调整会被后台的自动分层同步保留，不会被覆盖。
+          目录中的图片与视频生成模型没有 chat 端点，不进入候选。
         </Note>
       </Stack>
 
@@ -658,6 +769,143 @@ export default function ModelRouterPage() {
         onClose={() => setCreateOpen(false)}
         onSaved={overview.reload}
       />
+
+      <ProviderDialog
+        open={providerDialog !== null}
+        provider={providerDialog?.provider ?? null}
+        onClose={() => setProviderDialog(null)}
+        onSaved={() => {
+          overview.reload();
+          // 新增 Provider 后必须重载路由才会写进内存快照；
+          // 这里不自动调 reload，避免用户还没建虚拟模型就被动改了运行态
+        }}
+      />
+
+      {/*
+        路由体检结果：把 route-check 的 wouldPick 摊开成三块
+        —— 会选谁 / 谁被排除 / 失败怎么切。
+      */}
+      <Modal
+        open={routeCheck !== null}
+        onClose={() => setRouteCheck(null)}
+        title={`路由试算：${routeCheck?.id ?? ''}`}
+        desc="不发真实请求，只按当前配置解释这一跳会落到哪个候选（GET /v1/admin/model-router/route-check/:id）"
+        size="lg"
+        footer={
+          <Button variant="ghost" onClick={() => setRouteCheck(null)}>
+            关闭
+          </Button>
+        }
+      >
+        {routeCheck?.loading ? (
+          <LoadingBlock label="计算中" />
+        ) : routeCheck?.error ? (
+          <Note tone="danger">{routeCheck.error}</Note>
+        ) : routeCheck?.data ? (
+          <div className="flex flex-col gap-4">
+            <div className="subcard">
+              <div className="text-label mb-2">此刻会选中的候选</div>
+              {routeCheck.data.wouldPick ? (
+                <div className="flex flex-col gap-1">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="font-mono text-[14px] font-semibold">
+                      {routeCheck.data.wouldPick.provider} / {routeCheck.data.wouldPick.model}
+                    </span>
+                    <Chip tone="ok" dot="dot-ok">
+                      可用
+                    </Chip>
+                    <Chip tone="brand">
+                      {routeCheck.data.strategy === 'weighted' ? '加权轮转' : '优先级'}
+                    </Chip>
+                  </div>
+                  <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    可用候选 {routeCheck.data.usableCount} / {routeCheck.data.candidates.length}
+                    {typeof routeCheck.data.wouldPick.rate === 'number'
+                      ? ` · 倍率 ${formatRate(routeCheck.data.wouldPick.rate)}`
+                      : ''}
+                    {routeCheck.data.wouldPick.contextWindow
+                      ? ` · 窗口 ${formatNumber(routeCheck.data.wouldPick.contextWindow)}`
+                      : ''}
+                  </div>
+                </div>
+              ) : (
+                <Note tone="danger">
+                  没有可用候选：这个虚拟模型当前调用必然失败。检查下面的排除原因，
+                  或到「模型池状态」页探测对应上游模型是否真的可用。
+                </Note>
+              )}
+            </div>
+
+            <div>
+              <div className="text-label mb-2">逐候选判定</div>
+              <div className="table-wrap">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th className="th">候选</th>
+                      <th className="th">上游</th>
+                      <th className="th cell-num">优先</th>
+                      <th className="th cell-num">倍率</th>
+                      <th className="th">判定</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {routeCheck.data.candidates.map((c) => {
+                      const reasons = (c.reasons ?? []).filter(
+                        (x) => x !== 'candidate_disabled' || !c.enabled,
+                      );
+                      const coolingNow =
+                        typeof c.cooldownRemainingMs === 'number' && c.cooldownRemainingMs > 0;
+                      return (
+                        <tr key={c.id} className="row-hover">
+                          <td className="td font-mono text-aux break-all">{c.model}</td>
+                          <td className="td text-aux">{c.providerLabel || c.provider}</td>
+                          <td className="td cell-num font-mono">{c.priority}</td>
+                          <td className="td cell-num font-mono">{formatRate(c.rate)}</td>
+                          <td className="td">
+                            {!c.enabled ? (
+                              <Chip tone="neutral">已停用</Chip>
+                            ) : coolingNow ? (
+                              <Chip tone="warn" dot="dot-cool">
+                                冷却 {formatDuration(c.cooldownRemainingMs)}
+                              </Chip>
+                            ) : c.usable === false ? (
+                              <Chip tone="warn">
+                                {reasons.length
+                                  ? reasons.map((x) => REASON_TEXT[x] ?? x).join('、')
+                                  : '不可用'}
+                              </Chip>
+                            ) : (
+                              <Chip tone="ok" dot="dot-ok">
+                                可用
+                              </Chip>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="subcard-soft">
+              <div className="text-label mb-1.5">失败切换策略（failover）</div>
+              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                最多尝试 <strong>{routeCheck.data.failover.maxAttempts}</strong> 次 ·
+                单候选冷却 <strong>{formatDuration(routeCheck.data.failover.cooldownMs)}</strong> ·
+                触发切换的错误：{routeCheck.data.failover.switchOn.join(' / ')}
+              </div>
+            </div>
+
+            <Note>
+              这份结果是**此刻**的判定：冷却会随时间解除，账号余额与目录也会变。
+              要找「为什么刚才失败」，去「请求日志」看那一行的 routedTo 与错误码，
+              不要用本页反推。
+            </Note>
+          </div>
+        ) : null}
+      </Modal>
     </PageShell>
   );
 }

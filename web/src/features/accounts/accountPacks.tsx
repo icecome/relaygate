@@ -1,5 +1,6 @@
 /**
- * 权益包到期与可用性：由 /v1/credentials/summary 派生，无独立接口。
+ * 权益包（积分口径）的纯计算 + 保活状态。
+ *
  * 关键口径（统一后端 src/credentials/credits.js 与 src/upstream/balance.js）：
  *   - expireTime 是秒级时间戳（后端 `Math.floor(expireMs / 1000)`），转毫秒需乘 1000，
  *     直接当毫秒用会落在 1970 年；
@@ -11,29 +12,16 @@
  * Account.tokenBuckets（非 packs），故本模块不会读到它。若将来要展示 ZCode 额度，
  * 必须走独立通道，绝不能并入 packs 或 creditTotals。
  *
- * 三个用途：ExpiryChip（账号表单元格内显示最紧迫项）、PackDialog（弹窗展示该账号全部
- * 权益包，可用者在上、失效者置底置灰）、expirySummary（工具条汇总提示）。
+ * 跨平台的权益视图（Token / 配额 / Raccoon 分池）在 shared/lib/entitlement.ts，
+ * 本模块只负责积分口径与保活判定这两件事。
  */
-import { useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
-import {
-  formatNumber,
-  formatTime,
-  platformOf,
-  type Platform,
-} from '../../shared/lib/format';
-import { Chip } from '../../shared/ui';
+import { platformOf, type Platform } from '../../shared/lib/format';
 
 type Urgency = 'expired' | 'critical' | 'warning';
 
 /** 到期提醒窗口：只关心 7 日内。 */
 const NOTICE_DAYS = 7;
-
-const URGENCY_META: Record<Urgency, { label: string; tone: 'danger' | 'warn'; dot: string }> = {
-  expired: { label: '已到期', tone: 'danger', dot: 'dot-error' },
-  critical: { label: '3 日内', tone: 'danger', dot: 'dot-error' },
-  warning: { label: '7 日内', tone: 'warn', dot: 'dot-cool' },
-};
 
 export interface PackView {
   key: string;
@@ -53,8 +41,14 @@ export interface PackView {
   unusableReason: '已用尽' | '已过期' | null;
 }
 
-/** 秒级时间戳转毫秒；null / 非正数返回 null（表示无到期时间）。 */
-function toMs(expireSec: number | null | undefined): number | null {
+/**
+ * 秒级时间戳转毫秒；null / 非正数返回 null（表示无到期时间）。
+ *
+ * 导出是必要的：权益详情弹窗要渲染 ZCode 的额度桶，而桶的 expireTime 与
+ * 权益包的 expireTime 是同一种「秒级时间戳」——直接当毫秒用会落到 1970 年。
+ * 让两处各自实现一遍这个换算，就是在等一处漏乘 1000。
+ */
+export function toMs(expireSec: number | null | undefined): number | null {
   if (typeof expireSec !== 'number' || !Number.isFinite(expireSec) || expireSec <= 0) {
     return null;
   }
@@ -110,70 +104,16 @@ export function packsOf(account: Account, now = Date.now()): PackView[] {
 }
 
 /**
- * 账号表中「权益包」列用：仅仍可使用的包（未用尽、未过期）。
- *
- * 为什么不再取 packsOf()[0]：那只是「最早到期的一个包」，会让该列
- * 既不反映账号的真实额度（其余可用包被隐去），又与右侧「余额/额度」
- * （可用包 remaining 之和）和「权益到期」（最紧迫包的到期状态）重复。
- * 列内改为展示可用包数量，额度总量归「余额/额度」，明细在 PackDialog 内查看。
- */
-export function usablePacksOf(account: Account, now = Date.now()): PackView[] {
-  return packsOf(account, now).filter((p) => p.usable);
-}
-
-/**
- * 到期提醒是否值得计入：只有「作废仍会造成损失」的包才算。
- *
- * 已用尽（remaining === 0）的包过期不损失任何积分，不参与「权益到期」判定。
- * Trae 每日签到赠送按天拆包（每包 100 分），用尽后包体还要挂 1~3 天才到期——
- * 此前 worstExpiry / expirySummary 把这些死包读成「3 日内 / 7 日内到期」，
- * 整池明明没有任何额度临期却持续告警。后端的金额与调度口径
- * （credentials/credits.js summarizeFefo、pool.js poolSignals）都只统计
- * remaining > 0 的包，展示口径在此与之对齐。
- * unlimited 包（remaining=null）过期即失去不限量额度，属真实损失，保留提醒；
- * remaining 为 null 且非 unlimited（未知）与后端 summarizeExpiry 同口径跳过。
- */
-function expiryWorthNoticing(p: PackView): boolean {
-  if (p.unlimited) return true;
-  return typeof p.remaining === 'number' && p.remaining > 0;
-}
-
-/** 账号表单元格用：最紧迫的一项（已到期优先，其次 3 日内、7 日内；已用尽的包不计）。 */
-export function worstExpiry(account: Account, now = Date.now()): PackView | null {
-  const notice = packsOf(account, now).filter((p) => p.urgency != null && expiryWorthNoticing(p));
-  if (notice.length === 0) return null;
-  const order: Record<Urgency, number> = { expired: 0, critical: 1, warning: 2 };
-  return notice.sort(
-    (a, b) => order[a.urgency as Urgency] - order[b.urgency as Urgency] || (a.days ?? 0) - (b.days ?? 0),
-  )[0];
-}
-
-/**
- * 全库汇总（按账号数口径），供凭据池工具条提示。
- * 命名注意：后端 /summary 的 expiring3d/7d 是积分额度（amount），本函数返回的是账号数
- * （count）—— 同名不同义。调用方文案必须写明「N 个账号」，不得与 summary.expiring3d 直接对比。
- */
-export function expirySummary(
-  accounts: Account[],
-  now = Date.now(),
-): { expiring: number; expired: number } {
-  let expiring = 0;
-  let expired = 0;
-  for (const a of accounts) {
-    const worst = worstExpiry(a, now);
-    if (!worst) continue;
-    expiring += 1;
-    if (worst.urgency === 'expired') expired += 1;
-  }
-  return { expiring, expired };
-}
-
-/**
  * 全库积分额度汇总，口径与 packsOf 一致（已用尽与已过期都不计入）：
  *   - total：所有可用包的 remaining 之和；unlimited 包不计入金额，只计数量
  *   - expiring：7 日内到期的可用额度
  *   - unlimited：带不限量包的账号数
  *   - packs：可用计量包总数
+ *
+ * 双形态支持：列表端点带 `?slim=1` 时 `packs` 被换成 `packDigest` 摘要
+ * （后端 credentials/entitlement-view.js#digestOf，与 summarizeExpiry / FEFO
+ * 共用同一套日历日判定）。两形态必须在同一函数里处理，否则总览页会在
+ * 没人注意的时候静默变成 0 —— 那正是这次给列表加 slim 时最容易踩的坑。
  */
 export interface CreditTotals {
   total: number;
@@ -192,6 +132,17 @@ export function creditTotals(accounts: Account[], now = Date.now()): CreditTotal
   let withCredit = 0;
 
   for (const a of accounts) {
+    // 摘要形态：直接采信后端的聚合，不再重算（重算就会与调度差一天）
+    if (a.packDigest) {
+      const d = a.packDigest;
+      if (d.usable === 0) continue;
+      withCredit += 1;
+      packs += d.usable - d.unlimited;
+      unlimited += d.unlimited;
+      total += d.usableAmount;
+      expiring += d.expiring7d;
+      continue;
+    }
     let accountHasCredit = false;
     for (const p of packsOf(a, now)) {
       if (p.unlimited) {
@@ -217,16 +168,6 @@ export function creditTotals(accounts: Account[], now = Date.now()): CreditTotal
     packs,
     accounts: withCredit,
   };
-}
-
-export function ExpiryChip({ item }: { item: PackView | null }) {
-  if (!item) return <span style={{ color: 'var(--rg-text-disabled)' }}>—</span>;
-  const meta = URGENCY_META[item.urgency as Urgency];
-  return (
-    <Chip tone={meta.tone} dot={meta.dot}>
-      {meta.label}
-    </Chip>
-  );
 }
 
 /* 保活状态 */
@@ -321,15 +262,11 @@ const KEEPALIVE_RECORD_FRESH_MS = 26 * 3600_000;
 /**
  * 分池保活汇总的池归属。
  *
- * 比 platformOf 多认 Raccoon：platformOf 的返回值不含 'raccoon'（该平台的
- * 账号会落进 'trae' 分支），而 Raccoon 恰恰是定时保活口径与 Trae 不同的池
- * （它有独立的 refresh 端点），把它并进 Trae 池会让本面板的「纳入定时保活」
- * 与失败计数归错地方。其余判定仍与 platformOf 同源，不另起一套。
+ * 直接走 platformOf：此前这里特判 Raccoon 是因为 platformOf 不返回
+ * 'raccoon'（账号落进 Trae 分支），2026-11-06 起 platformOf 已显式识别
+ * Raccoon，特判不再必要。保持一行调用，避免两处口径漂移。
  */
 function keepalivePoolOf(a: Account): Platform {
-  const edition = String(a.edition || '').toLowerCase();
-  const source = String(a.source || '').toLowerCase();
-  if (edition === 'raccoon' || source === 'raccoon') return 'raccoon';
   return platformOf(a);
 }
 
@@ -379,82 +316,5 @@ export function keepalivePools(accounts: Account[], now = Date.now()): Keepalive
   return list.sort(
     (a, b) => b.expiringSoon - a.expiringSoon || Number(b.never) - Number(a.never)
       || b.stale - a.stale || a.platform.localeCompare(b.platform),
-  );
-}
-
-/** 弹窗内的到期明细表：失效项置底并置灰。 */
-export function PackTable({ account }: { account: Account }) {
-  const packs = useMemo(() => packsOf(account), [account]);
-
-  if (packs.length === 0) {
-    return (
-      <div className="py-3 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-        该账号没有权益包记录。
-      </div>
-    );
-  }
-
-  return (
-    <>
-      <table className="w-full border-collapse text-[13px]">
-        <thead>
-          <tr>
-            <th className="th">权益包</th>
-            <th className="th cell-num">剩余 / 总量</th>
-            <th className="th">到期时间</th>
-            <th className="th cell-num">剩余天数</th>
-            <th className="th">状态</th>
-          </tr>
-        </thead>
-        <tbody>
-          {packs.map((p) => {
-            const meta = p.urgency ? URGENCY_META[p.urgency] : null;
-            return (
-              <tr
-                key={p.key}
-                style={p.usable ? undefined : { color: 'var(--rg-text-disabled)' }}
-              >
-                <td className="td">
-                  <span style={p.usable ? undefined : { color: 'var(--rg-text-disabled)' }}>
-                    {p.name}
-                  </span>
-                </td>
-                <td className="td cell-num">
-                  {p.unlimited
-                    ? '不限量'
-                    : `${formatNumber(p.remaining)}${
-                        p.limit != null ? ` / ${formatNumber(p.limit)}` : ''
-                      }`}
-                </td>
-                <td className="td font-mono text-[12px]">
-                  {p.expireMs == null ? '无到期时间' : formatTime(new Date(p.expireMs).toISOString())}
-                </td>
-                <td className="td cell-num">
-                  {p.expireMs == null ? '—' : p.days != null && p.days <= 0 ? '已过' : `${p.days} 天`}
-                </td>
-                <td className="td">
-                  {p.usable ? (
-                    meta ? (
-                      <Chip tone={meta.tone} dot={meta.dot}>
-                        {meta.label}
-                      </Chip>
-                    ) : (
-                      <Chip tone="ok" dot="dot-ok">
-                        可用
-                      </Chip>
-                    )
-                  ) : (
-                    <Chip tone="neutral">{p.unusableReason}</Chip>
-                  )}
-                </td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      <p className="mt-2 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-        已用尽或已过期的权益包不参与调度，置底显示；「N 日内」标记表示距到期时间，不代表消耗顺序。
-      </p>
-    </>
   );
 }

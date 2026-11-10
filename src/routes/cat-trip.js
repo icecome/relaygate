@@ -10,6 +10,7 @@
  */
 const { Router } = require('express');
 const g = require('../workbuddy/cat-trip');
+const daily = require('../workbuddy/growth-daily');
 const store = require('../credentials/store');
 const auth = require('../auth');
 const wbAuth = require('../workbuddy/auth');
@@ -32,6 +33,18 @@ async function toInfo(accountId) {
     uid: ensured.userId || stored.userId,
     region: wbAuth.regionOf(ensured.host || stored.host),
   };
+}
+
+/**
+ * 成长每日汇总缓存（单账号 60s TTL + 在途合并），见 growth-daily.js#createDailyProgressCache。
+ * load 闭包按 accountId 取 info，便于测试用同一模块实例替换。
+ */
+const dailyCache = daily.createDailyProgressCache(async (accountId, detail = {}) => {
+  const info = await toInfo(accountId);
+  return daily.fetchDailyProgress(info, { force: detail.force });
+});
+function dailyCacheSize() {
+  return dailyCache.size();
 }
 
 /** 提取 body.accountId；缺失时回 400 并返回 null。 */
@@ -88,13 +101,16 @@ router.post('/status-all', admin, async (req, res) => {
   res.json({ object: 'list', total: accounts.length, data });
 });
 
-/** 全部启用账号的成长汇总（只读，有界并发；buddy/能量/连登/抽奖）。 */
+/** 全部启用账号的成长汇总（只读，有界并发；buddy/能量/连登/抽奖/今日活跃）。 */
 router.post('/overview', admin, async (req, res) => {
   const accounts = store.list().filter((a) => a.enabled && a.edition === 'workbuddy');
   const data = await mapWithConcurrency(accounts, async (a) => {
     const info = await toInfo(a.id);
-    const [buddy, quota, streak, chances] = await Promise.all([
+    const [buddy, quota, streak, chances, heatmap] = await Promise.all([
       g.fetchBuddyInfo(info), g.fetchBuddyQuota(info), g.fetchStreak(info), g.fetchLotteryChances(info),
+      // 今日活跃是 WorkDaddy 成长面板的核心只读字段（data.today.is_active），
+      // 与连登天数并列：连登讲历史连续，is_active 讲今天是否已点亮。
+      g.fetchHeatmap(info).catch(() => null),
     ]);
     return {
       accountId: a.id, label: a.label || a.id, ok: true,
@@ -105,6 +121,8 @@ router.post('/overview', admin, async (req, res) => {
       streakDays: streak.ok ? streak.days : null,
       makeupCards: streak.ok ? streak.makeupCards : null,
       lotteryChances: chances.ok ? chances.balance : null,
+      todayActive: heatmap && heatmap.ok ? !!(heatmap.today && heatmap.today.isActive) : null,
+      todayScore: heatmap && heatmap.ok && heatmap.today ? heatmap.today.score : null,
     };
   }, 2);
   res.json({ object: 'list', total: accounts.length, data });
@@ -137,6 +155,37 @@ async function mapWithConcurrency(items, fn, limit = 2, gapMs = 300) {
 router.post('/last-run', admin, (req, res) => {
   const { readLastRun } = require('../jobs/growth-auto');
   res.json({ object: 'growth_last_run', ...(readLastRun() || { ranAt: null }) });
+});
+
+/**
+ * 成长每日汇总（只读）：成长任务进度 + 当日签到 + 今日活跃 + 连续活跃 + Buddy + 旅行。
+ *
+ * 与 WorkDaddy 的 `/api/growth/daily-progress` 同形态：一次请求返回全池视图，
+ * 单账号失败只标 unavailable，不把「没查到」写成事实值。查询走 TTL 缓存，
+ * 面板每次打开不会把上游打满。
+ */
+router.post('/daily-progress', admin, async (req, res) => {
+  const accounts = store.list().filter((a) => a.enabled && a.edition === 'workbuddy');
+  const force = !!(req.body || {}).force;
+  const data = await mapWithConcurrency(accounts, async (a) => {
+    try {
+      const r = await dailyCache.get(a.id, { force });
+      return { accountId: a.id, label: a.label || a.id, ...r };
+    } catch (e) {
+      return { accountId: a.id, label: a.label || a.id, status: 'unavailable', fetchedAt: Date.now(), reason: e.message };
+    }
+  }, 2);
+  res.json({ object: 'list', total: accounts.length, data });
+});
+
+/** 缓存状态与清理（面板「刷新」时传 force 即可，不需要手动清缓存）。 */
+router.get('/daily-progress/cache', admin, (_req, res) => {
+  res.json({ object: 'growth_daily_cache', size: dailyCacheSize() });
+});
+
+router.post('/daily-progress/cache/clear', admin, (_req, res) => {
+  dailyCache.clear();
+  res.json({ ok: true });
 });
 
 /** 自动化流程（旅行 + 任务 + 补登 + 兑换 + 抽奖 + 盲盒）。body {accountId?} 缺省处理全部启用账号。

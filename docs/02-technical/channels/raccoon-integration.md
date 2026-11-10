@@ -118,24 +118,177 @@ Raccoon 的积分单位是 **credit**（与 Trae/WorkBuddy 同口径），因此
 
 ## 对话面
 
+### 端点形态
+
 ```
-POST /v1/raccoon/chat/completions     # 转发面鉴权（访问密钥 + 限流）
+POST /v1/raccoon/chat/completions     # 显式渠道端点（转发面鉴权 + 并发/冷却闸门）
+POST /v1/chat/completions             # 统一端点：sn-* 模型自动分派到 Raccoon 池
 ```
 
-- 模型走**独立端点**而不是并入 `/v1/chat/completions`：Raccoon 是独立账号池，
-  **不进 Trae 转发池**（见下）。
-- 模型边界：Raccoon 模型（`sn-` 前缀）**只有通用密钥（platform=all）可调**，
-  trae/workbuddy 平台密钥一律 403。这条必须在 `middleware/model-access.js` 里
-  显式收口 —— 否则「非 WorkBuddy 独有模型就放行」的 Trae 分支会把它当 Trae 模型
-  放行，等于让平台密钥越界消耗 Raccoon 积分。
+- **两条入口共用一份调度语义**。统一端点从 2026-11-09 起开始把 `sn-*` 模型分派到
+  Raccoon 池（此前会 403 提示「请用 /v1/raccoon/...」），因为一个客户端（DSH / 
+  Claude Code / Cline）只配一个 baseURL，让用户为了小浣熊再配第二个 baseURL 基本不可行。
+- 模型走**独立端点**而不是并入 `/v1/chat/completions` 是因为它**不进 Trae 转发池**
+  （`pool.editionOk` 默认分支只取 Trae 系）。但统一端点的分派**不放松**权限边界：
+  能走到分派分支的只有通用密钥（platform=all），trae/workbuddy 平台密钥照样 403。
 - `tools` **逐字透传**（留在请求体顶层）：参考项目里 Qoder 与 TRAE 都因漏发而让
-  模型在正文里臆造 XML 工具调用、harness 认不出 → 任务终止。
+  模型在正文里臆造 XML 工具调用，harness 认不出 → 任务终止。
 - 思考档位：唯一有效的载波是 **`extra_body.thinking = {type:'enabled'|'disabled'}`**
   （provider 级方言，与模型无关）。**无效**写法（都实测过）：`extra_body.enable_thinking`、
   双层 `extra_body.extra_body.*`、把 `thinking` 放**顶层**、`reasoning_effort`
   （服务端接受该字段但**无任何可观测效果**）。
   本实现只在调用方**明确表达意图**时翻译：`reasoning_effort: 'none'` 或
   `thinking:{type:'disabled'}` → `disabled`；其余明确档位 → `enabled`；不说 → 一个字节都不改。
+
+### 限流：真正的成因与闸门设计（2026-11-09 实测）
+
+#### 报错原文与两种形态
+
+```
+HTTP 429 {"error":{"code":"user_model_rate_limited",
+          "message":"您的模型请求频率超限，请稍后重试","type":"rate_limit_error"}}
+
+HTTP 429 {"code":200103,"message":"limiter_request_error",
+          "details":"request exceed max time, retry after:0s"}
+```
+
+第一种是「并发额度用尽」，第二种是「排队超时」（`retry after: 0s`）。
+
+#### 实测事实（这五条推翻了直觉）
+
+| # | 事实 | 数据 | 推翻了什么 |
+|---|---|---|---|
+| 1 | 判据是**瞬时并发**，不是 RPM | 串行 15 次 / 43.8s **全通过** | 「按分钟计数」的令牌桶 |
+| 2 | 并发槽位约 **4** | 4 并发×3 轮稳过；5 并发出现 429；6/8 并发全挂 | 「多账号就能上并发」 |
+| 3 | 限流**跨账号** | 两个库内账号 + 本机客户端第三个账号**同时** 429 | 「换号可以绕过」 |
+| 4 | 限流**跨模型** | `sn-kimi-k3`/`sn-sensenova-6-8-flash`/`sn-glm-5-3` 同时 429 | 「按 (账号,模型) 冷却」 |
+| 5 | 恢复窗口 **> 10 分钟** | 每 15s 探一次，**625s** 仍未恢复；期间全部秒回 429（56-270ms） | 「20s 冷却就够」（`rateCooldownMs` 的默认值） |
+
+→ 结论：**墙在出站 IP 上**。这是本渠道最重要的一条运维事实。
+
+#### 闸门设计：两级冷却 + 不再换号重试
+
+```
+                  ┌───────────────────────────────┐
+  请求 ──▶ pickAccount ──▶ limiter.blockedFor ──▶ 拿并发令牌 ──▶ 上游
+                  │              │                     │
+                  │              ├─ 出口级冷却（全局）  │
+                  │              └─ 账号级冷却          │
+                  └─ 无号可用时区分 503（真没号）/429（在冷却）
+```
+
+- **出口级冷却**（`limiter.globalCooldown`）：一次 429 冷住**整条链路**。
+  不落库（重启/换 IP 就失效，落库会让重启后误判成还在冷却）。
+- **账号级冷却**：同时写 `limiter.cooldowns` 与账号库 `coolUntil`
+  （后者让面板看得到、重启不丢）。用于「这个号自己出问题」的场景。
+- **撞墙后不再换号重试**。这一点是硬修正：原实现 `continue` 换下一个号，
+  实测效果是「一次撞墙放大成三次撞墙」，而每次撞墙都可能推长恢复窗口。
+  正确动作是把 429 + `Retry-After` 直接给客户端。
+- **持续成功不清出口级冷却**：一次成功不推翻「整条链路被限流」这个事实，
+  否则会出现「成功一次→立刻放开→又撞墙」的抖动。只有冷却窗口走完才清。
+
+#### 参数与调参
+
+| 环境变量 | 默认 | 含义 |
+|---|---|---|
+| `RACCOON_MAX_CONCURRENT` | 3 | 每账号同时在上游的请求数（实测 4 稳、5 挂，留一格机动） |
+| `RACCOON_COOLDOWN_MS` | 300000 | 首次撞墙冷却（> 实测恢复下界） |
+| `RACCOON_COOLDOWN_MAX_MS` | 1800000 | 指数退避封顶 |
+| `RACCOON_MAX_QUEUE` | 64 | 并发满时的等待队列上限，超出直接 429 |
+| `RACCOON_TIMEOUT_MS` | 60000 | 单次对话超时 |
+
+#### 自查与验证
+
+```bash
+# 1) 查「还要等多久」，不要盲目重试（重试会延长恢复窗口）
+curl -s http://127.0.0.1:19900/v1/raccoon/limiter -H "Authorization: Bearer <访问密钥>"
+
+# 2) 实测上游限流边界（只读单发；burst 模式需 --yes）
+node scripts/probes/probe-raccoon-ratelimit.js
+node scripts/probes/probe-raccoon-ratelimit.js --burst=12 --yes
+
+# 3) 端到端验证代理与闸门（--safe 不制造限流）
+node scripts/verify/verify-raccoon-proxy.js --key=<通用密钥> --safe
+```
+
+#### 仍然存在的边界
+
+- **单机单出口**：闸门只能管本进程的并发。若同一台机器上官方客户端也在跑，
+  两者共享 IP 额度，本进程无法感知对方 —— 表现为「明明没发几个请求却被限流」。
+  缓解手段：把 `RACCOON_MAX_CONCURRENT` 降到 2，或错开使用。
+- **多进程部署**：`limiter` 是进程内状态（与 `pool.js` 的 `inFlight` 同构）。
+  两个进程各开 3 并发 = 实际 6 并发，会撞墙。多进程请按进程数等比下调。
+- **出口 IP 变化**（换代理/重播宽带）：冷却不会自动解除，要等它到点。
+  这是保守的一侧 —— 宁可多等，也不要反复撞墙延长窗口。
+
+## 模型目录与「新增虚拟模型」接线（2026-11-09 修复）
+
+### 三处必须同时改，缺一处就表现为「选不到」
+
+Raccoon 的模型要在**三个不同的数据源**里出现，它们服务于三个不同的界面：
+
+| # | 数据源 | 消费方 | 漏了会怎样 |
+|---|---|---|---|
+| 1 | `raccoon.catalog()`（本模块） | `routes/models.js` → `GET /v1/models` | 转发客户端拿不到模型 id |
+| 2 | `model-router/store.js` 的 `providers` | `GET /v1/admin/model-router/available-models` | **「新增虚拟模型」对话框的上游下拉里没有 Raccoon** |
+| 3 | `model-router/dispatch.js` 的分支 | `dispatchStream` / `dispatchNonStream` | 候选能配、但请求打着 Raccoon 的 token 发去 Trae 上游 |
+
+本次修复前 1、2、3 **全部缺失**，表现依次是「客户端看不见模型」→「虚拟模型选不到 Raccoon」
+→「配了也报 4001」。三处的修复要点：
+
+**① 目录聚合层** `src/raccoon/index.js`
+把「取当前可用模型列表」收口成一个入口（`catalog()` / `fallbackCatalog()` / `hasAccount()`），
+避免 `routes/models`、`routes/model-router` 各自 require `auth` + `product` 再各写一遍
+「pick 账号 → fetchModelCatalog → 解析」的流程（两处迟早分叉）。
+
+**② Provider 注册** `src/model-router/store.js`
+```js
+providers: {
+  trae, workbuddy,
+  raccoon: { type:'builtin', builtin:'raccoon', enabled:true, label:'Raccoon (商汤小浣熊)' },
+}
+```
+⚠️ 同时必须把 `raccoon` 加进 `normalizeProvider` 的 **BUILTIN_WHITELIST** 与
+`removeProvider` 的 **BUILTIN_IDS**。漏了白名单的后果是**静默归一成 `trae`**：
+候选里显示 `sn-glm-5-3-flash`，实际请求打到 Trae 上游拿 4001 —— 一个完全不指向
+根因的报错。这是本次最隐蔽的一处。
+
+**③ dispatch 分支** `src/model-router/dispatch.js`
+```js
+if (provider.builtin === 'raccoon') return dispatchRaccoonStream(...);
+```
+两个入口（流式/非流式）都要加。并复用 `raccoon/dispatch.run` —— 并发闸门、
+出口级冷却、换号、凭据续期因此与统一端点**共用同一份实现**，不存在第二套调度。
+
+流式出口的 `model` 字段要改写成虚拟模型 ID（客户端认的是虚拟 ID），改写在**行级**
+做且只动能 `JSON.parse` 的 `data:` 帧，其余字节原样（见 `rewriteSseModelLine`）。
+
+### 验证方法（三层，由浅入深）
+
+```bash
+# 1) 目录层：模型能不能被客户端看见
+curl -s "http://127.0.0.1:19900/v1/models?platform=all" -H "Authorization: Bearer <访问密钥>" \
+  | grep -o '"owned_by":"raccoon"' | wc -l          # 期望 > 0
+
+# 2) Provider 层：虚拟模型对话框能不能选到
+curl -s "http://127.0.0.1:19900/v1/admin/model-router/available-models" -H "Authorization: Bearer <管理密钥>" \
+  | python -c "import json,sys; d=json.load(sys.stdin)['data']; print(list(d)); print(len(d.get('raccoon',[])))"
+# 期望：['trae','workbuddy','raccoon'] 与 6
+
+# 3) 调度层：配一个含 raccoon 候选的虚拟模型并真调
+#    （单测 src/test/raccoon-proxy.test.js 覆盖了这三层，见「Provider 注册」那组用例）
+```
+
+实测（2026-11-09）：`vm/raccoon-test`（候选 `raccoon:sn-glm-5-3-flash`）非流式调用
+返回 `model=vm/raccoon-test`、正文 `你好`、`usage={prompt:43,completion:20,total:63}`。
+
+### 仍然存在的边界
+
+- **无账号时目录为空**：`available-models` 的 raccoon 键会返回 `[]`。这是刻意的 ——
+  列出一组必然 503 的模型只会让用户配出一个永远失败的虚拟模型。
+- **探活未接入**：Raccoon 模型在 `/v1/models/status` 里统一是 `unknown`，
+  不参与 Trae/WorkBuddy 那套探活调度（它的限流是出口 IP 维度的，
+  探活本身就会消耗并发额度，接入前要先想清楚节流，见上一章的闸门设计）。
 
 ## 转发池隔离（容易踩的一处）
 

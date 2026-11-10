@@ -710,6 +710,11 @@ function record(id, kind, info = {}) {
 
 /** 签到/刷余额后：余额恢复则清冷却（解冻）。 */
 function unfreezeIfHealthy(id) {
+  // 空值直接返回：调用方传 item.accountId 时，任何平台漏了这个字段都会把
+  // undefined 送进 store.get → node:sqlite 抛
+  // 「Provided value cannot be bound to SQLite parameter 1」，
+  // 让整轮解冻与低额告警中断（2026-11-03 实测，Raccoon 分支漏 accountId 起，静默 19 天）。
+  if (!id) return false;
   const a = store.get(id);
   if (!a || !a.enabled) return false;
   if (balanceOf(a) != null && balanceOf(a) < (Number(config.minBalanceToUse) || 0)) return false;

@@ -8,9 +8,9 @@ import { useNavigate } from 'react-router-dom';
 import { setKey, useAuth } from '../../shared/api/auth';
 import { getClientConfig } from '../../shared/api/admin';
 import {
-  createAccessKey,
   deleteAccessKey,
   isKeyUsable,
+  keyDaysLeft,
   listAccessKeys,
   listLoginKeys,
   maskKey,
@@ -19,6 +19,7 @@ import {
   revokeAccessKey,
   revealAccessKey,
   rotateAccessKey,
+  type ApiKeyRow,
   type CreatedKey,
 } from '../../shared/api/apiKeys';
 import { ApiError } from '../../shared/api/http';
@@ -34,10 +35,13 @@ import {
   Panel,
   Segmented,
 } from '../../shared/ui';
+import { MenuButton, type MenuItem } from '../../shared/ui/Menu';
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
 import { LoginKeyDialog } from './LoginKeyDialog';
+import { CreateAccessKeyDialog } from './CreateAccessKeyDialog';
+import { KeyPolicyDialog } from './KeyPolicyDialog';
 import { ClientAccessPanel } from '../ops/ClientAccessPanel';
 
 type Filter = 'all' | 'active' | 'revoked';
@@ -55,6 +59,16 @@ function statusLabel(status: string | undefined): string {
   return STATUS_LABEL[status ?? 'active'] ?? status ?? '生效中';
 }
 
+/**
+ * 密钥明文块。访问密钥与登录密钥两处展示完全一致，此前逐字复制过两份。
+ * select-all 让用户点一次就能整段选中，复制按钮失败时仍有手动兜底。
+ */
+function SecretBox({ value }: { value: string }) {
+  return (
+    <div className="code-block select-all text-[13px]">{value}</div>
+  );
+}
+
 export default function AccessKeysPage() {
   const { key } = useAuth();
   const toast = useToast();
@@ -67,6 +81,8 @@ export default function AccessKeysPage() {
   const [loginFresh, setLoginFresh] = useState<CreatedKey | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [showLoginInput, setShowLoginInput] = useState(false);
+  /** 创建访问密钥弹窗（需要平台选择，prompt 承载不了）。 */
+  const [creating, setCreating] = useState(false);
 
   const list = useAsyncData((signal) => listAccessKeys(key, signal), [key], { enabled: !!key });
   // 登录密钥接口返回 { object, data }，是否已配置由列表长度判断
@@ -84,6 +100,9 @@ export default function AccessKeysPage() {
 
   /** 已配置的登录密钥（后端可能存在多条，取最新一条）。 */
   const loginKeyRow = loginKeys.data?.data?.[0] ?? null;
+
+  /** 正在编辑权限与配额的密钥；null = 关闭。 */
+  const [policyTarget, setPolicyTarget] = useState<ApiKeyRow | null>(null);
 
   /** 明文只在此处短暂展示，切换页面前应清空。 */
   function revealFresh(c: CreatedKey | null) {
@@ -106,28 +125,10 @@ export default function AccessKeysPage() {
   }
 
   async function create() {
-    // platform 是后端必填项（PLATFORMS = trae|workbuddy|all），缺省 400
-    const label = await prompt({
-      title: '创建访问密钥',
-      message: '明文仅在创建时返回一次，请立即保存。',
-      input: { label: '备注', value: '' },
-      okText: '创建',
-    });
-    if (typeof label !== 'string') return;
-    setBusyId('__create__');
-    try {
-      const created = await createAccessKey(
-        { label: label.trim() || undefined, platform: 'all' },
-        key,
-      );
-      revealFresh(created);
-      toast('密钥已创建，请立即复制保存', 'ok');
-      list.reload();
-    } catch (e) {
-      toast(e instanceof ApiError ? e.message : '创建失败，请在访问密钥页重试', 'err');
-    } finally {
-      setBusyId(null);
-    }
+    // 平台选择改到专用弹窗（CreateAccessKeyDialog）：usePrompt 只支持单个文本
+    // 输入框，此前 platform 被硬编码成 'all'，用户无法创建 Trae / WorkBuddy
+    // 专用密钥 —— 那把「收窄密钥权限」的唯一入口也就没有了。
+    setCreating(true);
   }
 
   async function rotate(id: string) {
@@ -153,7 +154,12 @@ export default function AccessKeysPage() {
   }
 
   async function reset(id: string) {
-    const ok = await prompt({ title: '重置该密钥？', okText: '重置', danger: true });
+    const ok = await prompt({
+      title: '重置该密钥？',
+      message: '重置会生成新的明文，旧密钥立即失效；当前会话会自动切到新密钥，不会被退出。',
+      okText: '重置',
+      danger: true,
+    });
     if (ok !== true) return;
     setBusyId(id);
     try {
@@ -187,10 +193,16 @@ export default function AccessKeysPage() {
     }
   }
 
-  async function remove(id: string) {
-    const ok = await prompt({ title: '删除该密钥？', okText: '删除', danger: true });
+  async function remove(row: ApiKeyRow) {
+    const name = row.label || maskKey(row.id);
+    const ok = await prompt({
+      title: `删除访问密钥「${name}」？`,
+      message: '删除后该密钥立即失效且无法恢复，调用方会收到 401。',
+      okText: '删除',
+      danger: true,
+    });
     if (ok !== true) return;
-    await run(id, '删除', () => deleteAccessKey(id, key), '已删除');
+    await run(row.id, '删除', () => deleteAccessKey(row.id, key), '已删除');
   }
 
   async function copyPlaintext() {
@@ -240,8 +252,8 @@ export default function AccessKeysPage() {
       title="访问密钥"
       description="供 IDE 调用转发接口的密钥，与登录密钥分离"
       actions={
-        <Button variant="primary" onClick={create} disabled={busyId === '__create__'}>
-          {busyId === '__create__' ? '创建中…' : '创建密钥'}
+        <Button variant="primary" onClick={create} disabled={creating}>
+          {creating ? '创建中…' : '创建密钥'}
         </Button>
       }
       toolbar={
@@ -253,10 +265,10 @@ export default function AccessKeysPage() {
             options={[
               { value: 'all', label: '全部' },
               { value: 'active', label: '生效中' },
-              { value: 'revoked', label: '不可用' },
+              { value: 'revoked', label: '停用 / 吊销 / 过期' },
             ]}
           />
-          <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
             共 {rows.length} 个密钥
           </span>
         </>
@@ -270,17 +282,18 @@ export default function AccessKeysPage() {
             <LoadingBlock />
           ) : rows.length === 0 ? (
             <EmptyState
-              label="还没有访问密钥。"
+              label="还没有访问密钥"
               hint="IDE 或脚本要调用本网关，需要一把 sk- 开头的访问密钥；登录管理面板用的是另一把登录密钥，两者互不通用。"
               action={{ label: '创建第一把访问密钥', onClick: create }}
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">备注</th>
                   <th className="th">平台</th>
                   <th className="th">密钥</th>
+                  <th className="th">权限与配额</th>
                   <th className="th">状态</th>
                   <th className="th">创建时间</th>
                   <th className="th">最近使用</th>
@@ -291,12 +304,54 @@ export default function AccessKeysPage() {
                 {rows.map((r) => {
                   const busy = busyId === r.id;
                   const usable = isKeyUsable(r);
+                  const days = keyDaysLeft(r.expiresAt);
                   return (
                     <tr key={r.id} className="row-hover">
-                      <td className="td font-mono text-[12px]" data-label="备注">{r.label || '—'}</td>
-                      <td className="td" data-label="平台">{r.platform || 'all'}</td>
-                      <td className="td font-mono text-[12px]" data-label="密钥">{r.hint || maskKey(r.id)}</td>
-                      <td className="td" data-label="状态">
+                      <td className="td td-mono">{r.label || '—'}</td>
+                      <td className="td">{r.platform || 'all'}</td>
+                      <td className="td td-mono">{r.hint || maskKey(r.id)}</td>
+                      {/*
+                        权限列：scopes / resources / rpm / 过期四件事压成一行。
+                        后端 rowToKey 一直在下发这四项（credentials/api-keys.js），
+                        面板此前一项都不渲染——用户拿到一把「全能钥匙」看不到它有多全能。
+                      */}
+                      <td className="td">
+                        <button
+                          type="button"
+                          className="text-left w-full truncate text-[13px] underline decoration-dotted"
+                          title={[
+                            `权限范围：${(r.scopes ?? []).join('、') || '（平台默认）'}`,
+                            `资源范围：${(r.resources ?? []).join('、') || '（平台默认）'}`,
+                            `RPM 上限：${r.rpmLimit != null ? r.rpmLimit : '不限'}`,
+                            `过期：${r.expiresAt ? formatTime(r.expiresAt) : '永不过期'}`,
+                            '点击编辑',
+                          ].join('\n')}
+                          onClick={() => setPolicyTarget(r)}
+                          aria-haspopup="dialog"
+                        >
+                          {(r.scopes ?? []).length} 项 ·{' '}
+                          <span className="font-mono">{(r.resources ?? [])[0] ?? '*'}</span>
+                          {(r.resources ?? []).length > 1 ? ` +${(r.resources ?? []).length - 1}` : ''}
+                          {' · '}
+                          {r.rpmLimit != null ? `${r.rpmLimit} rpm` : '不限速'}
+                          {' · '}
+                          <span
+                            style={{
+                              color:
+                                days == null
+                                  ? 'var(--rg-text-tertiary)'
+                                  : days <= 0
+                                    ? 'var(--rg-state-error)'
+                                    : days <= 14
+                                      ? 'var(--rg-state-warning)'
+                                      : 'var(--rg-text-secondary)',
+                            }}
+                          >
+                            {days == null ? '永久' : days <= 0 ? '已过期' : `${days} 天`}
+                          </span>
+                        </button>
+                      </td>
+                      <td className="td">
                         <Chip
                           tone={usable ? 'ok' : r.status === 'disabled' ? 'neutral' : 'danger'}
                           dot={usable ? 'dot-ok' : r.status === 'disabled' ? 'dot-off' : 'dot-error'}
@@ -304,25 +359,57 @@ export default function AccessKeysPage() {
                           {statusLabel(r.status)}
                         </Chip>
                       </td>
-                      <td className="td font-mono text-[12px]" data-label="创建时间">{formatTime(r.createdAt)}</td>
-                      <td className="td font-mono text-[12px]" data-label="最近使用">{formatTime(r.lastUsedAt)}</td>
+                      <td className="td td-mono">{formatTime(r.createdAt)}</td>
+                      <td className="td td-mono">{formatTime(r.lastUsedAt)}</td>
                       <td className="td cell-act">
-                        <div className="inline-flex items-center gap-1.5">
+                        {/*
+                          主次分层：两个最常用动作留在行内，其余进 ⋯ 菜单。
+                          此前是 5 个 size="sm" 平铺，只有「删除」是 danger，
+                          「吊销」和「查看明文」视觉权重完全相同——而前者是
+                          不可恢复的破坏动作，后者是只读。
+                        */}
+                        <div className="td-actions">
                           <Button size="sm" disabled={busy || !usable} onClick={() => reveal(r.id)}>
                             查看
                           </Button>
                           <Button size="sm" disabled={busy || !usable} onClick={() => rotate(r.id)}>
                             轮换
                           </Button>
-                          <Button size="sm" disabled={busy} onClick={() => reset(r.id)}>
-                            重置
-                          </Button>
-                          <Button size="sm" disabled={busy || !usable} onClick={() => revoke(r.id)}>
-                            吊销
-                          </Button>
-                          <Button size="sm" variant="danger" disabled={busy} onClick={() => remove(r.id)}>
-                            删除
-                          </Button>
+                          <MenuButton
+                            label={`${r.label || maskKey(r.id)} 的更多操作`}
+                            width={200}
+                            items={[
+                              {
+                                key: 'policy',
+                                label: '权限与配额',
+                                hint: 'scopes / 资源范围 / RPM / 过期',
+                                onSelect: () => setPolicyTarget(r),
+                              },
+                              {
+                                key: 'reset',
+                                label: '重置明文',
+                                disabled: busy,
+                                hint: '生成新明文，旧密钥立即失效',
+                                onSelect: () => void reset(r.id),
+                              },
+                              {
+                                key: 'revoke',
+                                label: '吊销',
+                                disabled: busy || !usable,
+                                groupStart: true,
+                                hint: '立即失效且不可恢复',
+                                onSelect: () => void revoke(r.id),
+                              },
+                              {
+                                key: 'del',
+                                label: '删除',
+                                danger: true,
+                                disabled: busy,
+                                hint: '从库内移除，调用方会收到 401',
+                                onSelect: () => void remove(r),
+                              },
+                            ] as MenuItem[]}
+                          />
                         </div>
                       </td>
                     </tr>
@@ -347,12 +434,7 @@ export default function AccessKeysPage() {
               </>
             }
           >
-            <div
-              className="rounded-md border p-3 font-mono text-[13px] break-all select-all"
-              style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
-            >
-              {fresh.key}
-            </div>
+            <SecretBox value={fresh.key} />
             <div className="mt-3">
               <Note>明文仅在创建、轮换、重置与查看时返回，关闭后无法再次获取。</Note>
             </div>
@@ -374,7 +456,7 @@ export default function AccessKeysPage() {
               <Button size="sm" onClick={() => navigate('/traffic')}>
                 去验证连通性
               </Button>
-              <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                 在「请求日志 → 连通性测试」里发一次真实请求，确认这把密钥可用。
               </span>
             </div>
@@ -396,12 +478,7 @@ export default function AccessKeysPage() {
               </>
             }
           >
-            <div
-              className="rounded-md border p-3 font-mono text-[13px] break-all select-all"
-              style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
-            >
-              {loginFresh.key}
-            </div>
+            <SecretBox value={loginFresh.key} />
             <div className="mt-3">
               <Note tone="warn">
                 请立即复制并妥善保存。明文只在这里显示一次，关闭后列表仅保留掩码
@@ -496,13 +573,13 @@ export default function AccessKeysPage() {
                   )}
                 </dd>
                 <dt>备注</dt>
-                <dd className="font-mono text-[12px]">{loginKeyRow?.label || '—'}</dd>
+                <dd className="font-mono text-aux">{loginKeyRow?.label || '—'}</dd>
                 <dt>掩码</dt>
-                <dd className="font-mono text-[12px]">{loginKeyRow?.hint || '—'}</dd>
+                <dd className="font-mono text-aux">{loginKeyRow?.hint || '—'}</dd>
                 <dt>创建时间</dt>
-                <dd className="font-mono text-[12px]">{formatTime(loginKeyRow?.createdAt)}</dd>
+                <dd className="font-mono text-aux">{formatTime(loginKeyRow?.createdAt)}</dd>
                 <dt>最近使用</dt>
-                <dd className="font-mono text-[12px]">{formatTime(loginKeyRow?.lastUsedAt)}</dd>
+                <dd className="font-mono text-aux">{formatTime(loginKeyRow?.lastUsedAt)}</dd>
               </dl>
               {!loginKeyRow && (
                 <div className="mt-3">
@@ -524,6 +601,22 @@ export default function AccessKeysPage() {
             loginKeys.reload();
             list.reload();
           }}
+        />
+
+        <CreateAccessKeyDialog
+          open={creating}
+          onClose={() => setCreating(false)}
+          onCreated={(created) => {
+            // 与旧的 prompt 路径保持同一收尾：展示明文 + 刷新列表
+            revealFresh(created);
+            list.reload();
+          }}
+        />
+
+        <KeyPolicyDialog
+          row={policyTarget}
+          onClose={() => setPolicyTarget(null)}
+          onSaved={list.reload}
         />
       </Stack>
     </PageShell>

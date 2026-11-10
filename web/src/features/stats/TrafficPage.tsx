@@ -35,6 +35,43 @@ import { useToast } from '../../shared/ui/Toast';
 
 type Range = '1' | '24' | '168';
 
+/**
+ * 后端枚举 → 面向用户的说法。
+ *
+ * 这几张表此前把 `message_delta`、`stop`、`tool_calls` 原样渲染，
+ * 与同页中文表头混排；映射表放在文件顶部，未知值回退原文而不是吞掉。
+ */
+const EVENT_LABEL: Record<string, string> = {
+  message_start: '消息开始',
+  message_delta: '文本增量',
+  message_stop: '消息结束',
+  content_block_start: '内容块开始',
+  content_block_delta: '内容块增量',
+  content_block_stop: '内容块结束',
+  ping: '心跳',
+  error: '错误',
+};
+
+const FINISH_LABEL: Record<string, string> = {
+  stop: '正常结束',
+  end_turn: '正常结束',
+  length: '达到长度上限',
+  max_tokens: '达到长度上限',
+  tool_calls: '调用工具',
+  tool_use: '调用工具',
+  content_filter: '内容被过滤',
+};
+
+function eventLabel(type: string | null | undefined): string {
+  if (!type) return '—';
+  return EVENT_LABEL[type] ?? type;
+}
+
+function finishReasonLabel(reason: string | null | undefined): string {
+  if (!reason) return '—';
+  return FINISH_LABEL[reason] ?? reason;
+}
+
 interface TestResult {
   ok: boolean;
   model: string;
@@ -190,8 +227,8 @@ export default function TrafficPage() {
             </div>
             <Button onClick={traffic.reload}>刷新</Button>
           </div>
-          <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-            第 {effPage} / {traffic.data?.totalPages ?? 1} 页
+          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            第 {effPage} 页 · 共 {traffic.data?.totalPages ?? 1} 页
           </span>
         </>
       }
@@ -200,6 +237,13 @@ export default function TrafficPage() {
         {traffic.error && <ErrorState message={traffic.error} onRetry={traffic.reload} />}
 
         <MetricGrid items={metrics} />
+
+        {(summary?.tokensMasked ?? 0) > 0 && (
+          <Note>
+            「总 Token」后的星号表示有行的 Token 在历史日志里被脱敏丢失、无法还原，
+            该总量是下界而非真实消耗。
+          </Note>
+        )}
 
         <Panel title="请求明细" flush>
           {traffic.loading && !traffic.data ? (
@@ -213,12 +257,12 @@ export default function TrafficPage() {
               />
             ) : (
               <EmptyState
-                label="所选区间内没有转发请求记录。"
+                label="所选区间内没有转发请求记录"
                 hint="把时间范围切到「近 24 小时」或「近 7 日」再看；客户端发起请求后即会出现。"
               />
             )
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th cell-num">#</th>
@@ -241,22 +285,37 @@ export default function TrafficPage() {
                       // 单用它当 key 会撞键。拼上时间与下标保证唯一。
                       key={`${r.ts ?? ''}-${r.seq ?? ''}-${i}`}
                       className={bad ? 'row-hover cursor-pointer' : 'row-hover'}
+                      // 整行可点必须同时可聚焦：只挂 onClick 时键盘与读屏用户
+                      // 无法打开失败详情（Tab 到不了、回车不触发）。
+                      tabIndex={bad ? 0 : undefined}
+                      role={bad ? 'button' : undefined}
+                      aria-label={bad ? `查看第 ${rowNo(i)} 行的失败详情` : undefined}
                       onClick={bad ? () => setFailed(r) : undefined}
+                      onKeyDown={
+                        bad
+                          ? (e) => {
+                              if (e.key === 'Enter' || e.key === ' ') {
+                                e.preventDefault();
+                                setFailed(r);
+                              }
+                            }
+                          : undefined
+                      }
                       title={bad ? '点击查看失败详情' : undefined}
                     >
-                      <td className="td cell-num font-mono text-[11px]" data-label="#">{rowNo(i)}</td>
-                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all" data-label="接口">{r.endpoint || '—'}</td>
-                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
-                      <td className="td font-mono text-[12px] break-all" data-label="上游模型">{upstreamModelOf(r) || '—'}</td>
-                      <td className="td font-mono text-[12px]" data-label="账号">{r.account || '—'}</td>
-                      <td className="td" data-label="状态">
+                      <td className="td cell-num font-mono text-aux">{rowNo(i)}</td>
+                      <td className="td td-mono">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-aux break-all">{r.endpoint || '—'}</td>
+                      <td className="td td-mono">{r.model || '—'}</td>
+                      <td className="td td-mono break-all">{upstreamModelOf(r) || '—'}</td>
+                      <td className="td td-mono">{r.account || '—'}</td>
+                      <td className="td">
                         <Chip tone={bad ? 'danger' : 'ok'} dot={bad ? 'dot-error' : 'dot-ok'}>
-                          {r.status ?? (bad ? 'ERR' : 'OK')}
+                          {typeof r.status === 'number' ? `HTTP ${r.status}` : bad ? '失败' : '成功'}
                         </Chip>
                       </td>
-                      <td className="td cell-num" data-label="耗时">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
-                      <td className="td cell-num" data-label="Token">{formatNumber(r.totalTokens)}</td>
+                      <td className="td cell-num">{r.durationMs == null ? '—' : formatDuration(r.durationMs)}</td>
+                      <td className="td cell-num">{formatNumber(r.totalTokens)}</td>
                     </tr>
                   );
                 })}
@@ -266,7 +325,7 @@ export default function TrafficPage() {
         </Panel>
 
         <div className="flex items-center justify-between">
-          <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
             共 {formatNumber(traffic.data?.total ?? 0)} 条记录
           </span>
           <div className="flex items-center gap-2">
@@ -289,19 +348,12 @@ export default function TrafficPage() {
               <Chip tone="danger" dot="dot-error">
                 {failed.status ?? 'ERR'}
               </Chip>
-              <span className="font-mono text-[12px]">{failed.model || '—'}</span>
-              <span className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="font-mono text-aux">{failed.model || '—'}</span>
+              <span className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                 {formatTime(failed.ts)}
               </span>
             </div>
-            <pre
-              className="rounded-md border p-3 font-mono text-[12px] whitespace-pre-wrap break-all"
-              style={{
-                borderColor: 'var(--rg-border)',
-                background: 'var(--rg-bg-secondary)',
-                color: 'var(--rg-state-error)',
-              }}
-            >
+            <pre className="code-block" style={{ color: 'var(--rg-state-error)' }}>
               {failed.error || '网关未返回错误文本'}
             </pre>
           </Panel>
@@ -319,12 +371,12 @@ export default function TrafficPage() {
             <LoadingBlock />
           ) : (sse.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="所选区间内没有 SSE 调试记录。"
+              label="所选区间内没有 SSE 调试记录"
               hint="这类记录只在排查上游事件流问题时产生（TRAE_DEBUG_SSE 开启），平时为空是正常的。"
             />
           ) : (
-            <div className="scroll-y" style={{ maxHeight: 320 }}>
-              <table className="card-table w-full border-collapse text-[13px]">
+            <div className="scroll-y overflow-x-auto" style={{ maxHeight: 320 }}>
+              <table className="data-table">
                 <thead>
                   <tr>
                     <th className="th">时间</th>
@@ -337,12 +389,12 @@ export default function TrafficPage() {
                 <tbody>
                   {(sse.data?.data ?? []).map((r, i) => (
                     <tr key={r.seq ?? i} className="row-hover">
-                      <td className="td font-mono text-[12px]" data-label="时间">{formatTime(r.ts)}</td>
-                      <td className="td font-mono text-[11px] break-all" data-label="Request ID">{r.requestId || '—'}</td>
-                      <td className="td font-mono text-[12px]" data-label="账号">{r.accountId || '—'}</td>
-                      <td className="td font-mono text-[12px]" data-label="模型">{r.model || '—'}</td>
-                      <td className="td" data-label="事件">
-                        <Chip tone="brand">{r.event?.type || '—'}</Chip>
+                      <td className="td td-mono">{formatTime(r.ts)}</td>
+                      <td className="td font-mono text-aux break-all">{r.requestId || '—'}</td>
+                      <td className="td td-mono">{r.accountId || '—'}</td>
+                      <td className="td td-mono">{r.model || '—'}</td>
+                      <td className="td">
+                        <Chip tone="brand">{eventLabel(r.event?.type)}</Chip>
                       </td>
                     </tr>
                   ))}
@@ -353,20 +405,18 @@ export default function TrafficPage() {
         </Panel>
 
         <Panel title="连通性测试" description="向上游发起一次真实请求，验证访问密钥与模型可用">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <Field
               label="模型"
               value={probeModel}
               onChange={(e) => setProbeModel(e.target.value)}
               placeholder="例如 claude-sonnet-4"
-              aria-label="测试用模型名"
             />
             <Field
               label="测试消息"
               value={probeMsg}
               onChange={(e) => setProbeMsg(e.target.value)}
               placeholder="输入测试内容"
-              aria-label="测试消息内容"
             />
           </div>
           <div className="mt-3">
@@ -381,33 +431,32 @@ export default function TrafficPage() {
                 <Chip tone={testResult.ok ? 'ok' : 'danger'} dot={testResult.ok ? 'dot-ok' : 'dot-error'}>
                   {testResult.ok ? '成功' : '失败'}
                 </Chip>
-                <span className="font-mono text-[12px]">{testResult.model}</span>
+                <span className="font-mono text-aux">{testResult.model}</span>
                 {testResult.durationMs != null && (
-                  <span className="text-[11px] font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
                     {formatDuration(testResult.durationMs)}
                   </span>
                 )}
                 {testResult.totalTokens != null && (
-                  <span className="text-[11px] font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
                     {testResult.totalTokens} Token
                   </span>
                 )}
                 {testResult.finishReason && (
-                  <span className="text-[11px] font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
-                    {testResult.finishReason}
+                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    {finishReasonLabel(testResult.finishReason)}
                   </span>
                 )}
               </div>
               {testResult.content && (
                 <pre
-                  className="rounded-md border p-3 font-mono text-[12px] whitespace-pre-wrap break-all"
-                  style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+                  className="code-block"
                 >
                   {testResult.content}
                 </pre>
               )}
               {testResult.message && (
-                <p className="text-[12px]" style={{ color: 'var(--rg-state-error)' }}>
+                <p className="text-aux" style={{ color: 'var(--rg-state-error)' }}>
                   {testResult.message}
                 </p>
               )}

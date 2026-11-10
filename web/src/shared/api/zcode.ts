@@ -157,6 +157,11 @@ export interface ZcodeJobsSnapshot {
 
 /* ---------- 接口 ---------- */
 
+/**
+ * 状态快照：平台身份/能力位/账号计数统一由 `GET /v1/admin/channels`
+ * （shared/api/channels.ts）聚合给出，本端点无面板消费者；保留封装供
+ * CLI / 诊断脚本使用（jobs 与 localClient 细节只有它有）。
+ */
 export const zcodeStatus = (key: string, signal?: AbortSignal) =>
   api<{
     platform: { id: string; label: string; capability: Record<string, boolean> };
@@ -235,6 +240,10 @@ export const zcodeRotateFingerprint = (accountId: string, key: string) =>
     key,
   );
 
+/**
+ * 读定时任务设置快照。运营面弹窗用 channels.jobs（同一数据源）初始化表单，
+ * 这里保留封装供 CLI / 独立脚本读取（与 zcodeStatus 同类）。
+ */
 export const zcodeSettings = (key: string, signal?: AbortSignal) =>
   api<ZcodeJobsSnapshot>('/v1/zcode/settings', { signal }, key);
 

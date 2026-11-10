@@ -152,7 +152,7 @@ export default function Modal({
             {title}
           </h2>
           {desc && (
-            <div className="text-[12px] mt-1 leading-[1.6]" style={{ color: 'var(--rg-text-secondary)' }}>
+            <div className="text-aux mt-1 leading-[1.6]" style={{ color: 'var(--rg-text-secondary)' }}>
               {desc}
             </div>
           )}

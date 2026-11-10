@@ -92,7 +92,7 @@ export function DailyTrendChart({ rows }: Props) {
               aria-label="选择模型"
               value={model}
               onChange={(e) => setPicked(e.target.value)}
-              className="text-[12px] leading-5 rounded-md border px-2 py-1 max-w-[280px]"
+              className="text-aux leading-5 rounded-md border px-2 py-1 max-w-[280px]"
               style={{
                 borderColor: 'var(--rg-border)',
                 background: 'var(--rg-bg-base)',

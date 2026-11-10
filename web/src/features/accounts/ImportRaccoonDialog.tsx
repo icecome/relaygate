@@ -37,13 +37,16 @@ import {
   raccoonPollLogin,
   raccoonRefreshPoints,
   raccoonRefreshToken,
+  raccoonRewardStatus,
   raccoonSetPasswordLogin,
   raccoonRunKeepalive,
   raccoonSaveKeepalive,
   raccoonStartLogin,
+  raccoonStatus,
   type RaccoonAccount,
   type RaccoonDailyUsage,
   type RaccoonKeepalive,
+  type RaccoonLimiterSnapshot,
   type RaccoonLocalPreview,
   type RaccoonLoginSession,
 } from '../../shared/api/raccoon';
@@ -51,6 +54,7 @@ import { formatNumber, formatTime } from '../../shared/lib/format';
 import { Button, Chip, LoadingBlock, Note } from '../../shared/ui';
 import Modal from '../../shared/ui/Modal';
 import { useToast } from '../../shared/ui/Toast';
+import { usePrompt } from '../../shared/ui/Prompt';
 
 /** 扫码阶段的界面状态。 */
 type Phase = 'idle' | 'waiting' | 'scanned' | 'done' | 'failed';
@@ -75,25 +79,26 @@ function PasswordLoginForm({
 }) {
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
+  const prompt = usePrompt();
   return (
     <div className="rounded-lg border p-3 mt-3 flex flex-col gap-2"
-      style={{ borderColor: 'var(--rg-border, #e5e7eb)' }}>
-      <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+      style={{ borderColor: 'var(--rg-border)' }}>
+      <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
         为 <strong>{targetLabel}</strong> 配置密码登录（手机号 + 密码）。保存前网关会先试登录一次，
         成功才落库。密码在服务端加密存储、永不回显。留空点清除即删除凭据。
       </div>
       <div className="flex gap-2 flex-wrap items-center">
         <input
-          className="rounded border px-2 py-1 text-[12px]"
-          style={{ borderColor: 'var(--rg-border, #e5e7eb)', background: 'transparent', color: 'inherit' }}
+          className="field h-7 px-2 text-aux"
+          style={{ borderColor: 'var(--rg-border-stronger)' }}
           placeholder="手机号（含国家码默认 86）"
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           disabled={busy}
         />
         <input
-          className="rounded border px-2 py-1 text-[12px]"
-          style={{ borderColor: 'var(--rg-border, #e5e7eb)', background: 'transparent', color: 'inherit' }}
+          className="field h-7 px-2 text-aux"
+          style={{ borderColor: 'var(--rg-border-stronger)' }}
           placeholder="登录密码"
           type="password"
           value={password}
@@ -103,8 +108,22 @@ function PasswordLoginForm({
         <Button size="sm" disabled={busy || !phone || !password} onClick={() => onSave(phone, password)}>
           保存
         </Button>
-        <Button size="sm" variant="danger" disabled={busy} onClick={() => onSave('', '')}>
-          清除
+        <Button
+          size="sm"
+          variant="danger"
+          disabled={busy}
+          // 一键抹掉已存的手机号 + 密码且无撤销路径，必须先确认并说明后果
+          onClick={async () => {
+            const ok = await prompt({
+              title: `清除「${targetLabel}」的密码凭据？`,
+              message: '清除后该账号不再参与每日代登录，需重新配置手机号与密码才能恢复。',
+              okText: '清除',
+              danger: true,
+            });
+            if (ok === true) onSave('', '');
+          }}
+        >
+          清除密码凭据
         </Button>
         <Button size="sm" variant="ghost" disabled={busy} onClick={onCancel}>
           取消
@@ -133,6 +152,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
   const [daily, setDaily] = useState<{ accountId: string; data: RaccoonDailyUsage } | null>(null);
   /** 保活任务快照（开关 + 上次结果 + 下次执行） */
   const [keepalive, setKeepalive] = useState<RaccoonKeepalive | null>(null);
+  /** 限流闸门快照：统一端点 + 冷却剩余时间，供用户判断 429 该等多久 */
+  const [status, setStatus] = useState<{
+    unifiedEndpoint: string; limiter: RaccoonLimiterSnapshot;
+  } | null>(null);
   /** 密码登录凭据配置弹窗的目标账号 id */
   const [pwTarget, setPwTarget] = useState<string | null>(null);
   /** 在途轮询标记：2 秒一次 + 用户可能开两个标签页，不能并发打上游 */
@@ -317,6 +340,9 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
         raccoonModels(key)
           .then((m) => setModels({ source: m.source, count: m.data.length }))
           .catch(() => setModels(null));
+        raccoonStatus(key)
+          .then((s) => setStatus({ unifiedEndpoint: s.chat.unifiedEndpoint, limiter: s.limiter }))
+          .catch(() => setStatus(null));
       }
     } else {
       const s = sessionRef.current;
@@ -446,9 +472,9 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
         {/* ---------- 本机客户端导入（装了客户端时优先，免扫码） ---------- */}
         {localPreview?.installed && (
           <div className="flex items-center gap-2 flex-wrap rounded-lg p-3"
-            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+            style={{ background: 'var(--rg-bg-secondary)' }}>
             <Chip tone="brand" dot="dot-ok">检测到本机小浣熊客户端</Chip>
-            <span className="text-[12px] flex-1 min-w-[240px]"
+            <span className="text-aux flex-1 min-w-[240px]"
               style={{ color: 'var(--rg-text-secondary)' }}>
               可直接从本机登录态导入，无需扫码。凭据文件：<code>{localPreview.credentialFile}</code>
               {localPreview.account?.expiresAt
@@ -467,14 +493,14 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
         {/* ---------- 每日保活（当日登录 → 300 分有效期延长到 7 天） ---------- */}
         {keepalive && (
           <div className="flex flex-col gap-2 rounded-lg p-3"
-            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+            style={{ background: 'var(--rg-bg-secondary)' }}>
             <div className="flex items-center gap-2 flex-wrap">
               <strong className="text-[13px]">每日积分保活</strong>
               <Chip tone={keepalive.enabled ? 'ok' : 'neutral'} dot={keepalive.enabled ? 'dot-ok' : undefined}>
-                {keepalive.enabled ? '已开启' : '未开启'}
+                {keepalive.enabled ? '已启用' : '已停用'}
               </Chip>
               {keepalive.enabled && keepalive.nextRunAt && (
-                <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                   下次 {formatTime(keepalive.nextRunAt)}
                 </span>
               )}
@@ -486,7 +512,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 立即保活
               </Button>
             </div>
-            <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+            <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
               上游规则：每日 300 分默认<strong>当天 24:00 清零</strong>，当天登录后有效期延长至
               <strong> 7 天</strong>。
               <br />
@@ -497,7 +523,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               若某日上游未产生当日账单，会显示「上游未发放」而非失败 —— 这是上游状态，非网关故障。
             </div>
             {keepalive.lastSummary && (
-              <div className="text-[11px] flex gap-3 flex-wrap" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <div className="text-aux flex gap-3 flex-wrap" style={{ color: 'var(--rg-text-tertiary)' }}>
                 <span>
                   上次（{formatTime(keepalive.lastSummary.ranAt)}）：
                   延长 {keepalive.lastSummary.ok} / 未延长 {keepalive.lastSummary.notExtended} / 失败 {keepalive.lastSummary.failed}
@@ -533,7 +559,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 <rect width={session.qr.dim} height={session.qr.dim} fill="#ffffff" />
                 <path d={session.qr.path} fill="#000000" />
               </svg>
-              <div className="text-[12px] text-center" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux text-center" style={{ color: 'var(--rg-text-secondary)' }}>
                 {phase === 'scanned'
                   ? '已扫码 —— 请在微信内确认授权，本页会自动进入下一步'
                   : '打开微信「扫一扫」，扫描上方二维码完成授权'}
@@ -543,7 +569,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                   {phase === 'scanned' ? '等待微信确认' : '等待扫码'}
                 </Chip>
                 {remainingMs > 0 && (
-                  <span className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                     二维码 {Math.ceil(remainingMs / 1000)} 秒后过期
                   </span>
                 )}
@@ -553,7 +579,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               </div>
               {error && <Note tone="warn">{error}</Note>}
               <Note>
-                二维码内容含**一次性登录票据**，由本服务生成、不经任何第三方。
+                二维码内容含<strong>一次性登录票据</strong>，由本服务生成、不经任何第三方。
                 把鼠标移到二维码上可以看到它承载的公开登录页地址（
                 <a href={session.qrUrl} target="_blank" rel="noreferrer noopener">
                   在浏览器中打开
@@ -566,7 +592,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
 
         {/* ---------- 已登录账号 ---------- */}
         <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 flex-wrap text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+          <div className="flex items-center gap-2 flex-wrap text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
             <span>已接入账号 {accounts?.length ?? 0} 个</span>
             {models && (
               <span style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -579,7 +605,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
           </div>
 
           {accounts && accounts.length > 0 && (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">账号</th>
@@ -591,16 +617,16 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               <tbody>
                 {accounts.map((a) => (
                   <tr key={a.id} className="row-hover">
-                    <td className="td" data-label="账号">
-                      <div className="font-mono text-[12px] truncate" title={a.label}>
+                    <td className="td">
+                      <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {a.userId || a.id}
                         {a.raccoonOrg ? ` · ${a.raccoonOrg}` : ''}
                       </div>
                     </td>
-                    <td className="td cell-num" data-label="积分">
+                    <td className="td cell-num">
                       {typeof a.points?.available === 'number' ? (
                         <span title={a.points.packages.map((p) => `${p.name} ${p.remaining}`).join('；') || undefined}>
                           {formatNumber(a.points.available)}
@@ -611,15 +637,15 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>未查询</span>
                       )}
                     </td>
-                    <td className="td" data-label="凭据到期">
+                    <td className="td">
                       {a.expiredAt ? (
-                        <span className="text-[12px]">{formatTime(a.expiredAt)}</span>
+                        <span className="text-aux">{formatTime(a.expiredAt)}</span>
                       ) : (
                         <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                       )}
                     </td>
                     <td className="td cell-act">
-                      <div className="inline-flex items-center gap-1.5">
+                      <div className="td-actions">
                         <Button
                           size="sm"
                           disabled={busy}
@@ -664,6 +690,21 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                         <Button
                           size="sm"
                           disabled={busy}
+                          title="查询该号是否已领过一次性登录奖励（走账单明细，不请求上游写端点）"
+                          onClick={() =>
+                            act('查奖励', async () => {
+                              const s = await raccoonRewardStatus(a.id, key);
+                              return s.claimed
+                                ? `该号已领过（${s.points} 积分）`
+                                : `尚未领取（可领 ${s.points} 积分）`;
+                            }, '奖励状态已更新')
+                          }
+                        >
+                          查奖励
+                        </Button>
+                        <Button
+                          size="sm"
+                          disabled={busy}
                           onClick={() => act('续期', () => raccoonRefreshToken(a.id, key), '凭据已续期')}
                         >
                           续期
@@ -682,15 +723,15 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
 
         {/* ---------- 每日积分看板（只读） ---------- */}
         {daily && daily.data && (
-          <div className="rounded-lg p-3 text-[12px] flex flex-col gap-1"
-            style={{ background: 'var(--rg-bg-soft, #f7f7f7)' }}>
+          <div className="rounded-lg p-3 text-aux flex flex-col gap-1"
+            style={{ background: 'var(--rg-bg-secondary)' }}>
             <div className="flex items-center gap-2 flex-wrap">
               <strong>每日积分（{accounts?.find((a) => a.id === daily.accountId)?.label || daily.accountId}）</strong>
               {!daily.data.billsAvailable && (
-                <Chip tone="warn">账单面不可用，以下可能不完整</Chip>
+                <Chip tone="warn">账单数据不可用，以下可能不完整</Chip>
               )}
               {daily.data.balanceAvailable === false && (
-                <Chip tone="warn">余额面不可用</Chip>
+                <Chip tone="warn">余额数据不可用</Chip>
               )}
             </div>
             <div className="flex gap-4 flex-wrap" style={{ color: 'var(--rg-text-secondary)' }}>
@@ -718,6 +759,18 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               想少浪费就把它排进消耗计划，而不是等一个不存在的签到按钮。
             </div>
           </div>
+        )}
+
+        {status && (
+          <Note>
+            <strong>统一端点</strong>：<code>{status.unifiedEndpoint}</code> 也会把
+            <code>sn-*</code> 模型分派到 Raccoon 账号池，客户端只需配一个 baseURL。
+            <br />
+            限流闸门：最大并发 {status.limiter.maxConcurrent}、队列上限 {status.limiter.maxQueue}；
+            {status.limiter.global && status.limiter.global.until
+              ? `出口整体冷却中（第 ${status.limiter.global.streak ?? 1} 次退避），请按 Retry-After 退避，不要反复重试。`
+              : '当前无出口级冷却。'}
+          </Note>
         )}
 
         <Note>

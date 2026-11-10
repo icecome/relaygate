@@ -20,7 +20,16 @@ router.post('/scheduler/:action', admin, async (req, res) => {
   const action = req.params.action;
   try {
     if (action === 'checkin') {
-      const r = await scheduler.runDailyCheckin();
+      // trigger='manual'：面板按钮走的是整条签到链，与调度器自动轮区分开，
+      // 任务日志与 daily-runs.json 才看得出这次是谁起的。
+      const r = await scheduler.runDailyCheckin({ trigger: 'manual' });
+      if (r && r.skipped) {
+        return res.status(409).json({
+          action,
+          skipped: true,
+          error: { message: '另一轮签到正在进行，本次未重复请求上游', type: 'conflict' },
+        });
+      }
       return res.json({ action, ...r });
     }
     if (action === 'keepalive') {

@@ -31,14 +31,23 @@ const client = require('./client');
 const product = require('./product');
 const { normalizeEffort, parseThinking } = require('../lib/effort');
 
-/** 对话面错误（供路由映射用户文案）。 */
+/**
+ * 对话面错误（供路由映射用户文案）。
+ *
+ * ⚠️ `body` 必须保留**上游原始报文的文本**，不要只留一句可读 message：
+ * `raccoon/limiter.js#classifyThrottle` 要靠它读 `error.code`
+ * （`user_model_rate_limited` / `200103`）来决定冷 5 分钟还是冷 15 秒。
+ * 早期实现把它截到 300 字仍然够用，但**不能**在抛出前丢掉。
+ */
 class RaccoonChatError extends Error {
-  constructor(message, { status, model, body } = {}) {
+  constructor(message, { status, model, body, headers } = {}) {
     super(message);
     this.name = 'RaccoonChatError';
     this.status = status;
     this.model = model;
     this.body = body;
+    // 上游限流头保留在错误对象上，供 routes 的 Retry-After 取值链消费。
+    this.headers = headers && typeof headers === 'object' ? headers : {};
   }
 }
 
@@ -107,39 +116,73 @@ function chatHeaders(acct) {
 /**
  * 发起流式对话，返回**原始响应**（由调用方读 body 转发）。
  * ⚠️ 不走 `client.request()`：那个函数会把响应体读成文本，流式就被破坏了。
+ *
+ * `signal`（可选）：调用方传客户端断开信号。**必须透传**——否则用户按了停止，
+ * 上游仍会把整轮 token 生成完，积分照扣。与请求自带的超时信号用 `any` 合并，
+ * 任一触发都中止。
  */
-async function chatStream(acct, body) {
+async function chatStream(acct, body, opts = {}) {
   const url = client.urlFor('chat');
+  const timeout = AbortSignal.timeout(product.REQUEST_TIMEOUT_MS);
+  const signal = opts.signal ? AbortSignal.any([timeout, opts.signal]) : timeout;
   const init = client.withDispatcher({
     method: 'POST',
     headers: chatHeaders(acct),
     body: JSON.stringify(buildUpstreamBody(body)),
     redirect: 'error',
-    signal: AbortSignal.timeout(product.REQUEST_TIMEOUT_MS),
+    signal,
   });
   let resp;
   try {
     resp = await fetch(url.toString(), init);
   } catch (e) {
+    // 客户端主动取消不是「网络失败」：用 499 语义（与 routes 的既有口径一致），
+    // 否则日志里会出现一堆假的 502，把真实的网络问题淹掉。
+    if (opts.signal && opts.signal.aborted) {
+      const err = new RaccoonChatError('raccoon 请求已被调用方取消', { model: body && body.model });
+      err.status = 499;
+      err.aborted = true;
+      throw err;
+    }
     throw new RaccoonChatError(`Raccoon 网络请求失败: ${e.message}`, { model: body && body.model });
   }
   if (!resp.ok) {
     let detail = '';
     try {
-      detail = (await resp.text()).slice(0, 300);
+      detail = (await resp.text()).slice(0, 800);
     } catch { /* 错误体读不到不影响状态码判定 */ }
-    throw new RaccoonChatError(`Raccoon 对话上游 HTTP ${resp.status}${detail ? `: ${detail}` : ''}`, {
+    // 限流时把上游的 retry-after / 限流相关头一并带出：上游目前**不发**
+    // Retry-After（实测 429 只回 content-type），但一旦开始发，这里就能用上，
+    // 不必再改一次链路。取不到就是空对象。
+    const limitHeaders = {};
+    for (const k of ['retry-after', 'x-ratelimit-limit', 'x-ratelimit-remaining', 'x-ratelimit-reset']) {
+      const v = resp.headers.get(k);
+      if (v != null) limitHeaders[k] = v;
+    }
+    const err = new RaccoonChatError(`Raccoon 对话上游 HTTP ${resp.status}${detail ? `: ${detail}` : ''}`, {
       status: resp.status,
       model: body && body.model,
       body: detail,
+      headers: limitHeaders,
     });
+    // 上游一旦开始下发 Retry-After，routes/openai.js 与 routes/raccoon.js
+    // 现有的 err.retryAfterMs 取值链就能直接用上，不必再改一次链路。
+    const raRaw = limitHeaders['retry-after'];
+    const raSeconds = Number(raRaw);
+    if (Number.isFinite(raSeconds) && raSeconds > 0) {
+      err.retryAfterMs = raSeconds * 1000;
+    } else if (raRaw) {
+      const at = Date.parse(raRaw);
+      if (Number.isFinite(at) && at > Date.now()) err.retryAfterMs = at - Date.now();
+    }
+    throw err;
   }
   return resp;
 }
 
 /** 发起非流式对话，返回解析后的 JSON。 */
-async function chatNonStream(acct, body) {
-  const resp = await chatStream(acct, body);
+async function chatNonStream(acct, body, opts = {}) {
+  const resp = await chatStream(acct, body, opts);
   const text = await resp.text();
   if (!text.trim()) {
     throw new RaccoonChatError('Raccoon 对话上游返回空响应', { status: resp.status, model: body && body.model });

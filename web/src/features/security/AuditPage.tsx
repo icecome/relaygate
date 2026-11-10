@@ -11,6 +11,7 @@ import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { formatTime } from '../../shared/lib/format';
 import {
   Chip,
+  EmptyState,
   ErrorState,
   LoadingBlock,
   Panel,
@@ -18,7 +19,21 @@ import {
 } from '../../shared/ui';
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 
-type ResultFilter = 'all' | 'ok' | 'deny' | 'error';
+type ResultFilter = 'all' | 'ok' | 'allow' | 'deny' | 'error';
+
+/**
+ * 后端结果枚举 → 展示文案。
+ *
+ * ok 与 allow 是两个不同取值，不能映射成同一个词：此前两者都叫「允许」，
+ * 而筛选项只发 result=ok，于是 allow 的行在「全部」里显示「允许」、
+ * 切到「允许」筛选后又消失 —— 用户会以为数据丢了。
+ */
+const RESULT_LABEL: Record<string, string> = {
+  ok: '成功',
+  allow: '允许',
+  deny: '拒绝',
+  error: '错误',
+};
 
 /** 审计动作的中文说明。未知动作直接原样展示，不编造含义。 */
 const ACTION_LABEL: Record<string, string> = {
@@ -30,6 +45,9 @@ const ACTION_LABEL: Record<string, string> = {
   'catalog.lifecycle': '修改模型生命周期',
 };
 
+/** 拉取上限；文案与查询共用同一个常量，避免改一处漂一处。 */
+const AUDIT_LIMIT = 200;
+
 function actionLabel(action: string | null | undefined): string {
   if (!action) return '—';
   return ACTION_LABEL[action] ?? action;
@@ -38,6 +56,7 @@ function actionLabel(action: string | null | undefined): string {
 function resultChip(result: string | null | undefined) {
   switch (result) {
     case 'ok':
+      return <Chip tone="ok" dot="dot-ok">成功</Chip>;
     case 'allow':
       return <Chip tone="ok" dot="dot-ok">允许</Chip>;
     case 'deny':
@@ -45,7 +64,7 @@ function resultChip(result: string | null | undefined) {
     case 'error':
       return <Chip tone="danger" dot="dot-error">错误</Chip>;
     default:
-      return <Chip tone="neutral">{result || '—'}</Chip>;
+      return <Chip tone="neutral">{result ? (RESULT_LABEL[result] ?? result) : '—'}</Chip>;
   }
 }
 
@@ -54,7 +73,7 @@ export default function AuditPage() {
   const [resultFilter, setResultFilter] = useState<ResultFilter>('all');
 
   const audit = useAsyncData(
-    (signal) => getAuditLog({ result: resultFilter === 'all' ? undefined : resultFilter, limit: 200 }, key, signal),
+    (signal) => getAuditLog({ result: resultFilter === 'all' ? undefined : resultFilter, limit: AUDIT_LIMIT }, key, signal),
     [key, resultFilter],
     { enabled: !!key },
   );
@@ -77,14 +96,15 @@ export default function AuditPage() {
           onChange={setResultFilter}
           options={[
             { value: 'all', label: '全部' },
-            { value: 'ok', label: '允许' },
+            { value: 'ok', label: '成功' },
+            { value: 'allow', label: '允许' },
             { value: 'deny', label: '拒绝' },
             { value: 'error', label: '错误' },
           ]}
         />
       }
       toolbar={
-        <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
           共 {rows.length} 条 · 涉及 {actions.length} 类动作
         </span>
       }
@@ -94,17 +114,18 @@ export default function AuditPage() {
 
         <Panel
           title="审计事件"
-          description={`最近 ${rows.length} 条（最多拉取 200 条）`}
+          description={`最近 ${rows.length} 条（最多拉取 ${AUDIT_LIMIT} 条）`}
           flush
         >
           {audit.loading && !audit.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
-            <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-              还没有审计记录。查看密钥明文、导出凭据等敏感操作会记录在这里。
-            </div>
+            <EmptyState
+              label="还没有审计记录"
+              hint="查看密钥明文、导出凭据等敏感操作会记录在这里；本页只读，不可修改。"
+            />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">时间</th>
@@ -117,13 +138,13 @@ export default function AuditPage() {
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={r.id ?? i} className="row-hover">
-                    <td className="td font-mono text-[12px] whitespace-nowrap" data-label="时间">{formatTime(r.ts)}</td>
-                    <td className="td" data-label="动作">
+                    <td className="td td-mono whitespace-nowrap">{formatTime(r.ts)}</td>
+                    <td className="td">
                       <span title={r.action ?? undefined}>{actionLabel(r.action)}</span>
                     </td>
-                    <td className="td font-mono text-[11px] break-all" data-label="对象">{r.resource || '—'}</td>
-                    <td className="td" data-label="结果">{resultChip(r.result)}</td>
-                    <td className="td text-[12px]" style={{ color: 'var(--rg-text-secondary)' }} data-label="原因">
+                    <td className="td font-mono text-aux break-all">{r.resource || '—'}</td>
+                    <td className="td">{resultChip(r.result)}</td>
+                    <td className="td text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
                       {r.reason || '—'}
                     </td>
                   </tr>

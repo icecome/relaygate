@@ -262,6 +262,10 @@ export interface QoderJobsSnapshot {
   localClient?: unknown;
 }
 
+/**
+ * 读定时任务设置快照。运营面弹窗用 channels.jobs（同一数据源）初始化表单，
+ * 这里保留封装供 CLI / 独立脚本读取（后端 GET /v1/qoder/settings 一直存在）。
+ */
 export const qoderSettings = (key: string, signal?: AbortSignal) =>
   api<QoderJobsSnapshot>('/v1/qoder/settings', { signal }, key);
 

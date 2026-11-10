@@ -9,8 +9,11 @@
  */
 import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { useAuth } from '../../shared/api/auth';
+import { listAccounts } from '../../shared/api/credentials';
 import {
   clearClientStatsCache,
+  clearOfficialUsageCache,
+  clearStatsCache,
   getClientStats,
   getCreditHistory,
   getOfficialUsage,
@@ -21,7 +24,7 @@ import {
 } from '../../shared/api/stats';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
-import { formatBytes, formatCost, formatNumber } from '../../shared/lib/format';
+import { formatBytes, formatCompact, formatCost, formatNumber, formatTime, platformIdLabel } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -37,6 +40,7 @@ import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { DailyTrendChart } from './DailyTrendChart';
 import { TokenHeatmap } from './TokenHeatmap';
+import { TokenMixRing } from './TokenMixRing';
 
 type Range = '1' | '7' | '30';
 
@@ -71,7 +75,7 @@ function CaliberCard({
       style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-base)' }}
     >
       <div className="flex items-center gap-1.5">
-        <span className="text-[12px] leading-[18px]" style={{ color: 'var(--rg-text-secondary)' }}>
+        <span className="text-aux leading-[18px]" style={{ color: 'var(--rg-text-secondary)' }}>
           {label}
         </span>
         <span
@@ -103,10 +107,10 @@ function CaliberRow({ k, v, tone }: { k: string; v: string; tone?: 'warn' | 'mut
         : 'var(--rg-text-secondary)';
   return (
     <div className="flex items-baseline justify-between gap-3 mt-1.5 first:mt-3">
-      <span className="text-[11px] leading-4 shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <span className="text-aux leading-4 shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
         {k}
       </span>
-      <span className="font-mono text-[12px] leading-4 tabular-nums" style={{ color }}>
+      <span className="font-mono text-aux leading-4 tabular-nums" style={{ color }}>
         {v}
       </span>
     </div>
@@ -120,6 +124,14 @@ export default function TokenStatsPage() {
   const days = Number(range);
   // 展开账单明细（按账号）的行
   const [expandedBill, setExpandedBill] = useState<ReadonlySet<string>>(new Set());
+  /**
+   * 按账号筛选（对标 WorkDaddy 用量页的「支持按账号筛选」）。
+   * 空串 = 全账号。带筛选时后端按账号过滤网关日志与官方账单，
+   * 缓存不走（缓存桶没有「账号→模型」维度），代价是全量读日志，
+   * 因此只在用户主动筛选时生效，不放进默认轮询。
+   */
+  const [accountFilter, setAccountFilter] = useState('');
+  const selectedAccount = accountFilter || undefined;
 
   function toggleBill(accountId: string) {
     setExpandedBill((prev) => {
@@ -130,13 +142,17 @@ export default function TokenStatsPage() {
     });
   }
 
-  const daily = useAsyncData((signal) => getStatsDaily(days, key, signal), [days, key], { enabled: !!key });
-  // 热力图固定 17 周（119 天），不跟随顶部时间范围，故单独请求一次；180 天覆盖 119 天后仍有富余
+  // 账号清单仅用于筛选下拉；面板本身已有全账号汇总
+  const accountList = useAsyncData((signal) => listAccounts(key, signal), [key], { enabled: !!key });
+
+  const daily = useAsyncData((signal) => getStatsDaily(days, key, signal, selectedAccount), [days, key, selectedAccount], { enabled: !!key });
+  // 热力图固定 17 周（119 天），不跟随顶部时间范围，故单独请求一次；180 天覆盖 119 天后仍有富余。
+  // 热力图是全账号视图，刻意不带账号筛选——单账号 17 周常为空白，不具比较意义。
   const heatmap = useAsyncData((signal) => getStatsDaily(180, key, signal), [key], { enabled: !!key });
-  const models = useAsyncData((signal) => getStatsModels(days, key, signal), [days, key], { enabled: !!key });
-  const accounts = useAsyncData((signal) => getStatsAccounts(days, key, signal), [days, key], { enabled: !!key });
+  const models = useAsyncData((signal) => getStatsModels(days, key, signal, selectedAccount), [days, key, selectedAccount], { enabled: !!key });
+  const accounts = useAsyncData((signal) => getStatsAccounts(days, key, signal, selectedAccount), [days, key, selectedAccount], { enabled: !!key });
   const client = useAsyncData((signal) => getClientStats(days, key, signal), [days, key], { enabled: !!key });
-  const official = useAsyncData((signal) => getOfficialUsage(days, key, signal), [days, key], { enabled: !!key });
+  const official = useAsyncData((signal) => getOfficialUsage(days, key, signal, selectedAccount), [days, key, selectedAccount], { enabled: !!key });
   const credit = useAsyncData((signal) => getCreditHistory(days, key, signal), [days, key], { enabled: !!key });
   const calibration = useAsyncData((signal) => getPricingCalibration(key, false, signal), [key], { enabled: !!key });
 
@@ -251,14 +267,57 @@ export default function TokenStatsPage() {
     }
   }
 
+  /**
+   * 清理网关统计缓存 + 官方账单缓存。
+   *
+   * 与「清理客户端缓存」是**三个不同的缓存**：客户端缓存读的是本机
+   * WorkBuddy 会话日志文件；网关统计缓存是按日/按模型/按账号的增量桶；
+   * 官方账单缓存是 Trae/WB 上游账单。两个缓存此前没有入口，
+   * 排查「数据不更新」时只能改配置重启。
+   */
+  async function clearServerCaches() {
+    try {
+      const s = await clearStatsCache(key);
+      const o = await clearOfficialUsageCache(key);
+      toast(
+        `已清理网关统计缓存${s.ok ? '' : '（部分失败）'}与官方账单缓存（Trae ${o.trae ? '成功' : '失败'} · WorkBuddy ${o.workbuddy ? '成功' : '失败'}）`,
+        o.ok && s.ok ? 'ok' : 'warn',
+      );
+      daily.reload();
+      models.reload();
+      accounts.reload();
+      official.reload();
+    } catch (e) {
+      toast(e instanceof ApiError ? e.message : '服务端缓存清理失败，可重试', 'err');
+    }
+  }
+
   const billRows = official.data?.accounts ?? [];
 
   return (
     <PageShell
       title="用量与成本"
-      description="官方账单积分（主口径）与网关计量 Token；估算值仅作对照"
+      description={
+        selectedAccount
+          ? '官方账单积分（主口径）与网关计量 Token；已按单账号过滤（热力图仍为全账号）'
+          : '官方账单积分（主口径）与网关计量 Token；估算值仅作对照'
+      }
       actions={
         <>
+          <select
+            className="h-8 rounded-md border px-2 text-[13px] max-w-[220px]"
+            style={{ borderColor: 'var(--rg-border-stronger)', background: 'var(--rg-bg-base)', color: 'var(--rg-text-secondary)' }}
+            aria-label="按账号筛选"
+            value={accountFilter}
+            onChange={(e) => setAccountFilter(e.target.value)}
+          >
+            <option value="">全账号</option>
+            {(accountList.data ?? []).map((a) => (
+              <option key={a.id} value={a.id}>
+                {a.label || a.id}
+              </option>
+            ))}
+          </select>
           <Segmented
             ariaLabel="时间范围"
             value={range}
@@ -270,6 +329,7 @@ export default function TokenStatsPage() {
             ]}
           />
           <Button onClick={clearCache}>清理客户端缓存</Button>
+          <Button onClick={clearServerCaches}>清理服务端缓存</Button>
         </>
       }
     >
@@ -277,8 +337,8 @@ export default function TokenStatsPage() {
         {daily.error && <ErrorState message={daily.error} onRetry={daily.reload} />}
 
         {/* 口径卡片区：花了多少积分（成本）+ 用了多少 token（用量）。
-            成本两张卡并列（官方=主读数，估算=对照），用量与换算各一张，四卡一行。 */}
-        <div className="grid gap-4 grid-cols-2 xl:grid-cols-5">
+            成本、用量、换算与压缩各一张，共五卡；宽屏一行排满，中等宽度自动折行。 */}
+        <div className="grid gap-4 grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
           {/* 成本主读数：官方账单 */}
           <CaliberCard
             label="官方账单积分"
@@ -308,7 +368,7 @@ export default function TokenStatsPage() {
           {/* 用量主读数：Token 总量 + 来源拆解 + 丢失提示 */}
           <CaliberCard
             label="Token 总量"
-            value={formatNumber(totals.tokens)}
+            value={formatCompact(totals.tokens)}
             caliber="metered"
             loading={daily.loading && !daily.data}
           >
@@ -403,7 +463,7 @@ export default function TokenStatsPage() {
           <CaliberCard
             label="工具输出压缩节省"
             value={savings ? formatBytes(savings.savedBytes) : '—'}
-            unit={savings ? `/${formatBytes(savings.bytesBefore)}` : undefined}
+            unit={savings ? `/ ${formatBytes(savings.bytesBefore)}（压缩前）` : undefined}
             caliber="metered"
             loading={daily.loading && !daily.data}
           >
@@ -431,17 +491,17 @@ export default function TokenStatsPage() {
           title="每日积分对照"
           description="官方账单为权威口径，网关估算仅作对照"
           flush
-          footer="网关估算基于已计量 Token：历史日期因 Token 缺失显示 0 属数据丢失，不是零消耗；官方账单与估算不可相加。"
+          footer="网关估算基于已计量 Token：缺 Token 的行显示「数据缺失」，属数据丢失，不是零消耗；官方账单与估算不可相加。"
         >
           {daily.loading && !daily.data ? (
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="所选区间内没有统计数据。"
+              label="所选区间内没有统计数据"
               hint="产生转发请求后即会出现；官方账单通常还有 1 至 2 天的入账滞后。"
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">日期</th>
@@ -468,16 +528,16 @@ export default function TokenStatsPage() {
                       : null;
                   return (
                     <tr key={d.date} className="row-hover">
-                      <td className="td font-mono text-[12px]" data-label="日期">{d.date.slice(5)}</td>
-                      <td className="td cell-num font-medium" data-label="官方账单积分">
+                      <td className="td td-mono">{d.date.slice(5)}</td>
+                      <td className="td cell-num font-medium">
                         {hasBill ? formatNumber(d.officialCredit) : '—'}
                       </td>
-                      <td className="td cell-num" data-label="网关估算积分">
+                      <td className="td cell-num">
                         {/* est=0 且无 priced 行 = token 数据丢失；有 priced 行但含上界 = 估算偏高 */}
                         {est > 0 ? (
                           <span title={upper ? '该日部分请求缺缓存读信息，按全未缓存计价，估算偏高' : undefined}>
                             {formatCost(est)}
-                            {upper && <span className="ml-0.5 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>↑</span>}
+                            {upper && <span className="ml-0.5 text-unit" style={{ color: 'var(--rg-text-tertiary)' }}>↑</span>}
                           </span>
                         ) : unpriced ? (
                           <span style={{ color: 'var(--rg-text-tertiary)' }} title="该日 Token 数据缺失，无法估算">数据缺失</span>
@@ -485,7 +545,7 @@ export default function TokenStatsPage() {
                           <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
                         )}
                       </td>
-                      <td className="td cell-num" data-label="差异">
+                      <td className="td cell-num">
                         {diff == null ? (
                           !settled && hasBill ? (
                             <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1 至 2 天滞后，该日账单尚未完整">入账中</span>
@@ -508,6 +568,22 @@ export default function TokenStatsPage() {
         </Panel>
 
         <Panel
+          title="Token 构成"
+          description="非缓存输入 / 缓存读 / 输出三段；缓存读是输入的子集，已从输入中扣除"
+        >
+          {models.loading && !models.data ? (
+            <LoadingBlock />
+          ) : (models.data?.data ?? []).length === 0 ? (
+            <EmptyState
+              label="所选区间内没有可拆分的模型用量"
+              hint="产生转发请求且上游回传 usage 后即会出现。"
+            />
+          ) : (
+            <TokenMixRing rows={models.data?.data ?? []} />
+          )}
+        </Panel>
+
+        <Panel
           title="每日趋势"
           description="请求量、错误数与 Token 走势"
         >
@@ -515,7 +591,7 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="所选区间内没有请求记录。"
+              label="所选区间内没有请求记录"
               hint="产生转发请求后即会出现。"
             />
           ) : (
@@ -534,7 +610,7 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : (heatmap.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="最近 17 周内没有 Token 记录。"
+              label="最近 17 周内没有 Token 记录"
               hint="产生转发请求后即会出现；本图不随顶部时间范围切换。"
             />
           ) : (
@@ -552,11 +628,11 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : billRows.length === 0 ? (
             <EmptyState
-              label="还没有官方账单记录。"
+              label="还没有官方账单记录"
               hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1 至 2 天出现。"
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">账号</th>
@@ -574,7 +650,7 @@ export default function TokenStatsPage() {
                   return (
                     <Fragment key={`${a.platform ?? ''}-${a.accountId}`}>
                       <tr className="row-hover">
-                        <td className="td" data-label="账号">
+                        <td className="td">
                           <div className="flex items-center gap-1.5 min-w-0">
                             {a.available && breakdown.length > 0 && (
                               <button
@@ -589,49 +665,49 @@ export default function TokenStatsPage() {
                             <span className="text-[13px] truncate">{a.label || a.accountId}</span>
                           </div>
                           {!a.available && a.error && (
-                            <div className="text-[11px] mt-0.5 break-all" style={{ color: 'var(--rg-state-error)' }}>
+                            <div className="text-aux mt-0.5 break-all" style={{ color: 'var(--rg-state-error)' }}>
                               {a.error}
                             </div>
                           )}
                         </td>
-                        <td className="td" data-label="平台 / 粒度">
+                        <td className="td">
                           <div className="flex items-center gap-1.5">
                             <Chip tone={a.platform === 'trae' ? 'brand' : 'neutral'}>
                               {a.platform === 'trae' ? 'Trae' : 'WorkBuddy'}
                             </Chip>
                           </div>
-                          <div className="text-[11px] mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <div className="text-aux mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
                             {a.granularity === 'session' ? '逐会话' : '逐请求'}
                           </div>
                         </td>
-                        <td className="td" data-label="状态">
+                        <td className="td">
                           {a.available ? (
                             <Chip tone="ok" dot="dot-ok">已入账</Chip>
                           ) : (
                             <Chip tone="danger" dot="dot-error">不可用</Chip>
                           )}
                         </td>
-                        <td className="td cell-num" data-label="明细行">{a.available ? formatNumber(a.requests) : '—'}</td>
-                        <td className="td cell-num" data-label="Token">
+                        <td className="td cell-num">{a.available ? formatNumber(a.requests) : '—'}</td>
+                        <td className="td cell-num">
                           {a.available && a.tokens != null ? formatNumber(a.tokens) : '—'}
                         </td>
-                        <td className="td cell-num font-semibold" data-label="积分">
+                        <td className="td cell-num font-semibold">
                           {a.available ? formatNumber(a.credit) : '—'}
                         </td>
                       </tr>
                       {open && (
                         <tr>
-                          <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }} data-label="账号">
+                          <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }}>
                             <div className="grid gap-x-8 gap-y-1" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
                               {breakdown.map((m) => (
                                 <div key={m.model} className="flex items-baseline justify-between gap-3 py-1">
-                                  <span className="font-mono text-[12px] truncate" style={{ color: 'var(--rg-text-secondary)' }}>
+                                  <span className="font-mono text-aux truncate" style={{ color: 'var(--rg-text-secondary)' }}>
                                     {m.model}
                                   </span>
-                                  <span className="font-mono text-[12px] tabular-nums shrink-0">
+                                  <span className="font-mono text-aux tabular-nums shrink-0">
                                     {formatNumber(m.credits)}
                                     <span className="ml-1" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                      / {formatNumber(m.requests)}
+                                      积分 / {formatNumber(m.requests)} 次
                                     </span>
                                   </span>
                                 </div>
@@ -654,11 +730,11 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : (models.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="所选区间内没有模型用量。"
+              label="所选区间内没有模型用量"
               hint="产生转发请求后即会出现。"
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">模型</th>
@@ -673,13 +749,13 @@ export default function TokenStatsPage() {
               <tbody>
                 {(models.data?.data ?? []).map((m) => (
                   <tr key={m.model} className="row-hover">
-                    <td className="td font-mono text-[12px] break-all" data-label="模型">{m.model}</td>
-                    <td className="td cell-num" data-label="请求">{formatNumber(m.requests)}</td>
-                    <td className="td cell-num" data-label="错误" style={{ color: m.errors > 0 ? 'var(--rg-state-error)' : undefined }}>
+                    <td className="td td-mono break-all">{m.model}</td>
+                    <td className="td cell-num">{formatNumber(m.requests)}</td>
+                    <td className="td cell-num" style={{ color: m.errors > 0 ? 'var(--rg-state-error)' : undefined }}>
                       {formatNumber(m.errors)}
                     </td>
-                    <td className="td cell-num font-medium" data-label="Token">{formatNumber(m.tokens)}</td>
-                    <td className="td cell-num" data-label="计量 / 未计量">
+                    <td className="td cell-num font-medium">{formatNumber(m.tokens)}</td>
+                    <td className="td cell-num">
                       {formatNumber(m.metered)}
                       <span style={{ color: 'var(--rg-text-tertiary)' }}> / </span>
                       {m.unmetered > 0 ? (
@@ -689,7 +765,7 @@ export default function TokenStatsPage() {
                       )}
                       {(m.estimated ?? 0) > 0 && (
                         <span
-                          className="ml-1 text-[11px]"
+                          className="ml-1 text-aux"
                           title="其中 tiktoken 补算的请求数"
                           style={{ color: 'var(--rg-text-tertiary)' }}
                         >
@@ -697,10 +773,10 @@ export default function TokenStatsPage() {
                         </span>
                       )}
                     </td>
-                    <td className="td cell-num" data-label="平均延迟">
+                    <td className="td cell-num">
                       {m.avgDurationMs == null ? '—' : `${Math.round(m.avgDurationMs)}ms`}
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }} data-label="估算成本*">
+                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
                       {formatCost(m.estimatedCost)}
                     </td>
                   </tr>
@@ -715,26 +791,26 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : (accounts.data?.data ?? []).length === 0 ? (
             <EmptyState
-              label="所选区间内没有账号用量。"
+              label="所选区间内没有账号用量"
               hint="产生转发请求后即会出现。"
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">账号</th>
                   <th className="th cell-num">请求</th>
-                  <th className="th">错误率</th>
-                  <th className="th">Token 占比</th>
+                  <th className="th cell-num">错误率</th>
+                  <th className="th cell-num">Token 占比</th>
                   <th className="th cell-num">估算成本*</th>
                 </tr>
               </thead>
               <tbody>
                 {(accounts.data?.data ?? []).map((a) => (
                   <tr key={a.accountId} className="row-hover">
-                    <td className="td font-mono text-[12px]" data-label="账号">{a.accountId}</td>
-                    <td className="td cell-num" data-label="请求">{formatNumber(a.requests)}</td>
-                    <td className="td" data-label="错误率">
+                    <td className="td td-mono">{a.accountId}</td>
+                    <td className="td cell-num">{formatNumber(a.requests)}</td>
+                    <td className="td">
                       <div className="flex items-center gap-2 min-w-[110px]">
                         <div className="flex-1 min-w-[64px]">
                           <ProgressBar
@@ -742,22 +818,22 @@ export default function TokenStatsPage() {
                             tone={a.errorRate > 5 ? 'danger' : a.errorRate > 0 ? 'warn' : 'brand'}
                           />
                         </div>
-                        <span className="font-mono text-[11px] tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="font-mono text-aux tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
                           {a.errorRate.toFixed(2)}%
                         </span>
                       </div>
                     </td>
-                    <td className="td" data-label="Token 占比">
+                    <td className="td">
                       <div className="flex items-center gap-2 min-w-[110px]">
                         <div className="flex-1 min-w-[64px]">
                           <ProgressBar ratio={a.tokenShare / 100} tone="soft" />
                         </div>
-                        <span className="font-mono text-[11px] tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="font-mono text-aux tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
                           {a.tokenShare.toFixed(1)}%
                         </span>
                       </div>
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }} data-label="估算成本*">
+                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
                       {formatCost(a.estimatedCost)}
                     </td>
                   </tr>
@@ -781,7 +857,14 @@ export default function TokenStatsPage() {
                 本机统计不可用：{client.data?.reason || '网关未返回原因'}。该数据依赖本机会话日志文件，网关转发数据不受影响。
               </Note>
             ) : (
-              <table className="card-table w-full border-collapse text-[13px]">
+              <table className="data-table">
+                {/* 无表头的两列小表：补 <thead> 让读屏能播报列名 */}
+                <thead>
+                  <tr>
+                    <th className="th w-[110px]">项目</th>
+                    <th className="th">数值</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {(
                     [
@@ -794,10 +877,10 @@ export default function TokenStatsPage() {
                     ] as [string, ReactNode][]
                   ).map(([k, v]) => (
                     <tr key={k}>
-                      <td className="td text-[12px] w-[110px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <td className="td text-aux w-[110px]" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {k}
                       </td>
-                      <td className="td font-mono text-[12px]">{v}</td>
+                      <td className="td td-mono">{v}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -805,27 +888,28 @@ export default function TokenStatsPage() {
             )}
           </Panel>
 
-          <Panel title="积分快照消耗" description="相邻余额快照差分（下界估计，供交叉验证）" flush>
+          <Panel title="积分快照消耗" description="上游 consumed_amount 增量（主口径，与官方账单基本吻合）；可与余额差分交叉验证" flush>
             {credit.loading && !credit.data ? (
               <LoadingBlock />
             ) : (credit.data?.data ?? []).length === 0 ? (
               <EmptyState
-                label="还没有积分快照差分记录。"
+                label="还没有积分快照差分记录"
                 hint="余额自动刷新任务运行过至少两轮后，这里会出现按账号的消耗估计。"
               />
             ) : (
-              <table className="card-table w-full border-collapse text-[13px]">
+              <table className="data-table">
                 <thead>
                   <tr>
                     <th className="th">账号</th>
-                    <th className="th cell-num">今日消耗</th>
+                    {/* usedTotal 取的是所选区间的 consumed_amount 增量，不是「今日」 */}
+                    <th className="th cell-num">{range === '1' ? '今日消耗' : `近 ${range} 日消耗`}</th>
                   </tr>
                 </thead>
                 <tbody>
                   {(credit.data?.data ?? []).map((c, i) => (
                     <tr key={`${c.label ?? i}`} className="row-hover">
-                      <td className="td" data-label="账号">{c.label || '—'}</td>
-                      <td className="td cell-num" data-label="今日消耗">{formatNumber(c.usedTotal)}</td>
+                      <td className="td">{c.label || '—'}</td>
+                      <td className="td cell-num">{formatNumber(c.usedTotal)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -839,7 +923,8 @@ export default function TokenStatsPage() {
           title="积分标定系数"
           description={
             calibCount > 0
-              ? `由官方账单最小二乘回归得出 · ${calibCount} 个「平台:模型」组合 · ${calibration.data?.calibratedAt ? `标定于 ${calibration.data.calibratedAt.slice(0, 16).replace('T', ' ')}` : ''}`
+              ? `由官方账单最小二乘回归得出 · ${calibCount} 个「平台:模型」组合` +
+                (calibration.data?.calibratedAt ? ` · 标定于 ${formatTime(calibration.data.calibratedAt)}` : '')
               : '尚无标定：无账单数据时，估算成本按内置费率表推算'
           }
           flush
@@ -848,41 +933,42 @@ export default function TokenStatsPage() {
             <LoadingBlock />
           ) : calibRows.length === 0 ? (
             <EmptyState
-              label="还没有积分标定样本。"
+              label="还没有积分标定样本"
               hint="官方账单同步过来之后会自动生成；在那之前估算成本使用内置费率表。"
             />
           ) : (
-            <table className="card-table w-full border-collapse text-[13px]">
+            <table className="data-table">
               <thead>
                 <tr>
                   <th className="th">平台</th>
                   <th className="th">模型</th>
                   <th className="th cell-num">样本</th>
                   <th className="th cell-num">R²</th>
-                  <th className="th cell-num">未缓存输入 /1k</th>
-                  <th className="th cell-num">输出 /1k</th>
-                  <th className="th cell-num">缓存读 /1k</th>
+                  <th className="th cell-num">未缓存输入（积分 / 千 Token）</th>
+                  <th className="th cell-num">输出（积分 / 千 Token）</th>
+                  <th className="th cell-num">缓存读（积分 / 千 Token）</th>
                 </tr>
               </thead>
               <tbody>
                 {calibRows.map((c) => (
                   <tr key={`${c.platform}:${c.model}`} className="row-hover">
-                    <td className="td" data-label="平台">
+                    <td className="td">
+                      {/* 用 platformIdLabel 兜底：此前非 wb 一律显示 Trae，未知平台会被写错 */}
                       <Chip tone={c.platform === 'wb' ? 'neutral' : 'brand'}>
-                        {c.platform === 'wb' ? 'WorkBuddy' : 'Trae'}
+                        {platformIdLabel(c.platform)}
                       </Chip>
                     </td>
-                    <td className="td font-mono text-[12px] break-all" data-label="模型">{c.model}</td>
-                    <td className="td cell-num" data-label="样本">{formatNumber(c.n)}</td>
-                    <td className="td cell-num font-mono" data-label="R²">
+                    <td className="td td-mono break-all">{c.model}</td>
+                    <td className="td cell-num">{formatNumber(c.n)}</td>
+                    <td className="td cell-num font-mono">
                       <span style={{ color: c.r2 >= 0.99 ? 'var(--rg-state-success)' : c.r2 >= 0.9 ? 'var(--rg-text-secondary)' : 'var(--rg-state-warning)' }}>
                         {c.r2.toFixed(6)}
                       </span>
                     </td>
-                    <td className="td cell-num font-mono" data-label="未缓存输入 /1k">{(c.uncached * 1000).toFixed(5)}</td>
-                    <td className="td cell-num font-mono" data-label="输出 /1k">{(c.output * 1000).toFixed(5)}</td>
-                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }} data-label="缓存读 /1k">
-                      {(c.cacheRead * 1000).toFixed(5)}
+                    <td className="td cell-num font-mono">{(c.uncached * 1000).toFixed(6)}</td>
+                    <td className="td cell-num font-mono">{(c.output * 1000).toFixed(6)}</td>
+                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      {(c.cacheRead * 1000).toFixed(6)}
                     </td>
                   </tr>
                 ))}
@@ -893,6 +979,9 @@ export default function TokenStatsPage() {
 
         <Note>
           官方账单积分是上游精确值；带 * 的估算成本是网关推算值，仅供对照，官方账单与估算不可相加。
+        </Note>
+        <Note>
+          后端返回的估算值可能带 ↑ 标记：表示该日缺缓存读信息、按全未缓存计价，估算偏高，不是真实账单。
         </Note>
       </Stack>
     </PageShell>

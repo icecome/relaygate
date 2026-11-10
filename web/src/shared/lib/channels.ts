@@ -20,13 +20,15 @@ export type { ChannelId };
 
 /** 接入向导种类。一个渠道可以有多条（Trae 同时有 OAuth 与粘贴两条路）。 */
 export type WizardKind =
-  | 'trae-oauth'
+ | 'trae-oauth'
   | 'trae-paste'
+  | 'wb-oauth'
   | 'wb-local'
   | 'zcode-local'
   | 'qoder-local'
   | 'qoder-manual'
-  | 'raccoon-login';
+  | 'raccoon-login'
+  | 'raccoon-local';
 
 export interface ChannelEntry {
   /**
@@ -49,7 +51,9 @@ export const CHANNEL_ENTRY: Record<ChannelId, ChannelEntry> = {
   },
   workbuddy: {
     accent: 'var(--rg-state-info)',
-    wizards: { local: 'wb-local', paste: 'wb-local' },
+    // oauth = 无感登录新账号（不退出当前客户端，对标 WorkDaddy）；
+    // local 与 paste 共用同一个向导（该弹窗同时提供两种入口）。
+    wizards: { oauth: 'wb-oauth', local: 'wb-local', paste: 'wb-local' },
   },
   zcode: {
     // ZCode 只有本机导入一条路：客户端 JWT 无 refresh_token、也不发放可移植凭据，
@@ -69,7 +73,14 @@ export const CHANNEL_ENTRY: Record<ChannelId, ChannelEntry> = {
     // Raccoon 本机没有官方客户端可读凭据（不像 WorkBuddy/ZCode/Qoder），
     // 官方那条自定义协议回调服务端也收不到 —— 只能由面板承载扫码登录。
     accent: 'var(--rg-state-error)',
-    wizards: { login: 'raccoon-login' },
+    wizards: {
+      // login = 面板承载扫码；local = 读本机客户端明文凭据
+      // （~/.box-agent/config/auth.json，2026-10-15 解包实证，装在客户端的
+      // 机器上比扫码更省事）。两者共用同一个弹窗，内部按后端 onboarding
+      // 探测结果自动选择优先展示哪条。
+      login: 'raccoon-login',
+      local: 'raccoon-local',
+    },
   },
 };
 

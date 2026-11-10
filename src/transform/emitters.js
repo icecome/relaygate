@@ -84,16 +84,21 @@ function anthropicContentBlock(text) {
 function exportAnthropic() {
   return {
     start(id, model) { return []; }, // message_start 由路由层控制更精细
-    text(id, model, content, reasoning) {
-      // Anthropic 无 reasoning 字段时仅输出 content
-      return content ? [sse({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: content } })] : [];
+    text(id, model, content, reasoning, blockIndex) {
+      // Anthropic 无 reasoning 字段时仅输出 content；
+      // blockIndex 由调用方维护——文本块与工具块不得共用 content_block 序号
+      const idx = typeof blockIndex === 'number' ? blockIndex : 0;
+      return content ? [sse({ type: 'content_block_delta', index: idx, delta: { type: 'text_delta', text: content } })] : [];
     },
-    toolCall(id, model, call) {
+    toolCall(id, model, call, blockIndex) {
+      // 每个工具调用占独立 content_block：index 恒 0 会让客户端把多个
+      // tool_use 的参数聚合进同一块（同 OpenAI 出口的 tool_calls[].index 缺陷）
+      const idx = typeof blockIndex === 'number' ? blockIndex : 0;
       return [sse({
         type: 'content_block_start',
-        index: 0,
+        index: idx,
         content_block: { type: 'tool_use', id: call.id, name: call.name, input: safeParse(call.arguments) },
-      }), sse({ type: 'content_block_stop', index: 0 })];
+      }), sse({ type: 'content_block_stop', index: idx })];
     },
     done(id, model, finishReason) {
       return [sse({ type: 'message_delta', delta: { stop_reason: finishReason || 'end_turn' } })];

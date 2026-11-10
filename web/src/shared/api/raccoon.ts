@@ -19,22 +19,6 @@ import { api } from './http';
  */
 const OPS_TIMEOUT_MS = 60_000;
 
-/* ---------- 状态 ---------- */
-
-export interface RaccoonStatus {
-  platform: {
-    id: string;
-    label: string;
-    capability: Record<string, boolean>;
-  };
-  accounts: { total: number; enabled: number };
-  chat: { endpoint: string; inPool: boolean; modelsEndpoint: string };
-  login: { mode: string; pollIntervalMs: number; timeoutMs: number; smsAvailable: boolean };
-}
-
-export const raccoonStatus = (key: string, signal?: AbortSignal) =>
-  api<RaccoonStatus>('/v1/raccoon/status', { signal }, key);
-
 /* ---------- 扫码登录 ---------- */
 
 /** 二维码的**直接可渲染形态**：一个 SVG path 的 d 属性。 */
@@ -157,7 +141,11 @@ export const raccoonClaimReward = (accountId: string, key: string) =>
     key,
   );
 
-/** 查询登录奖励是否已领（服务端没有状态端点，只能查账单明细）。 */
+/**
+ * 查询登录奖励是否已领（服务端没有独立状态端点，后端走账单明细）。
+ * 接线在账号行「查奖励」按钮：领取是写操作且幂等，先查后领可避免
+ * 对已领账号重复发请求。
+ */
 export const raccoonRewardStatus = (accountId: string, key: string, signal?: AbortSignal) =>
   api<{ object: string; accountId: string; claimed: boolean; points: number; detail: string }>(
     `/v1/raccoon/accounts/${encodeURIComponent(accountId)}/reward`,
@@ -311,6 +299,55 @@ export const raccoonKeepaliveAccount = (accountId: string, key: string) =>
     { method: 'POST', body: {}, timeoutMs: OPS_TIMEOUT_MS },
     key,
   );
+
+/* ---------- 渠道状态 / 限流诊断 ---------- */
+
+/**
+ * 限流闸门实时快照（src/raccoon/limiter.js#snapshot）。
+ * 上游限流是出站 IP 维度：看到 429 时需要知道「多久恢复、是不是本机问题」，
+ * 盲目重试只会延长恢复窗口。
+ */
+export interface RaccoonLimiterSnapshot {
+  /** 仅 /v1/raccoon/limiter 端点带：/status 里嵌套的 limiter 没有这 4 个字段 */
+  object?: 'raccoon.limiter';
+  blocked?: boolean;
+  retryAfterMs?: number;
+  retryAfterSec?: number;
+  maxConcurrent: number;
+  cooldownMs: number;
+  cooldownMaxMs: number;
+  maxQueue: number;
+  global: { reason?: string; until?: number; streak?: number; msLeft?: number } | null;
+  stats: Record<string, number>;
+  accounts: Record<string, {
+    inFlight: number;
+    queued: number;
+    coolingMsLeft?: number;
+    streak?: number;
+    reason?: string;
+  }>;
+}
+
+export interface RaccoonStatus {
+  platform: { id: string; label: string; capability?: unknown };
+  accounts: { total: number; enabled: number };
+  chat: {
+    endpoint: string;
+    inPool: boolean;
+    modelsEndpoint: string;
+    /** 统一端点也分派 sn-* 到 Raccoon，客户端只需配一个 baseURL */
+    unifiedEndpoint: string;
+  };
+  limiter: RaccoonLimiterSnapshot;
+  login: { mode: string; pollIntervalMs: number; timeoutMs: number };
+}
+
+export const raccoonStatus = (key: string, signal?: AbortSignal) =>
+  api<RaccoonStatus>('/v1/raccoon/status', { signal }, key);
+
+/** 单独拉限流快照（面板轮询用，比整个 status 轻）。 */
+export const raccoonLimiter = (key: string, signal?: AbortSignal) =>
+  api<RaccoonLimiterSnapshot>('/v1/raccoon/limiter', { signal }, key);
 
 /* ---------- 模型目录 ---------- */
 

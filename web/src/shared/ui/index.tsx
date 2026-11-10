@@ -3,7 +3,7 @@
  * 只负责结构与可访问性，不发起请求、不含业务判断。
  */
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
-import { forwardRef } from 'react';
+import { forwardRef, useId } from 'react';
 
 /* Button */
 
@@ -42,6 +42,10 @@ export function Button({
  * 刻意在类型上排除 children：input 是 void 元素，传入 children 会被 React
  * 判为「void 元素带 children」并在渲染期抛错（对应压缩错误 #137）。
  * 需要「时:分」这类组合控件时用 FieldRow。
+ *
+ * id 必须兜底生成：调用方几乎都只传 label，不传 id；此时若直接
+ * htmlFor={undefined}，可见标签与输入框之间没有任何关联，点击标签不聚焦、
+ * 读屏也不播报字段名。useId 提供稳定且唯一的 id，调用方传 id 时仍然优先用它。
  */
 export interface FieldProps extends Omit<InputHTMLAttributes<HTMLInputElement>, 'children'> {
   label?: string;
@@ -51,17 +55,20 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   { label, id, className = '', ...rest },
   ref,
 ) {
+  const autoId = useId();
+  const inputId = id ?? autoId;
   const input = (
     <input
       ref={ref}
-      id={id}
+      id={inputId}
       className={['field', 'w-full', className].filter(Boolean).join(' ')}
       {...rest}
     />
   );
+  // 无 label 时不渲染 <label>，此时 id 仍挂上，便于外部 aria-labelledby 引用
   if (!label) return input;
   return (
-    <label className="flex flex-col gap-1 min-w-0" htmlFor={id}>
+    <label className="flex flex-col gap-1 min-w-0" htmlFor={inputId}>
       <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
         {label}
       </span>
@@ -151,7 +158,7 @@ export function Stepper({
           const next = clamp(raw);
           if (next !== value) onChange(next);
         }}
-        className="stepper-input w-[34px] border-0 text-center text-[12px] font-mono p-0"
+        className="stepper-input w-[34px] border-0 text-center text-aux font-mono p-0"
         style={{ color: 'var(--rg-text-primary)', background: 'transparent' }}
       />
       <button
@@ -178,11 +185,19 @@ export interface PanelProps {
   /** 内容区去掉内边距，供表格贴边铺满 */
   flush?: boolean;
   footer?: ReactNode;
+  /**
+   * 面板根节点的 id，供面板外的控件用 `aria-controls` 指向它。
+   *
+   * 典型场景：工具栏上的「展开/收起权益总览」按钮在面板**外部**，
+   * 它需要一个可解析的目标，否则 `aria-controls` 指向不存在的 id，
+   * 读屏播报不到被控制的区域（Chrome 会把整个 aria-controls 忽略掉）。
+   */
+  id?: string;
 }
 
-export function Panel({ title, description, actions, children, flush, footer }: PanelProps) {
+export function Panel({ id, title, description, actions, children, flush, footer }: PanelProps) {
   return (
-    <section className="panel">
+    <section className="panel" id={id}>
       {(title || actions) && (
         <header className="panel-head">
           <div className="min-w-0">
@@ -207,8 +222,10 @@ export interface Metric {
 }
 
 export function MetricGrid({ items }: { items: Metric[] }) {
+  // 项数写进 data-cols：4 项以内按实际数量铺满，避免四列里空一片
+  const cols = Math.min(Math.max(items.length, 1), 4);
   return (
-    <div className="metric-grid">
+    <div className="metric-grid" data-cols={cols}>
       {items.map((m) => (
         <div key={m.key} className="metric-cell">
           <div className="metric-key">{m.key}</div>
@@ -314,20 +331,19 @@ export function KeyValue({ rows }: { rows: KeyValueRow[] }) {
 /**
  * 逐字段卡片。适合字段少、彼此独立且需要横向扫读的运行态指标。
  * 语义相近的一组字段请改用 KeyCardGroups。
+ *
+ * 列数交给 auto-fit：调用方只知道「大致想要几列」，实际可用宽度由容器决定。
+ * 传死列数会在窄容器里把每卡压到 100px 以内，字段名全部折行。
  */
-export function KeyCards({ cols, rows }: { cols: number; rows: KeyValueRow[] }) {
+export function KeyCards({ cols = 3, rows }: { cols?: number; rows: KeyValueRow[] }) {
   return (
     <div
       className="grid gap-2.5"
-      style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))` }}
+      style={{ gridTemplateColumns: `repeat(auto-fit, minmax(${Math.max(150, 900 / cols)}px, 1fr))` }}
     >
       {rows.map((r) => (
-        <div
-          key={r.k}
-          className="rounded-lg border px-3.5 py-2.5 min-w-0"
-          style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
-        >
-          <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div key={r.k} className="subcard-soft px-3.5 py-2.5">
+          <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
             {r.k}
           </div>
           <div className="mt-1 text-[15px] font-medium break-words">{r.v}</div>
@@ -349,24 +365,20 @@ const DENSE_ROW_THRESHOLD = 6;
 /**
  * 分组卡片：一个语义分组一张卡，字段以无边框紧凑行排列在卡内。
  * 卡面沿用面板底色，仅用描边区分层级，避免在白色面板内再压一层灰底。
- * 外层栅格固定两列，保证四组呈 2x2 分布；同一行卡片等高。
+ * 外层两列（容器窄时自动降一列）；同一行卡片等高。
  */
 export function KeyCardGroups({ groups }: { groups: KeyCardGroup[] }) {
   return (
-    <div className="grid gap-4 grid-cols-2">
+    <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
       {groups.map((g) => {
         const dense = g.rows.length > DENSE_ROW_THRESHOLD;
         return (
-          <div
-            key={g.title}
-            className="rounded-lg border px-3.5 py-3 min-w-0"
-            style={{ borderColor: 'var(--rg-border)' }}
-          >
-            <div className="mb-1.5 flex items-center gap-2">
+          <div key={g.title} className="subcard px-3.5">
+            <div className="mb-1.5 card-head">
               <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                 {g.title}
               </span>
-              <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+              <span className="card-head-line" />
             </div>
             <dl
               className={dense ? 'grid gap-x-4 grid-cols-2' : 'flex flex-col'}
@@ -377,12 +389,12 @@ export function KeyCardGroups({ groups }: { groups: KeyCardGroup[] }) {
                   key={r.k}
                   className={
                     dense && r.wide
-                      ? 'grid items-baseline gap-2 py-[5px] col-span-2'
-                      : 'grid items-baseline gap-2 py-[5px]'
+                      ? 'kv-compact col-span-2'
+                      : 'kv-compact'
                   }
                   style={{ gridTemplateColumns: dense ? '88px minmax(0, 1fr)' : '132px minmax(0, 1fr)' }}
                 >
-                  <dt className="text-[12px] leading-[1.5]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <dt className="text-aux leading-[1.5]" style={{ color: 'var(--rg-text-tertiary)' }}>
                     {r.k}
                   </dt>
                   <dd className="m-0 text-[13px] leading-[1.5] break-words">{r.v}</dd>
@@ -434,12 +446,23 @@ export function ProgressBar({
 
 /* Loading / Empty */
 
+/**
+ * 加载态。
+ *
+ * 省略号由组件统一追加，调用方传「加载模块」而不是「加载模块…」——
+ * 否则会渲染成「加载模块……」。这一点此前被 App.tsx 踩到过。
+ */
 export function LoadingBlock({ label = '加载中' }: { label?: string }) {
   return (
     <div className="p-4 text-aux" style={{ color: 'var(--rg-text-tertiary)' }} role="status">
-      {label}…
+      {label.replace(/…+$/, '')}…
     </div>
   );
+}
+
+/** 空态与错误态里「标签式」短句统一不带句末句号，这里做一次兜底收敛。 */
+function stripTrailingPeriod(text: string): string {
+  return text.replace(/。\s*$/, '');
 }
 
 /**
@@ -460,9 +483,9 @@ export function EmptyState({
 }) {
   return (
     <div className="p-4 text-aux flex flex-col items-start gap-2" style={{ color: 'var(--rg-text-tertiary)' }}>
-      <div>{label}</div>
+      <div>{stripTrailingPeriod(label)}</div>
       {hint && (
-        <div className="text-[12px] leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
           {hint}
         </div>
       )}

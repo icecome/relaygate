@@ -196,6 +196,15 @@ const rotateRows = useMemo(() => {
         score: h?.score,
         level: h?.level,
         statusText: h?.statusText,
+        // 连登：与 score/level 同源于 checkStatus 的同一轮检查，必须一起透传，
+        // 否则「当日活跃」有值而「连登」恒空。
+        streakDays: h?.streakDays,
+        streakNextTier: h?.streakNextTier,
+        streakNextTierRemaining: h?.streakNextTierRemaining,
+        // 失败原因必须一起透传：短横线不带原因等于让用户去猜
+        streakReason: h?.streakReason,
+        streakCode: h?.streakCode,
+        checkedAt: h?.checkedAt,
         error: h?.error,
       };
     });
@@ -208,6 +217,12 @@ const rotateRows = useMemo(() => {
     score: h.score,
     level: h.level,
     statusText: h.statusText,
+    streakDays: h.streakDays,
+    streakNextTier: h.streakNextTier,
+    streakNextTierRemaining: h.streakNextTierRemaining,
+    streakReason: h.streakReason,
+    streakCode: h.streakCode,
+    checkedAt: h.checkedAt,
     error: h.error,
   }));
 }, [rotateStatus.data]);
@@ -322,8 +337,8 @@ const rotateRows = useMemo(() => {
   /** 手动输入 uid 切换（行内按钮之外的入口）。 */
   async function doSwitchPick() {
     const uid = await prompt({
-      title: '切换到指定账号',
-      message: '输入目标账号的 uid。',
+      title: '按 uid 切换账号',
+      message: '输入目标账号的 uid；行内「切换到此账号」可直接点选。',
       input: { label: 'uid' },
       okText: '切换',
     });
@@ -426,14 +441,14 @@ const rotateRows = useMemo(() => {
     { key: '运行时长', value: formatUptime(runtime.data?.status?.uptimeSec) },
     {
       key: '调度器',
-      value: runtime.data?.status?.scheduler?.enabled ? '开启' : '关闭',
-      delta: formatTime(runtime.data?.status?.scheduler?.nextCheckinAt),
+      value: runtime.data?.status?.scheduler?.enabled ? '已启用' : '已停用',
+      delta: `下次签到 ${formatTime(runtime.data?.status?.scheduler?.nextCheckinAt)}`,
     },
     { key: '粘性条目', value: formatNumber(runtime.data?.status?.sticky?.entries ?? stickyRows.length) },
     {
       key: '账号',
       value: formatNumber(runtime.data?.status?.accounts?.total),
-      delta: `冷却 ${runtime.data?.status?.accounts?.cooling ?? 0}`,
+      delta: `冷却 ${formatNumber(runtime.data?.status?.accounts?.cooling ?? 0)} 个`,
     },
   ];
 
@@ -485,7 +500,9 @@ const rotateRows = useMemo(() => {
                       v: <span className="font-mono">{formatNumber(runtime.data?.pool?.waiters?.count)}</span>,
                     },
                     {
-                      k: '不可用模型',
+                      // 只统计探活判定为不可用的**对话**模型；媒体模型（图片/视频生成）
+                      // 没有 chat 端点，不写入可用性表，不计入此数。
+                      k: '不可用对话模型',
                       v: <span className="font-mono">{formatNumber(runtime.data?.status?.models?.unavailable)}</span>,
                     },
                     {
@@ -557,12 +574,12 @@ const rotateRows = useMemo(() => {
                 <LoadingBlock />
               ) : (runtime.data?.pool?.accounts ?? []).length === 0 ? (
                 <EmptyState
-                  label="当前没有账号进入调度池。"
+                  label="当前没有账号进入调度池"
                   hint="请先在凭据池接入并启用账号；若已接入，请检查调度器是否开启。"
                 />
               ) : (
-                <div className="scroll-y" style={{ maxHeight: 420 }}>
-                  <table className="card-table w-full border-collapse text-[13px]">
+                <div className="scroll-y overflow-x-auto" style={{ maxHeight: 420 }}>
+                  <table className="data-table">
                     <thead
                       className="sticky top-0 z-10"
                       style={{ background: 'var(--rg-bg-secondary)' }}
@@ -581,16 +598,16 @@ const rotateRows = useMemo(() => {
                     <tbody>
                       {(runtime.data?.pool?.accounts ?? []).map((a) => (
                         <tr key={a.id} className="row-hover">
-                          <td className="td" data-label="账号">
-                            <div className="font-mono text-[12px]">{a.label || a.id}</div>
+                          <td className="td">
+                            <div className="font-mono text-aux">{a.label || a.id}</div>
                             <div
-                              className="font-mono text-[11px]"
+                              className="font-mono text-aux"
                               style={{ color: 'var(--rg-text-tertiary)' }}
                             >
                               {a.id}
                             </div>
                           </td>
-                          <td className="td" data-label="可用">
+                          <td className="td">
                             {a.usable ? (
                               <Chip tone="ok" dot="dot-ok">
                                 可用
@@ -601,22 +618,22 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num" data-label="在途">{formatNumber(a.inFlight)}</td>
-                          <td className="td cell-num" data-label="余额">{formatNumber(a.balance)}</td>
-                          <td className="td cell-num" data-label="优先级">{a.priority ?? 0}</td>
-                          <td className="td font-mono text-[12px]" data-label="最近到期">
+                          <td className="td cell-num">{formatNumber(a.inFlight)}</td>
+                          <td className="td cell-num">{formatNumber(a.balance)}</td>
+                          <td className="td cell-num">{a.priority ?? 0}</td>
+                          <td className="td td-mono">
                             {a.fefo?.never
                               ? '不过期'
                               : a.fefo?.hasExpiry && a.fefo.soonestDays != null
                                 ? `${a.fefo.soonestDays} 天`
                                 : '—'}
                           </td>
-                          <td className="td cell-num" data-label="模型冷却">
+                          <td className="td cell-num">
                             {a.modelCooldowns
                               ? Object.keys(a.modelCooldowns).length
                               : 0}
                           </td>
-                          <td className="td cell-num" data-label="错误数">{formatNumber(a.errorCount)}</td>
+                          <td className="td cell-num">{formatNumber(a.errorCount)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -631,11 +648,12 @@ const rotateRows = useMemo(() => {
               flush
             >
               {stickyRows.length === 0 ? (
-                <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                  当前没有粘性会话
-                </div>
+                <EmptyState
+                  label="当前没有粘性会话"
+                  hint="会话在客户端第一次带 session 标识的请求之后才会绑定。"
+                />
               ) : (
-                <table className="card-table w-full border-collapse text-[13px]">
+                <table className="data-table">
                   <thead>
                     <tr>
                       <th className="th">会话键</th>
@@ -646,9 +664,9 @@ const rotateRows = useMemo(() => {
                   <tbody>
                     {stickyRows.map((s, i) => (
                       <tr key={`${s?.key ?? i}`} className="row-hover">
-                        <td className="td font-mono text-[11px] break-all" data-label="会话键">{s?.key || '—'}</td>
-                        <td className="td font-mono text-[12px]" data-label="绑定账号">{s?.accountId || '—'}</td>
-                        <td className="td font-mono text-[12px]" data-label="过期时间">{formatTime(s?.expiresAt)}</td>
+                        <td className="td font-mono text-aux break-all">{s?.key || '—'}</td>
+                        <td className="td td-mono">{s?.accountId || '—'}</td>
+                        <td className="td td-mono">{formatTime(s?.expiresAt)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -710,31 +728,31 @@ const rotateRows = useMemo(() => {
                     </div>
                     {scheduler.data?.schedulerEnabled ? (
                       <Chip tone="ok" dot="dot-ok">
-                        运行中 · 由 SCHEDULER_ENABLED 控制
+                        运行中 · 由服务端环境配置控制
                       </Chip>
                     ) : (
                       <Chip tone="neutral" dot="dot-off">
-                        已停止 · 由 SCHEDULER_ENABLED 控制
+                        已停止 · 由服务端环境配置控制
                       </Chip>
                     )}
                   </div>
 
                   <div className="grid gap-4 grid-cols-2 items-start">
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           执行时刻
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="每日签到">
                           <div className="flex items-center gap-2">
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={23}
@@ -745,9 +763,9 @@ const rotateRows = useMemo(() => {
                               }}
                               aria-label="签到小时"
                             />
-                            <span className="font-mono text-[12px]">:</span>
+                            <span className="font-mono text-aux">:</span>
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={59}
@@ -763,7 +781,7 @@ const rotateRows = useMemo(() => {
                         <FieldRow label="每日保活">
                           <div className="flex items-center gap-2">
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={23}
@@ -774,9 +792,9 @@ const rotateRows = useMemo(() => {
                               }}
                               aria-label="保活小时"
                             />
-                            <span className="font-mono text-[12px]">:</span>
+                            <span className="font-mono text-aux">:</span>
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={59}
@@ -792,7 +810,7 @@ const rotateRows = useMemo(() => {
                         <FieldRow label="账号轮换时刻">
                           <div className="flex items-center gap-2">
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={23}
@@ -803,9 +821,9 @@ const rotateRows = useMemo(() => {
                               }}
                               aria-label="轮换小时"
                             />
-                            <span className="font-mono text-[12px]">:</span>
+                            <span className="font-mono text-aux">:</span>
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={59}
@@ -822,19 +840,19 @@ const rotateRows = useMemo(() => {
                     </div>
 
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           间隔与错峰
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="令牌扫描（分钟）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={1}
                             max={1440}
@@ -847,7 +865,7 @@ const rotateRows = useMemo(() => {
                         </FieldRow>
                         <FieldRow label="模型探测间隔（小时）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={0}
                             max={168}
@@ -860,7 +878,7 @@ const rotateRows = useMemo(() => {
                         </FieldRow>
                         <FieldRow label="每次探测模型数">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={0}
                             max={100}
@@ -873,7 +891,7 @@ const rotateRows = useMemo(() => {
                         </FieldRow>
                         <FieldRow label="签到错峰窗口（分钟）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={0}
                             max={720}
@@ -886,7 +904,7 @@ const rotateRows = useMemo(() => {
                         </FieldRow>
                         <FieldRow label="余额错峰窗口（分钟）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={0}
                             max={720}
@@ -901,14 +919,14 @@ const rotateRows = useMemo(() => {
                     </div>
 
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           成长中心（WorkBuddy 派猫旅行）
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <label className="flex items-center justify-between gap-3">
@@ -930,7 +948,7 @@ const rotateRows = useMemo(() => {
                         <FieldRow label="每日执行时刻">
                           <div className="flex items-center gap-2">
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={23}
@@ -941,9 +959,9 @@ const rotateRows = useMemo(() => {
                               }}
                               aria-label="成长中心小时"
                             />
-                            <span className="font-mono text-[12px]">:</span>
+                            <span className="font-mono text-aux">:</span>
                             <input
-                              className="field font-mono text-[12px]"
+                              className="field font-mono text-aux"
                               type="number"
                               min={0}
                               max={59}
@@ -960,14 +978,14 @@ const rotateRows = useMemo(() => {
                     </div>
 
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           下次执行
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <dl className="flex flex-col text-[13px]">
                         {[
@@ -981,10 +999,10 @@ const rotateRows = useMemo(() => {
                             className="grid gap-2 py-[5px] items-baseline"
                             style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                           >
-                            <dt className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                               {row.k}
                             </dt>
-                            <dd className="m-0 font-mono text-[12px] break-all">
+                            <dd className="m-0 font-mono text-aux break-all">
                               {row.v ? formatTime(row.v as string) : '—'}
                             </dd>
                           </div>
@@ -999,14 +1017,14 @@ const rotateRows = useMemo(() => {
 
                   {/* 余额自动刷新：独立于签到链的定时器，开关与间隔都在这里 */}
                   <div
-                    className="rounded-lg border px-3.5 py-3 min-w-0"
+                    className="subcard"
                     style={{ borderColor: 'var(--rg-border)' }}
                   >
                     <div className="mb-2.5 flex items-center gap-2">
                       <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                         余额自动刷新
                       </span>
-                      <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                      <span className="card-head-line" />
                       {balanceRefresh.data?.enabled ? (
                         <Chip tone="ok" dot="dot-ok">
                           运行中
@@ -1036,7 +1054,7 @@ const rotateRows = useMemo(() => {
 
                       <FieldRow label="刷新间隔（分钟）">
                         <input
-                          className="field font-mono text-[12px]"
+                          className="field font-mono text-aux"
                           type="number"
                           min={5}
                           max={1440}
@@ -1058,7 +1076,7 @@ const rotateRows = useMemo(() => {
                           {busy === 'balance-cfg' ? '保存中…' : '保存刷新设置'}
                         </Button>
                         {balanceRefresh.data?.lastRunAt && (
-                          <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                             上次 {formatTime(balanceRefresh.data.lastRunAt)}
                             {balanceRefresh.data.lastFailed
                               ? ` · 失败 ${balanceRefresh.data.lastFailed}`
@@ -1067,7 +1085,7 @@ const rotateRows = useMemo(() => {
                         )}
                       </div>
 
-                      <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {balanceRefresh.data?.timer?.nextRunAt
                           ? `下次运行：${balanceRefresh.data.timer.nextRunAt}`
                           : '定时器未启动；每日签到流程结束后也会刷新一次余额'}
@@ -1080,7 +1098,7 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="任务日志"
-              description={`按时间倒序，共 ${taskRows.length} 条`}
+              description={`按时间倒序，显示最近 ${taskRows.length} 条（最多拉取 ${LOG_LIMIT} 条）`}
               actions={
                 <>
                   <select
@@ -1101,11 +1119,12 @@ const rotateRows = useMemo(() => {
                   </select>
                   <Button
                     size="sm"
+                    variant="danger"
                     onClick={async () => {
                       const ok = await prompt({
                         title: '清空任务日志？',
                         message: '将删除全部历史任务记录，不可恢复。',
-                        okText: '清空',
+                        okText: '清空全部',
                         danger: true,
                       });
                       if (ok !== true) return;
@@ -1119,7 +1138,7 @@ const rotateRows = useMemo(() => {
                       }
                     }}
                   >
-                    清空日志
+                    清空全部日志
                   </Button>
                 </>
               }
@@ -1128,13 +1147,14 @@ const rotateRows = useMemo(() => {
               {taskLog.loading && !taskLog.data ? (
                 <LoadingBlock />
               ) : taskRows.length === 0 ? (
-                <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                  暂无任务记录
-                </div>
+                <EmptyState
+                  label="暂无任务记录"
+                  hint="定时任务执行过一次之后，这里会按时间倒序显示每次运行的结果。"
+                />
               ) : (
                 <>
-                  <div className="scroll-y" style={{ maxHeight: 420 }}>
-                    <table className="card-table w-full border-collapse text-[13px]">
+                  <div className="scroll-y overflow-x-auto" style={{ maxHeight: 420 }}>
+                    <table className="data-table">
                       {/* 表头吸顶：翻页时列名始终可见 */}
                       <thead
                         className="sticky top-0 z-10"
@@ -1157,22 +1177,24 @@ const rotateRows = useMemo(() => {
                           const okCount = t.ok ?? 0;
                           return (
                             <tr key={`${t.ts ?? i}`} className="row-hover">
-                              <td className="td font-mono text-[12px]" data-label="时间">{formatTime(t.ts)}</td>
-                              <td className="td font-mono text-[12px]" data-label="任务">{t.task || '—'}</td>
-                              <td className="td font-mono text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }} data-label="触发">
+                              <td className="td td-mono">{formatTime(t.ts)}</td>
+                              <td className="td td-mono">{t.task || '—'}</td>
+                              <td className="td td-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
                                 {t.trigger || '—'}
                               </td>
-                              <td className="td cell-num font-mono text-[12px]" data-label="成功">{formatNumber(okCount)}</td>
-                              <td className="td cell-num font-mono text-[12px]" data-label="失败">
+                              <td className="td cell-num font-mono text-aux">{formatNumber(okCount)}</td>
+                              <td className="td cell-num font-mono text-aux">
                                 {failed > 0 ? (
                                   <span style={{ color: 'var(--rg-state-error)' }}>{failed}</span>
                                 ) : (
                                   '0'
                                 )}
                               </td>
-                              <td className="td font-mono text-[11px] break-all" data-label="详情">
+                              <td className="td font-mono text-aux break-all">
                                 {t.error ? (
-                                  <span style={{ color: 'var(--rg-state-error)' }}>{t.error}</span>
+                                  <span className="line-clamp-2" style={{ color: 'var(--rg-state-error)' }} title={t.error}>
+                                    {t.error}
+                                  </span>
                                 ) : t.acted != null ? (
                                   `动作 ${t.acted}`
                                 ) : t.total != null ? (
@@ -1192,7 +1214,7 @@ const rotateRows = useMemo(() => {
                     className="flex items-center justify-between px-4 py-2.5"
                     style={{ borderTop: '1px solid var(--rg-border)' }}
                   >
-                    <span className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                       第 {safeLogPage + 1} / {taskPages} 页 · 显示第{' '}
                       {safeLogPage * LOG_PAGE_SIZE + 1} 至{' '}
                       {Math.min((safeLogPage + 1) * LOG_PAGE_SIZE, taskRows.length)} 条
@@ -1326,8 +1348,8 @@ const rotateRows = useMemo(() => {
                       <div className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                         自动轮换
                       </div>
-                      <div className="text-[12px] mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                        到达设定时刻后自动遍历候选账号，每个账号停留下方设定时长
+                      <div className="text-aux mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        到达设定时刻后自动遍历候选账号，每个账号停留下方设定的时长。
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
@@ -1354,19 +1376,19 @@ const rotateRows = useMemo(() => {
 
                   <div className="grid gap-4 grid-cols-2 items-start">
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           轮换行为
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="每账号停留（秒）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             type="number"
                             min={10}
                             max={3600}
@@ -1395,19 +1417,19 @@ const rotateRows = useMemo(() => {
                     </div>
 
                     <div
-                      className="rounded-lg border px-3.5 py-3 min-w-0"
+                      className="subcard"
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
                         <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                           排除与目录
                         </span>
-                        <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                        <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="排除的 uid（逗号分隔）">
                           <input
-                            className="field font-mono text-[12px]"
+                            className="field font-mono text-aux"
                             value={rotateCfg.excludeUids}
                             placeholder="留空表示不排除"
                             onChange={(e) => {
@@ -1416,7 +1438,7 @@ const rotateRows = useMemo(() => {
                             }}
                           />
                         </FieldRow>
-                        <div className="text-[12px] break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        <div className="text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
                           auth 目录：{rotateSettings.data?.authDir || rotateStatus.data?.authDir || '默认探测'}
                         </div>
                       </div>
@@ -1432,25 +1454,57 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="账号列表"
-              description={`共 ${rotateRows.length} 个账号 · 活跃度取自成长中心当日数据`}
+              description={`共 ${rotateRows.length} 个账号 · 活跃度与连登取自成长中心当日数据`}
               flush
+              actions={
+                /*
+                 * 「连登」整列都是短横线时，这里给出一次性的诊断结论。
+                 * 只统计「没有行级错误、但 streakDays 为 null」的行：
+                 * 行级错误由「说明」列各自展示原因，不该混进这条汇总。
+                 */
+                (() => {
+                  const blank = rotateRows.filter((r) => !r.error && r.streakDays == null);
+                  if (!blank.length) return null;
+                  const reason = blank.find((r) => r.streakReason)?.streakReason;
+                  return (
+                    <span
+                      className="text-aux"
+                      style={{ color: 'var(--rg-state-warning)' }}
+                      title={blank.map((r) => `${r.label || r.uid}：${r.streakReason || '未取到'}`).join('\n')}
+                    >
+                      {blank.length}/{rotateRows.length} 个账号未取到连登
+                      {reason ? `：${reason.slice(0, 40)}` : ''}
+                    </span>
+                  );
+                })()
+              }
             >
               {rotateStatus.loading && !rotateStatus.data ? (
                 <LoadingBlock />
               ) : rotateStatus.error ? (
                 <ErrorState message={rotateStatus.error} onRetry={rotateStatus.reload} />
               ) : rotateRows.length === 0 ? (
-                <div className="p-4 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-                  本机 auth 目录里没有可用账号备份，可先点「生成种子」写入。
-                </div>
+                <EmptyState
+                  label="本机凭据目录里没有可用账号备份"
+                  hint="点上方「生成种子」写入账号备份后，这里会列出可切换的账号。"
+                />
               ) : (
-                <table className="card-table w-full border-collapse text-[13px]">
+                <table className="data-table">
                   <thead>
                     <tr>
                       <th className="th">账号</th>
                       <th className="th">uid</th>
                       <th className="th">状态</th>
                       <th className="th cell-num">当日活跃</th>
+                      {/*
+                        连登列紧跟「当日活跃」，因为两者是同一轮检查里取的同一套上游数据：
+                        当日活跃 = 今天有没有动过（heatmap.today.is_active）
+                        连登     = 连续多少天动过（growth/streak 的 days）
+                        分开看才能回答「今天动了但连登断了没」这类问题。
+                      */}
+                      <th className="th cell-num" title="连续活跃天数（成长中心 /activity/growth/streak）">
+                        连登
+                      </th>
                       <th className="th">说明</th>
                       <th className="th cell-act">操作</th>
                     </tr>
@@ -1461,9 +1515,9 @@ const rotateRows = useMemo(() => {
                       const busyThis = busy === `switch-${r.uid}`;
                       return (
                         <tr key={r.uid} className="row-hover">
-                          <td className="td text-[13px]" data-label="账号">{r.label || '—'}</td>
-                          <td className="td font-mono text-[11px] break-all" style={{ color: 'var(--rg-text-tertiary)' }} data-label="uid">{r.uid}</td>
-                          <td className="td" data-label="状态">
+                          <td className="td text-[13px]">{r.label || '—'}</td>
+                          <td className="td font-mono text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>{r.uid}</td>
+                          <td className="td">
                             {isCurrent ? (
                               <Chip tone="brand" dot="dot-ok">
                                 当前
@@ -1474,14 +1528,70 @@ const rotateRows = useMemo(() => {
                               </Chip>
                             )}
                           </td>
-                          <td className="td cell-num font-mono text-[12px]" data-label="当日活跃">
+                          <td className="td cell-num font-mono text-aux">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
                             ) : (
                               formatNumber(r.score ?? 0)
                             )}
                           </td>
-                          <td className="td text-[12px] break-all" data-label="说明">
+                          {/*
+                            连登三态，含义完全不同：
+                              有数字 → 真实天数（0 = 今天断了）
+                              null   → 本次没取到（上游 /streak 报错）—— 不是 0
+                              行有 error → 整行没查成
+                            把 null 显示成 0 会让用户以为号断了，那是错误的处置动作。
+                          */}
+                          <td className="td cell-num">
+                            {r.error || r.streakDays == null ? (
+                              <span
+                                style={{ color: 'var(--rg-text-tertiary)' }}
+                                /*
+                                 * 悬停必须给出**确切原因**。此前这里只写「本次未取到连登」，
+                                 * 于是整列短横线时用户无法判断是没权限、登录态失效、
+                                 * 上游改了字段名，还是网络超时 —— 四种处置动作完全不同。
+                                 */
+                                title={
+                                  r.error
+                                    ? `整行检查失败：${r.error}`
+                                    : [
+                                        '本次未取到连登。可能原因：',
+                                        r.streakReason || '上游 /activity/growth/streak 未返回 days 字段',
+                                        r.streakCode != null ? `上游业务码：${r.streakCode}` : '',
+                                        r.checkedAt ? `检查时刻：${formatTime(r.checkedAt)}` : '',
+                                      ]
+                                        .filter(Boolean)
+                                        .join('\n')
+                                }
+                              >
+                                —
+                              </span>
+                            ) : (
+                              <span
+                                className="font-mono tabular-nums"
+                                style={{
+                                  color:
+                                    r.streakDays >= 14
+                                      ? 'var(--rg-state-success)'
+                                      : r.streakDays <= 0
+                                        ? 'var(--rg-state-warning)'
+                                        : 'var(--rg-text-primary)',
+                                }}
+                                title={[
+                                  `连续活跃 ${formatNumber(r.streakDays)} 天`,
+                                  r.streakNextTier
+                                    ? `距下一档（${r.streakNextTier}）还差 ${r.streakNextTierRemaining ?? '?'} 天`
+                                    : '已满级',
+                                  r.checkedAt ? `数据时刻：${formatTime(r.checkedAt)}` : '',
+                                ]
+                                  .filter(Boolean)
+                                  .join('\n')}
+                              >
+                                {formatNumber(r.streakDays)}
+                              </span>
+                            )}
+                          </td>
+                          <td className="td text-aux break-all">
                             {r.error ? (
                               <span style={{ color: 'var(--rg-state-error)' }}>{r.error}</span>
                             ) : (
@@ -1496,7 +1606,7 @@ const rotateRows = useMemo(() => {
                               disabled={isCurrent || busyThis === true}
                               onClick={() => doSwitchTo(r.uid, r.label || r.uid)}
                             >
-                              {busyThis ? '切换中…' : isCurrent ? '使用中' : '切到该账号'}
+                              {busyThis ? '切换中…' : isCurrent ? '使用中' : '切换到此账号'}
                             </Button>
                           </td>
                         </tr>
@@ -1507,7 +1617,7 @@ const rotateRows = useMemo(() => {
               )}
             </Panel>
 
-            <Panel title="轮换操作" footer="轮换可能返回业务层失败（请求成功但结果未成功），此时会展示后端返回的原因。">
+            <Panel title="轮换操作" footer="轮换可能只成功一部分，此时会展示每个账号失败的原因。">
               <div className="flex items-center gap-2 flex-wrap">
                 <Button variant="primary" onClick={doRotate} disabled={busy === 'rotate'}>
                   {busy === 'rotate' ? '执行中…' : '执行轮换'}
@@ -1515,7 +1625,7 @@ const rotateRows = useMemo(() => {
                 <Button onClick={doSeed} disabled={busy === 'seed'}>
                   {busy === 'seed' ? '生成中…' : '生成种子'}
                 </Button>
-                <Button onClick={doSwitchPick} disabled={busy === 'switch'}>
+                <Button onClick={doSwitchPick} disabled={busy != null}>
                   切换账号
                 </Button>
               </div>
@@ -1529,7 +1639,7 @@ const rotateRows = useMemo(() => {
           <>
             <Panel
               title="网关配置"
-              description="来自 /v1/admin/config 的当前生效值"
+              description="当前生效的网关配置；修改配置文件后需重载才会应用"
               actions={
                 <Button size="sm" variant="primary" onClick={doReload} disabled={busy === 'reload'}>
                   {busy === 'reload' ? '重载中…' : '重载配置'}
@@ -1610,7 +1720,7 @@ const rotateRows = useMemo(() => {
                     {
                       title: '调度与上游',
                       rows: [
-                        { k: '调度器', v: formatBoolean(config.data?.schedulerEnabled) },
+                        { k: '调度器', v: config.data?.schedulerEnabled ? '已启用' : '已停用' },
                         {
                           k: '签到时间',
                           v: (
@@ -1622,13 +1732,20 @@ const rotateRows = useMemo(() => {
                         },
                         {
                           k: '保活时间',
-                          v: <span className="font-mono">{config.data?.keepaliveHour ?? '—'}</span>,
+                          // RuntimeConfig 只暴露小时（keepaliveHour），分钟在 scheduler 设置里，
+                          // 与「签到时间」对齐成 HH:MM，避免同类字段两种写法
+                          v: (
+                            <span className="font-mono">
+                              {String(config.data?.keepaliveHour ?? 0).padStart(2, '0')}:
+                              {String(scheduler.data?.keepaliveMinute ?? 0).padStart(2, '0')}
+                            </span>
+                          ),
                         },
                         {
                           k: '令牌刷新',
                           v: (
                             <span className="font-mono">
-                              {config.data?.tokenRefreshLeadHours ?? '—'} 小时提前
+                              提前 {config.data?.tokenRefreshLeadHours ?? '—'} 小时刷新
                             </span>
                           ),
                         },
@@ -1647,7 +1764,7 @@ const rotateRows = useMemo(() => {
                         {
                           k: '上游路径',
                           v: (
-                            <span className="font-mono text-[12px] break-all">
+                            <span className="font-mono text-aux break-all">
                               {config.data?.upstreamChatPath}
                             </span>
                           ),
@@ -1670,7 +1787,7 @@ const rotateRows = useMemo(() => {
         )}
 
         <Note>
-          运维操作直接影响网关可用性：轮换会重新分配账号，重载配置会重建模型池与路由。
+          运维操作直接影响网关可用性：分批任务请避开在途请求高峰，重载配置会短暂重建模型池与路由。
         </Note>
       </Stack>
     </PageShell>

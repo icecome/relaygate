@@ -3,7 +3,7 @@
  *
  *   方式一「读取本机客户端」：解密桌面客户端 auth.v1.dat（双区域），
  *     Chromium os_crypt v10 + DPAPI，仅 Windows 同机可用；
- *   方式二「手动粘贴」：粘贴 dt- access token 或客户端凭据 JSON，
+ *   方式二「手动粘贴」：粘贴 dt- 开头的 access token，或客户端凭据 JSON，
  *     用于服务端部署在 Linux、或接入别处机器上的账号。上游只认纯 Bearer 的
  *     dt- token，凭据本身可移植——所以这条路是真的可用（不像 ZCode，
  *     它的 JWT 由家目录派生，上游不发放可移植凭据，故无粘贴入口）。
@@ -200,7 +200,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
       footer={
         <>
           <Button variant="ghost" onClick={onClose}>
-            {importedId ? '完成' : '取消'}
+            {importedId ? '稍后处理' : '取消'}
           </Button>
           {importedId ? (
             <Button variant="primary" onClick={enableImported} disabled={importing}>
@@ -247,7 +247,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
         {loadingPreview && mode === 'local' && <LoadingBlock label="正在读取本机客户端" />}
 
         {mode === 'local' && preview?.windows && !loadingPreview && !importedId && (
-          <table className="card-table w-full border-collapse text-[13px]">
+          <table className="data-table">
             <thead>
               <tr>
                 <th className="th">区域</th>
@@ -263,19 +263,19 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
                 const canImport = !!row?.installed && !!row.loggedIn;
                 return (
                   <tr key={r} className="row-hover">
-                    <td className="td" data-label="区域">{realmLabel}</td>
-                    <td className="td font-mono text-[12px]" data-label="客户端">
+                    <td className="td">{realmLabel}</td>
+                    <td className="td td-mono">
                       {row?.clientVersion || '—'}
                     </td>
-                    <td className="td" data-label="登录账号">
+                    <td className="td">
                       {row?.userName || row?.userEmail || (row?.userId ? String(row.userId).slice(0, 12) + '…' : '—')}
                     </td>
-                    <td className="td" data-label="状态">
+                    <td className="td">
                       <span style={{ color: canImport ? 'var(--rg-text-primary)' : 'var(--rg-text-tertiary)' }}>
                         {row ? reasonOf(row) : '未探测'}
                       </span>
                     </td>
-                    <td className="td" data-label="操作">
+                    <td className="td">
                       <Button
                         size="sm"
                         onClick={() => doImportRealm(r)}
@@ -294,8 +294,8 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
         {mode === 'manual' && !importedId && (
           <>
             <div>
-              <div className="text-[12px] mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
-                区域（必选）
+              <div className="text-aux mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
+                区域（必须与账号实际区域一致）
               </div>
               <Segmented
                 ariaLabel="Qoder 区域"
@@ -308,19 +308,18 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
               />
             </div>
             <div>
-              <div className="text-[12px] mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
-                dt- access token 或客户端凭据 JSON
+              <div className="text-aux mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
+                dt- 开头的 access token，或客户端凭据 JSON
               </div>
               <textarea
-                className="w-full h-32 p-2.5 rounded-md border font-mono text-[12px]"
-                style={{ borderColor: 'var(--rg-border-stronger)' }}
+                className="textarea h-32"
                 placeholder={'粘贴 dt- 开头的 token；或粘贴 auth.v1.dat 解密后的凭据 JSON\n{"token":"dt-…","refreshToken":"drt-…","expiresAt":"…","user":{"id":"…","name":"…","email":"…"}}'}
                 value={credential}
                 onChange={(e) => setCredential(e.target.value)}
                 aria-label="Qoder 凭据"
               />
             </div>
-            <label className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+            <label className="flex items-center gap-2 text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
               <input
                 type="checkbox"
                 checked={verify}

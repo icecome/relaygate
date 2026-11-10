@@ -348,8 +348,27 @@ async function refreshBalance(accountId) {
   // Raccoon 账号走自己的 points/v1/balance。它的单位是 **credit**（与 Trae/WorkBuddy
   // 同口径），故写 `balance` 列是正确的；分池明细写隔离键 raccoonPoints，
   // **不写** packs（余额 API 不给每个包的到期时间，写进去会污染 FEFO 排序）。
+  //
+  // ⚠️ 返回值必须在这里归一成批量刷新契约（含 accountId），不能直接把
+  // credits.refreshBalance 的返回值透出去：那个函数返回的是 store.update() 的
+  // **账号对象**（键是 `id`，且 routes/raccoon.js 依赖这个形状），没有 accountId。
+  // 调用方按契约取 item.accountId → undefined → pool.unfreezeIfHealthy(undefined)
+  // → store.get(undefined) 让 node:sqlite 抛
+  // 「Provided value cannot be bound to SQLite parameter 1」，
+  // 整轮解冻与低额告警被中断（2026-10-15 接入起，实测 549 次）。
   if (variant.isEdition(stored.edition, variant.RACCOON)) {
-    return require('../raccoon/credits').refreshBalance(stored);
+    const updated = await require('../raccoon/credits').refreshBalance(stored);
+    return {
+      accountId: stored.id,
+      label: stored.label || stored.id,
+      balance: updated && updated.balance != null ? updated.balance : null,
+      used: null,
+      limit: null,
+      isCreditsBilling: true,
+      source: 'raccoon_points',
+      expiring: { d3: 0, d7: 0 },
+      packs: [],
+    };
   }
 
   const authInfo = await auth.ensureAuth(accountId);

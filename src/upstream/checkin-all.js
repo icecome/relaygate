@@ -14,6 +14,9 @@
 const store = require('../credentials/store');
 const variant = require('../platform/variant');
 const { appendCheckinTaskLog } = require('../jobs/checkin-log');
+const { withCheckinRound } = require('./checkin-lock');
+const { todayCoverage, coverageText } = require('./checkin-today');
+const dailyRunState = require('../jobs/daily-run-state');
 
 /** 单平台的签到实现（惰性 require：避免本模块与具体平台实现产生顶层依赖）。 */
 const PLATFORM_RUNNERS = {
@@ -89,6 +92,36 @@ function checkinPlatforms() {
  * @returns {Promise<object>} {object, trigger, total, claimed, already, disabled, failed, platforms[], message}
  */
 async function checkinAllByPlatform(opts = {}) {
+  const out = await withCheckinRound(() => runCheckinAll(opts), { label: `manual:${opts.trigger || 'manual'}` });
+  if (out && out.skipped) {
+    // 并发：另一轮（定时或另一次手动）正在跑同一批账号。
+    // 如实告知，不静默返回空结果——空结果会被前端读成「签到完成」。
+    const cov = coverageText(todayCoverage(checkinPlatforms()));
+    const message = `另一轮签到正在进行，本次已跳过（未重复请求上游）。${cov ? `当前${cov}` : ''}`;
+    const res = {
+      object: 'checkin.all',
+      trigger: opts.trigger || 'manual',
+      skipped: true,
+      total: 0,
+      claimed: 0,
+      already: 0,
+      disabled: 0,
+      failed: 0,
+      platforms: [],
+      message,
+    };
+    if (opts.notifyOnDone !== false) {
+      try {
+        const { notify } = require('../notify');
+        notify('checkin_warn', { ok: 0, failed: 0, message }, '签到已跳过').catch(() => {});
+      } catch { /* 通知不可用不影响返回 */ }
+    }
+    return res;
+  }
+  return out;
+}
+
+async function runCheckinAll(opts) {
   const spreadMinutes = Number(opts.spreadMinutes) || 0;
   const windowStartMs = opts.windowStartMs || Date.now();
   const trigger = opts.trigger || 'manual';
@@ -135,14 +168,23 @@ async function checkinAllByPlatform(opts = {}) {
     .map((r) => {
       const label = variant.variantOf(r.platform).label || r.platform;
       const bits = [];
-      if (r.claimed) bits.push(`签到 ${r.claimed}`);
-      if (r.already) bits.push(`已签 ${r.already}`);
+      if (r.claimed) bits.push(`本轮领取 ${r.claimed}`);
+      // 措辞用「今日已签」而不是「已在别轮签过」：already 的真实来源可能是
+      // 用户在官方客户端自己签了、或另一轮签到，本模块无法区分；
+      // 跨轮并发的信息已经由后面的「今日 N/M」口径承担，这里不做归因。
+      if (r.already) bits.push(`今日已签 ${r.already}`);
       if (r.disabled) bits.push(`停用 ${r.disabled}`);
       if (r.failed) bits.push(`失败 ${r.failed}`);
       const tail = bits.length ? bits.join(' · ') : '无账号';
       return `${label} ${tail}${r.error ? `（${r.error}）` : ''}`;
     })
     .join('；');
+
+  // 今日口径覆盖度（跨批次）：补上它才能把「本轮只领到 3 个」与
+  // 「今日 8 个号已全部签完」区分开——此前两者文案相同，用户按失败处理。
+  const coverage = todayCoverage(platforms);
+  const covText = coverageText(coverage);
+  const unsignedAll = Object.values(coverage).reduce((n, c) => n + c.unsigned.length, 0);
 
   const out = {
     object: 'checkin.all',
@@ -153,22 +195,30 @@ async function checkinAllByPlatform(opts = {}) {
     disabled,
     failed,
     platforms: results,
-    message,
+    coverage,
+    // 本轮「有签到能力的启用账号数」：total 是各平台 runner 报的号数之和，
+    // 两者不等即说明有平台的 runner 缺失或被跳过——正是「点了但一个号都没跑」的判据。
+    enabledAccounts: accounts.length,
+    message: covText ? `${message}（${covText}）` : message,
   };
+
+  // 手动跑完整轮同样标记「今日已执行」：重启后的补跑判据据此不再重复起轮
+  dailyRunState.mark('checkin', { trigger, ok: claimed + already + disabled, failed });
 
   // 手动触发也要提醒（m-39：此前手动签到不推送，用户不知道结果）
   if (notifyOnDone && (total || failed)) {
     const { notify } = require('../notify');
-    // 「今日均已签到」时 claimed=0，如实说明而不报「签到完成」
+    // 标题按**今日口径**判定，不按本轮 claimed：本轮 claimed=0 但今日已签满
+    // 是「完成」，不是「没签到」。只有真有未签的号才降级措辞。
     const title = failed
       ? '签到部分失败'
-      : (claimed ? `签到完成：${claimed} 个账号` : '今日均已签到');
+      : (unsignedAll === 0 && covText ? '今日均已签到' : (claimed ? `签到完成：${claimed} 个账号` : '今日均已签到'));
     notify(failed ? 'checkin_fail' : 'checkin_ok', {
       ok: claimed + already + disabled,
       failed,
       claimed,
       already,
-      message: `${trigger === 'manual' ? '手动' : '自动'}签到：${message}`,
+      message: `${trigger === 'manual' ? '手动' : '自动'}签到：${out.message}`,
     }, title).catch(() => {});
   }
   return out;

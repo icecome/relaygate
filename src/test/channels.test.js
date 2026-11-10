@@ -170,14 +170,47 @@ async function run() {
     `实际 ${JSON.stringify(kinds('trae'))}`,
   );
   check(
-    'WorkBuddy 有 local + paste 两条路',
-    JSON.stringify(kinds('workbuddy')) === JSON.stringify(['local', 'paste']),
+    // 2026-11-06：新增无感登录（oauth）。对标 WorkDaddy 的「登录新账号」——
+    // 不退出当前客户端，在系统浏览器完成授权后新账号自动入库。
+    'WorkBuddy 有 oauth + local + paste 三条路（oauth = 无感登录新账号）',
+    JSON.stringify(kinds('workbuddy')) === JSON.stringify(['local', 'oauth', 'paste']),
     `实际 ${JSON.stringify(kinds('workbuddy'))}`,
   );
   check(
     'Qoder 有 local + paste 两条路（粘贴 = 可移植的 dt- token，覆盖 Linux 部署与跨机接入）',
     JSON.stringify(kinds('qoder')) === JSON.stringify(['local', 'paste']),
     `实际 ${JSON.stringify(kinds('qoder'))}`,
+  );
+  check(
+    'Raccoon 有 login + local 两条路（local 读本机明文 auth.json，曾因前端漏映射永远不可达）',
+    JSON.stringify(kinds('raccoon')) === JSON.stringify(['local', 'login']),
+    `实际 ${JSON.stringify(kinds('raccoon'))}`,
+  );
+
+  // ---------- oauthLogin（换票续期）与 oauthOnboarding（登录入口）必须分开 ----------
+  // 此前一个位承担两个语义：WorkBuddy 有「无感登录新账号」入口但 oauthLogin=false，
+  // 渠道卡片却用该位决定是否显示「OAuth 登录」标签，导致有入口不显示标签。
+  check(
+    'WorkBuddy 有 oauthOnboarding 但 oauthLogin=false（登录入口 ≠ 换票续期）',
+    byId.workbuddy.capability.oauthOnboarding === true
+    && byId.workbuddy.capability.oauthLogin === false,
+    JSON.stringify(byId.workbuddy.capability),
+  );
+  check(
+    'Trae 两者皆为 true（授权换票 + 登录入口）',
+    byId.trae.capability.oauthOnboarding === true && byId.trae.capability.oauthLogin === true,
+    JSON.stringify(byId.trae.capability),
+  );
+  check(
+    'ZCode / Qoder / Raccoon 均无 oauthOnboarding',
+    !byId.zcode.capability.oauthOnboarding
+    && !byId.qoder.capability.oauthOnboarding
+    && !byId.raccoon.capability.oauthOnboarding,
+    JSON.stringify({
+      zcode: byId.zcode.capability.oauthOnboarding,
+      qoder: byId.qoder.capability.oauthOnboarding,
+      raccoon: byId.raccoon.capability.oauthOnboarding,
+    }),
   );
 
   // ---------- 本机探测：可用性 + 可行动的原因 ----------

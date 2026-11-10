@@ -70,7 +70,14 @@ async function runRefresh(opts = {}) {
       return r;
     }
     // 余额健康账号解冻（与签到后逻辑一致）
-    for (const item of r.ok || []) pool.unfreezeIfHealthy(item.accountId);
+    // id 兜底 + 跳过空值：任一平台返回缺 accountId 的对象时，undefined 会让
+    // store.get 抛 SQLite 绑定错误并把整轮刷新带崩（见 upstream/balance.js 的
+    // Raccoon 分支注释）。这里防御的是「以后再加平台又忘了带 accountId」。
+    for (const item of r.ok || []) {
+      const id = item.accountId || item.id;
+      if (!id) continue;
+      pool.unfreezeIfHealthy(id);
+    }
     // 模型级冷却过期条目的数据库清理。清理原先挂在 pool.snapshot() 与
     // explainCandidates 这两个只读函数里，会让 GET /v1/admin/runtime 与免鉴权的
     // GET /status 各触发 N 次写库；清理本身是维护动作，放在这里（每轮刷新一次）才归属正确。

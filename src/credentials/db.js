@@ -91,6 +91,20 @@ function ensureSchema(db) {
   // 故拆成：last_keepalive_at = 最近一次保活尝试（展示用），
   //        last_refresh_at  = 最近一次成功续期（判据用）。
   if (!names.has('last_refresh_at')) db.exec('ALTER TABLE accounts ADD COLUMN last_refresh_at TEXT');
+  /*
+   * 连续签到天数（连登）—— 列保留但**不再作为面板主数据源**。
+   *
+   * 2026-11-10 的位置修正：连登属于「成长计划」维度，正确落点是
+   * 运维 → 账号轮换页的成长计划面板（`GET /v1/admin/rotate/status` 的
+   * `growth.rows`，每轮由 `checkStatus()` 直接读上游 `fetchStreak`）。
+   * 它**不是**凭据池列表的列——那张表描述的是凭据与额度，连登与凭据无关。
+   *
+   * 列保留的理由：它是账号维度上唯一残留的历史值，删列在本项目要处理
+   * 既有多实例库的兼容；而保留一个 NULL 列的代价为零。写入点仍在签到链
+   * （见 upstream/wb-checkin.js），可用于审计「某次签到当时上游报的连登是多少」。
+   * 面板不读它 —— 面板读的是轮换状态接口的实时值。
+   */
+  if (!names.has('checkin_streak_days')) db.exec('ALTER TABLE accounts ADD COLUMN checkin_streak_days INTEGER');
   // 乐观锁版本号（P0-001）：store.update 改为「按 patch 生成 SET + version CAS」后，
   // 每次成功写入 version+1。并发写入方读到旧 version 时 UPDATE 影响 0 行，
   // 重读重试即可避免用陈旧快照覆盖对方刚写的字段这类静默丢更新。

@@ -206,6 +206,45 @@ export interface SchedulerSnapshot {
   /** 下次成长中心执行 / 上次执行（墙钟排程） */
   nextGrowthAt?: string | null;
   lastGrowthAt?: string | null;
+  /**
+   * 保活轮的下次 / 上次执行时刻。
+   *
+   * 后端 `scheduler.snapshot()` 一直在下发（src/jobs/scheduler.js:59-60 初始化、
+   * :730 每次排程后写 `nextKeepaliveAt`、`nextProbeAt` 同法），但这里此前没声明
+   * —— 于是「账号保活不透明」在前端是**类型层丢字段**，不是样式没做。
+   */
+  nextKeepaliveAt?: string | null;
+  lastKeepaliveAt?: string | null;
+  /** 模型探活轮的下次 / 上次执行时刻 */
+  nextProbeAt?: string | null;
+  lastProbeAt?: string | null;
+  lastProbeSummary?: string | null;
+  /** 账号轮换的上次执行时刻（`nextRotateAutoAt` 只给下次） */
+  lastRotateAt?: string | null;
+  lastRefreshAt?: string | null;
+  lastError?: string | null;
+  /**
+   * 本轮签到是否正在进行（`checkin-lock.isRoundRunning()`）。
+   *
+   * 与「今日已签到」是两个事实：前者是「这一轮还没跑完」，后者是「已经签过了」。
+   * 缺了这个字段，面板无法解释「点了全部签到却 0 新签」是并发跳过还是真的都签过。
+   */
+  checkinRoundRunning?: boolean;
+  /**
+   * 今日各任务链的最后一次运行记录（daily-runs.json 的落盘值，重启不失忆）。
+   * 字段取自 `jobs/daily-run-state.js#mark()`：date / at / trigger / ok / failed / note。
+   */
+  dailyRuns?: Record<
+    string,
+    {
+      date?: string;
+      at?: string;
+      trigger?: string;
+      ok?: number | null;
+      failed?: number | null;
+      note?: string | null;
+    } | null
+  >;
 }
 
 export interface RuntimeInfo {
@@ -481,6 +520,34 @@ export interface RotateHeatmapRow {
   /** 活跃度档位文案（后端按分数分档） */
   level?: string;
   statusText?: string;
+  /**
+   * 连续活跃天数（成长计划的连登）。
+   *
+   * 三种取值语义不同，面板必须分开渲染：
+   *   `undefined` → 后端版本较旧，字段不存在（整个连登列不该出现）
+   *   `null`      → 本次没取到（上游 /streak 报错或无权限）—— 不是 0
+   *   `0` / `n`   → 真实天数（0 表示今天断了）
+   *
+   * 数据来源：`checkStatus()` 每轮对每个 WorkBuddy 账号调一次
+   * `/activity/growth/streak`。heatmap 接口不返回该字段，两者是不同的上游调用。
+   */
+  streakDays?: number | null;
+  /** 下一档门槛（上游 next_tier，如 '14d'）；null 表示已满级或未取到 */
+  streakNextTier?: string | null;
+  /** 距下一档还差几天 */
+  streakNextTierRemaining?: number | null;
+  /**
+   * 连登**没取到**时的确切原因；取到值为 null。
+   *
+   * 必须透出，否则整列短横线时无法区分这几种情况：
+   *   登录态失效（401 无权限）／接口返回 code≠0／上游响应里没有 days 字段／网络超时
+   * 它们对应完全不同的处置动作，界面只显示「—」等于让用户去猜。
+   */
+  streakReason?: string | null;
+  /** 上游业务码（仅在失败时有值），配合 streakReason 排查 */
+  streakCode?: number | null;
+  /** 本次检查时刻（ISO）。连登是时点值，展示时必须带时刻 */
+  checkedAt?: string;
   error?: string;
 }
 
@@ -724,8 +791,15 @@ export interface ModelInfo {
   /**
    * 可用性，取值与 models/availability.js 的三态一致：
    * usable（探测成功）| unavailable（探测失败，带 TTL）| unknown（尚无探测记录）。
+   *
+   * 第四个取值 media 来自 WorkBuddy 目录：图片/视频生成模型没有 chat 端点，
+   * 不参与探活与转发，因此既不是可用也不是不可用，单独一档避免面板误显示成红点。
    */
-  status?: 'usable' | 'unavailable' | 'unknown';
+  status?: 'usable' | 'unavailable' | 'unknown' | 'media';
+  /** 是否可走 chat 端点（false = 媒体生成模型，不参与转发） */
+  chat?: boolean;
+  /** 媒体模型类型：image | video | other */
+  mediaKind?: 'image' | 'video' | 'other' | null;
   /** 不可用原因，如「已禁用」「全部候选不可用」「无可用 WorkBuddy 账号」 */
   reason?: string | null;
   capability?: string | null;

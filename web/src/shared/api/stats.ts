@@ -5,6 +5,10 @@
  * 部分上游（如 WorkBuddy）不回传 usage，此时 requests 有值而 tokens 恒为 0，
  * 不能读作「消耗 0 token」，必须结合 unmetered 判断。
  * estimatedCost 是估算值，不是账单精确值。
+ *
+ * account 参数（对标 WorkDaddy「按账号筛选」）：三个聚合端点都支持。
+ * 带账号时后端不走增量缓存（缓存桶没有「账号→模型」维度），代价是全量读日志，
+ * 因此只在用户主动筛选时使用，不放进默认轮询。
  */
 import { api } from './http';
 
@@ -106,7 +110,7 @@ export interface AccountStat {
   tokenShare: number;
 }
 
-export const getStatsDaily = (days: number, key: string, signal?: AbortSignal) =>
+export const getStatsDaily = (days: number, key: string, signal?: AbortSignal, account?: string) =>
   api<{
     days: number;
     totalRequests: number;
@@ -130,18 +134,22 @@ export const getStatsDaily = (days: number, key: string, signal?: AbortSignal) =
       partial: boolean;
     } | null;
     data: DailyStat[];
-  }>(`/v1/admin/stats/daily?days=${days}`, { signal }, key);
-
-export const getStatsModels = (days: number, key: string, signal?: AbortSignal) =>
-  api<{ days: number; totalRequests: number; data: ModelStat[] }>(
-    `/v1/admin/stats/models?days=${days}`,
+  }>(
+    `/v1/admin/stats/daily?days=${days}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
     { signal },
     key,
   );
 
-export const getStatsAccounts = (days: number, key: string, signal?: AbortSignal) =>
+export const getStatsModels = (days: number, key: string, signal?: AbortSignal, account?: string) =>
+  api<{ days: number; totalRequests: number; data: ModelStat[] }>(
+    `/v1/admin/stats/models?days=${days}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
+    { signal },
+    key,
+  );
+
+export const getStatsAccounts = (days: number, key: string, signal?: AbortSignal, account?: string) =>
   api<{ days: number; totalRequests: number; data: AccountStat[] }>(
-    `/v1/admin/stats/accounts?days=${days}`,
+    `/v1/admin/stats/accounts?days=${days}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
     { signal },
     key,
   );
@@ -175,6 +183,27 @@ export const getClientStats = (days: number, key: string, signal?: AbortSignal) 
 export const clearClientStatsCache = (key: string) =>
   api<{ ok: boolean; dir: string }>('/v1/admin/stats/client/cache/clear', { method: 'POST' }, key);
 
+/**
+ * 网关统计缓存（/stats/daily|models|accounts 的增量桶）。
+ * 缓存关闭时后端回退全量扫描；清空只是让下次读全量重建。
+ */
+export const getStatsCache = (key: string, signal?: AbortSignal) =>
+  api<{ object: string; enabled: boolean; dir: string }>('/v1/admin/stats/cache', { signal }, key);
+
+export const clearStatsCache = (key: string) =>
+  api<{ ok: boolean }>('/v1/admin/stats/cache/clear', { method: 'POST' }, key);
+
+/**
+ * 官方账单缓存（Trae 逐会话 + WorkBuddy 逐请求）。
+ * 上游入账有滞后，清空后下次查询会重新拉取账单。
+ */
+export const clearOfficialUsageCache = (key: string) =>
+  api<{ ok: boolean; workbuddy: boolean; trae: boolean; dir: string; traeDir: string }>(
+    '/v1/admin/stats/official-usage/cache/clear',
+    { method: 'POST' },
+    key,
+  );
+
 export interface OfficialUsageAccount {
   accountId: string;
   label: string;
@@ -193,9 +222,9 @@ export interface OfficialUsageAccount {
   byModel?: { model: string; requests: number; credits: number }[];
 }
 
-export const getOfficialUsage = (days: number, key: string, signal?: AbortSignal) =>
+export const getOfficialUsage = (days: number, key: string, signal?: AbortSignal, account?: string) =>
   api<{ days: number; accounts: OfficialUsageAccount[] }>(
-    `/v1/admin/stats/official-usage?days=${days}`,
+    `/v1/admin/stats/official-usage?days=${days}${account ? `&account=${encodeURIComponent(account)}` : ''}`,
     { signal },
     key,
   );

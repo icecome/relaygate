@@ -126,14 +126,25 @@ router.get('/credit-history', admin, (req, res) => {
  *
  * 额外合入官方账单的按日积分（officialCredit），让「网关计量」与「上游账单」
  * 在同一行对照——历史日期网关侧 token 因脱敏缺陷丢失时，账单侧仍是完整真值。
+ *
+ * account 查询参数：只看某一个账号（WorkDaddy 的「按账号筛选」口径）。
+ * 带 account 时**不走增量缓存**：缓存桶按日聚合，不含「按账号再按模型」的
+ * 二次拆分，硬套会得到错误的模型分布。故此时回退到全量读日志 + 过滤。
  */
 router.get('/stats/daily', admin, async (req, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days || '30', 10) || 30, 1), MAX_STATS_DAYS);
+    const account = req.query.account ? String(req.query.account) : null;
     await loadRateMap();
-    const data = statsCacheEnabled()
-      ? require('../log/stats-cache').cachedDailyStats(days)
-      : dailyStats(readTrafficLines(days));
+    let data;
+    if (account) {
+      const lines = readTrafficLines(days).filter((r) => r.account === account);
+      data = dailyStats(lines);
+    } else {
+      data = statsCacheEnabled()
+        ? require('../log/stats-cache').cachedDailyStats(days)
+        : dailyStats(readTrafficLines(days));
+    }
     const totalRequests = data.reduce((s, d) => s + d.requests, 0);
     // 逻辑回合汇总：一次客户端请求 = 一个回合；降级换候选会给同一回合写多行。
     // 按行算成功率会把「降级后成功」记成失败，故单独给出回合口径。
@@ -162,10 +173,10 @@ router.get('/stats/daily', admin, async (req, res) => {
       savings.days = rtkDays.length;
     }
 
-    // 官方账单按日积分（读本地缓存，不打上游）
+    // 官方账单按日积分（读本地缓存，不打上游）；带 account 时只聚合该账号的账单文件
     let official = null;
     try {
-      const od = require('../models/official-daily').dailyCredits(days);
+      const od = require('../models/official-daily').dailyCredits(days, account || undefined);
       const map = new Map(od.byDay.map((x) => [x.date, x]));
       official = {
         traeCreditTotal: od.traeCreditTotal,
@@ -191,11 +202,17 @@ router.get('/stats/daily', admin, async (req, res) => {
   }
 });
 
-/** 按模型聚合：requests / tokens / avgDurationMs / estimatedCost。 */
+/** 按模型聚合：requests / tokens / avgDurationMs / estimatedCost（可按账号筛选）。 */
 router.get('/stats/models', admin, async (req, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), MAX_STATS_DAYS);
+    const account = req.query.account ? String(req.query.account) : null;
     await loadRateMap();
+    if (account) {
+      // 缓存桶没有「账号→模型」二次维度，带账号筛选时走全量过滤（见 /stats/daily 注释）
+      const lines = readTrafficLines(days).filter((r) => r.account === account);
+      return res.json({ object: 'list', days, totalRequests: lines.length, data: modelStats(lines), account });
+    }
     if (statsCacheEnabled()) {
       const { cachedModelStats } = require('../log/stats-cache');
       const data = cachedModelStats(days);
@@ -210,11 +227,16 @@ router.get('/stats/models', admin, async (req, res) => {
   }
 });
 
-/** 按账号聚合：requests / tokens / estimatedCost / errorRate。 */
+/** 按账号聚合：requests / tokens / estimatedCost / errorRate（可按账号筛选，用于排行只看一个号）。 */
 router.get('/stats/accounts', admin, async (req, res) => {
   try {
     const days = Math.min(Math.max(parseInt(req.query.days || '7', 10) || 7, 1), MAX_STATS_DAYS);
+    const account = req.query.account ? String(req.query.account) : null;
     await loadRateMap();
+    if (account) {
+      const lines = readTrafficLines(days).filter((r) => r.account === account);
+      return res.json({ object: 'list', days, totalRequests: lines.length, data: accountStats(lines), account });
+    }
     if (statsCacheEnabled()) {
       const { cachedAccountStats } = require('../log/stats-cache');
       const data = cachedAccountStats(days);

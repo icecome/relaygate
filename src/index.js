@@ -11,6 +11,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const config = require('./config');
+const { replyUpstreamError } = require('./lib/upstream-error');
 
 const openai = require('./routes/openai');
 const anthropic = require('./routes/anthropic');
@@ -53,6 +54,28 @@ app.use(express.json({ limit: '10mb' }));
  */
 const requestContext = require('./lib/request-context');
 app.use((_req, _res, next) => requestContext.run({ turnId: requestContext.newTurnId() }, next));
+
+/**
+ * 客户端断开信号（`res.locals.clientSignal`）。
+ *
+ * 为什么放在入口而不是每个路由里各自建：一次「用户按了停止」必须能把
+ * **所有**上游调用一起中止，包括分派层内部的换号重试与排队。放进 res.locals
+ * 是为了让它跟着这次响应走（不需要改造每个 dispatch 的签名），且天然随响应销毁。
+ *
+ * 语义：`close` 且响应未正常结束 → abort。正常 `finish` 之后 close 也会触发，
+ * 故必须先摘掉 close 监听，否则会把「已成功完成」也判成取消。
+ */
+app.use((_req, res, next) => {
+  const ac = new AbortController();
+  res.locals.clientSignal = ac.signal;
+  const onFinish = () => res.removeListener('close', onClose);
+  const onClose = () => {
+    if (!res.writableFinished) ac.abort();
+  };
+  res.once('finish', onFinish);
+  res.once('close', onClose);
+  next();
+});
 
 // 管理面板的登录密钥存于 localStorage（web/src/stores/useAuth.ts），同源任意脚本可读，
 // 故以 CSP 收紧脚本与连接来源，并禁止被嵌入、禁止类型嗅探。
@@ -171,10 +194,10 @@ app.use((req, res) => {
   res.status(404).json({ error: { message: `Not found: ${req.method} ${req.path}`, type: 'invalid_request_error' } });
 });
 
-// 统一错误处理
+// 统一错误处理：兜底路径同样不把 err.message 原样回给客户端。
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
-  res.status(500).json({ error: { message: err.message || 'internal error', type: 'internal_error' } });
+  replyUpstreamError(res, { ...err, message: err.message, status: 500 }, { tag: 'unhandled' });
 });
 
 function isPortBusy(err) {
@@ -253,6 +276,16 @@ try {
   const patched = apiKeyStore.ensureModelsReadScope();
   if (patched.length) {
     console.log(`[api-keys] scope migration: models:read added to ${patched.length} key(s): ${patched.join(', ')}`);
+  }
+  // K-3b：访问密钥 scope 不变式修复——scopes 里一个 invoke 能力都没有的密钥
+  // 「列得出模型却调不动任何东西」（2026-11-07 事故的库内残留形态），按平台默认补齐
+  try {
+    const repaired = apiKeyStore.ensureInvokeScope();
+    for (const r of repaired) {
+      console.log(`[api-keys] invoke-scope repair: ${r.id} (platform=${r.platform}) scopes ${JSON.stringify(r.before)} -> ${JSON.stringify(r.after)}`);
+    }
+  } catch (e) {
+    console.error('[api-keys] invoke-scope repair failed:', e.message);
   }
 } catch (e) {
   console.error('[api-keys] bootstrap failed:', e.message);

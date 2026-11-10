@@ -15,8 +15,9 @@
 import type { Account } from '../../shared/api/types';
 import type { Channel } from '../../shared/api/channels';
 import { formatDate, formatTime, platformIdLabel } from '../../shared/lib/format';
-import { Chip } from '../../shared/ui';
+import { Chip, EmptyState } from '../../shared/ui';
 import { keepaliveOf, keepalivePools, keepalivePoolOf } from './accountPacks';
+import { KeepaliveSchedule } from './KeepaliveSchedule';
 
 /** 与 scheduler.runKeepalive 的账号过滤同口径：tokenRefresh || oauthLogin。 */
 function isKeepaliveScanned(cap: Channel['capability'] | undefined): boolean {
@@ -39,16 +40,31 @@ export function KeepaliveBoard({
   const stats = keepalivePools(accounts);
   if (stats.length === 0) {
     return (
-      <div className="py-3 text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-        没有启用中的账号。
-      </div>
+      <EmptyState
+        label="没有启用中的账号"
+        hint="保活统计只覆盖已启用账号；在凭据池启用账号后，这里会按平台分别汇总。"
+      />
     );
   }
   // 卡片只显示当前筛选涉及的池；汇总头始终是整池口径
   const visible = stats.filter((s) => rows.some((a) => a.enabled && keepalivePoolOf(a) === s.platform));
   const shown = visible.length ? visible : stats;
+  /**
+   * 尾注里「未纳入扫描的平台」名单：由渠道能力位派生，不写死平台名。
+   * 无渠道数据时返回空（宁可不提，也不要写错——这个位置此前正是错的）。
+   */
+  const unscannedNames = stats
+    .filter((s) => !isKeepaliveScanned(channelById[s.platform]?.capability))
+    .map((s) => platformIdLabel(s.platform));
   return (
-    <div className="flex flex-col gap-4 p-3">
+    <div className="flex flex-col">
+      {/*
+        排程条置顶：回答「下一轮几点 / 上轮什么时候 / 这轮跑没跑」。
+        账号级时间戳在下方表格里，两者是不同粒度，不能合并成一句
+        （合并后用户会把「池最近保活 3 小时前」读成「所有账号都活着」）。
+      */}
+      <KeepaliveSchedule />
+      <div className="flex flex-col gap-4 p-3">
       {shown.map((s) => {
         const scanned = isKeepaliveScanned(channelById[s.platform]?.capability);
         const members = rows.filter((a) => a.enabled && keepalivePoolOf(a) === s.platform);
@@ -59,8 +75,8 @@ export function KeepaliveBoard({
             style={{ borderColor: 'var(--rg-border)' }}
           >
             <div
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[12px]"
-              style={{ background: 'var(--rg-surface-secondary)', color: 'var(--rg-text-secondary)' }}
+              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-aux"
+              style={{ background: 'var(--rg-bg-secondary)', color: 'var(--rg-text-secondary)' }}
             >
               <span className="text-[13px] font-medium" style={{ color: 'var(--rg-text-primary)' }}>
                 {platformIdLabel(s.platform)}
@@ -81,7 +97,7 @@ export function KeepaliveBoard({
               )}
               {scanned && s.stale > 0 && (
                 <Chip tone="warn" dot="dot-cool">
-                  {s.stale} 个账号保活记录超过 26 小时
+                  {s.stale} 个账号保活记录已超过一个执行周期
                 </Chip>
               )}
               {s.failing > 0 && (
@@ -91,85 +107,94 @@ export function KeepaliveBoard({
               )}
               {s.expiringSoon > 0 ? (
                 <Chip tone="warn" dot="dot-cool">
-                  {s.expiringSoon} 个账号 token 7 日内到期
+                  {s.expiringSoon} 个账号 Token 7 日内到期
                 </Chip>
               ) : (
-                <span>token 均 7 日以上</span>
+                <span>Token 均 7 日以上</span>
               )}
-              <span className="font-mono text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                 池最近保活：{s.lastAtMs == null ? '无' : formatTime(new Date(s.lastAtMs).toISOString())}
               </span>
             </div>
-            <table className="card-table table-fixed w-full border-collapse text-[13px]">
-              <thead>
-                <tr>
-                  <th className="th col-account">账号</th>
-                  <th className="th">最近选用</th>
-                  <th className="th">最近签到</th>
-                  <th className="th">签到结果</th>
-                  <th className="th">最近保活</th>
-                  <th className="th">保活结果</th>
-                  <th className="th">token 到期</th>
-                </tr>
-              </thead>
-              <tbody>
-                {members.map((a) => {
-                  const k = keepaliveOf(a);
-                  return (
-                    <tr key={a.id} className="row-hover">
-                      <td className="td font-mono text-[12px] truncate" data-label="账号">
-                        {a.label || a.id}
-                      </td>
-                      <td className="td font-mono text-[12px]" data-label="最近选用">
-                        {formatTime(a.lastPickedAt)}
-                      </td>
-                      <td className="td font-mono text-[12px]" data-label="最近签到">
-                        {formatTime(a.lastCheckinAt)}
-                      </td>
-                      <td className="td font-mono text-[12px]" data-label="签到结果">
-                        {a.lastCheckinResult || '—'}
-                      </td>
-                      <td className="td font-mono text-[12px]" data-label="最近保活">
-                        {a.lastKeepaliveAt ? formatTime(a.lastKeepaliveAt) : '—'}
-                      </td>
-                      <td
-                        className="td font-mono text-[12px] truncate"
-                        title={a.lastKeepaliveResult || undefined}
-                        data-label="保活结果"
-                      >
-                        {a.lastKeepaliveResult || '—'}
-                      </td>
-                      <td
-                        className="td font-mono text-[12px] truncate"
-                        data-label="token 到期"
-                        title={
-                          k.expiresMs == null
-                            ? k.label
-                            : `登录 Token 到期：${formatTime(a.expiredAt)}`
-                        }
-                      >
-                        {k.expiresMs == null ? k.label : `${formatDate(a.expiredAt)} ${k.label}`}
+            {/* 表格自带横向滚动兜底：外层 .overflow-hidden 会在窄容器裁掉最后一列 */}
+            <div className="overflow-x-auto">
+              <table className="data-table table-fixed">
+                <thead>
+                  <tr>
+                    <th className="th col-account">账号</th>
+                    <th className="th">最近选用</th>
+                    <th className="th">最近签到</th>
+                    <th className="th">签到结果</th>
+                    <th className="th">最近保活</th>
+                    <th className="th">保活结果</th>
+                    <th className="th">Token 到期</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {members.map((a) => {
+                    const k = keepaliveOf(a);
+                    return (
+                      <tr key={a.id} className="row-hover">
+                        <td className="td font-mono text-aux truncate">
+                          {a.label || a.id}
+                        </td>
+                        <td className="td font-mono text-aux">
+                          {formatTime(a.lastPickedAt)}
+                        </td>
+                        <td className="td font-mono text-aux">
+                          {formatTime(a.lastCheckinAt)}
+                        </td>
+                        <td className="td font-mono text-aux">
+                          {a.lastCheckinResult || '—'}
+                        </td>
+                        <td className="td font-mono text-aux">
+                          {a.lastKeepaliveAt ? formatTime(a.lastKeepaliveAt) : '—'}
+                        </td>
+                        <td
+                          className="td font-mono text-aux truncate"
+                          title={a.lastKeepaliveResult || undefined}
+                        >
+                          {a.lastKeepaliveResult || '—'}
+                        </td>
+                        <td
+                          className="td font-mono text-aux truncate"
+                          title={
+                            k.expiresMs == null
+                              ? k.label
+                              : `登录 Token 到期：${formatTime(a.expiredAt)}`
+                          }
+                        >
+                          {k.expiresMs == null ? k.label : `${formatDate(a.expiredAt)} ${k.label}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {members.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="td" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        当前筛选下该平台没有账号
                       </td>
                     </tr>
-                  );
-                })}
-                {members.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="td" style={{ color: 'var(--rg-text-tertiary)' }}>
-                      当前筛选下该池没有可显示的行（上方汇总仍为整池口径）。
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         );
       })}
-      <p className="text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
-        「最近保活」只在定时保活扫描（每日 22:00 兜底轮 + 每 15 分钟临期扫描）执行时写入。
-        未纳入扫描的平台（WorkBuddy / Qoder / ZCode）的空记录不代表故障 —— 它们的 token
-        仍会在转发请求与每日签到前按需续期，只是不留保活痕迹。
+      <p className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        「最近保活」只在定时保活扫描执行时写入（扫描周期见「运维 → 定时任务」）。
+        {
+          // 不写死平台名：纳入与否读渠道能力位（tokenRefresh || oauthLogin），
+          // 与 scheduler.runKeepalive 的账号过滤同源。此前这里硬写了
+          // 「WorkBuddy / Qoder / ZCode」三个平台名说它们「未纳入扫描」，
+          // 而 WorkBuddy 的 tokenRefresh 早在 2026-10-18 就开了 —— 文案与实现相反。
+        }
+        {unscannedNames.length > 0
+          ? `未纳入扫描的平台（${unscannedNames.join(' / ')}）的空记录不代表故障 —— 它们的 Token 仍会在转发请求与每日签到前按需续期，只是不留保活痕迹。`
+          : '所有已接入平台都纳入了定时保活扫描；空记录表示该池尚未执行过一轮。'}
       </p>
+      </div>
     </div>
   );
 }

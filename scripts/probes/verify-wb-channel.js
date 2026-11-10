@@ -45,14 +45,25 @@ ok('无 X-Enterprise-Id 空值', () => assert.strictEqual(chat['X-Enterprise-Id'
 ok('绝无 X-Refresh-Token', () => assert.strictEqual(chat['X-Refresh-Token'], undefined));
 
 console.log('[3] 会话键可复用');
-const a = wbAuth.chatHeaders({ accessToken: 't', uid: 'u', region: 'cn' }, { conversationId: 'conv-1', requestId: 'req-1' });
+const a = wbAuth.chatHeaders({ accessToken: 't', uid: 'u', region: 'cn' }, { conversationId: 'conv-1', requestId: 'req-1', acpConnectionId: 'acp-1' });
 ok('传入的 conversationId 被采用', () => assert.strictEqual(a['X-Conversation-ID'], 'conv-1'));
-ok('传入的 requestId 被采用', () => assert.strictEqual(a['X-Request-ID'], 'req-1'));
+ok('传入的 requestId 落到 X-Conversation-Request-ID', () => assert.strictEqual(a['X-Conversation-Request-ID'], 'req-1'));
+ok('传入的 acpConnectionId 被采用', () => assert.strictEqual(a['acp-connection-id'], 'acp-1'));
+ok('X-Request-ID 与 Message-ID 同值（去连字符 UUID）', () => {
+  assert.strictEqual(a['X-Request-ID'], a['X-Conversation-Message-ID']);
+  assert.ok(/^[0-9a-f]{32}$/.test(a['X-Request-ID']), a['X-Request-ID']);
+});
 ok('两次调用默认值不同', () => {
   const x = wbAuth.chatHeaders({ accessToken: 't', uid: 'u', region: 'cn' });
   const y = wbAuth.chatHeaders({ accessToken: 't', uid: 'u', region: 'cn' });
   assert.notStrictEqual(x['X-Conversation-ID'], y['X-Conversation-ID']);
 });
+
+console.log('[3b] 5.9.3 新增头（cli 2.165.0 取证）');
+ok('带 acp-connection-id（UUID 形态）', () => assert.ok(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(chat['acp-connection-id']), chat['acp-connection-id']));
+ok('X-Agent-Runtime = local-agent', () => assert.strictEqual(chat['X-Agent-Runtime'], 'local-agent'));
+ok('X-Agent-Type = main', () => assert.strictEqual(chat['X-Agent-Type'], 'main'));
+ok('X-Agent-Purpose = conversation', () => assert.strictEqual(chat['X-Agent-Purpose'], 'conversation'));
 
 console.log('[4] billing 面仍是 web 身份');
 const web = wbAuth.authHeaders({ accessToken: 'tok', uid: 'u1', region: 'cn' });

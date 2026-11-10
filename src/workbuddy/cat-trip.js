@@ -97,8 +97,13 @@ function jsonHeaders(info) {
   return growthHeaders(info);
 }
 
-async function doReq(path, info, { method = 'GET', body } = {}) {
-  const resp = await fetch(GROWTH_BASE + path, {
+/**
+ * 底层请求。`absolute:true` 时 path 直接当完整 URL 用（v2 任务中心不在 GROWTH_BASE 下，
+ * 见 fetchTasksV2），其余情况拼在 GROWTH_BASE 之后。
+ */
+async function doReq(path, info, { method = 'GET', body, absolute = false } = {}) {
+  const url = absolute ? path : GROWTH_BASE + path;
+  const resp = await fetch(url, {
     method,
     headers: jsonHeaders(info),
     body: body != null ? JSON.stringify(body) : undefined,
@@ -279,7 +284,12 @@ async function openBuddyBox(info, count = 1, opts = {}) {
 
 // 任务
 
-/** 任务列表（只读）。status: available|accepted|completed|claimed… */
+/** 任务列表（只读）。status: available|accepted|completed|claimed…
+ *
+ * ⚠️ 这是 **v1** 端点（`/activity/growth/tasks`），只回 5 个新手徽章任务，
+ * 字段仅 {code,title,status,level_name}；accept/claim 写链路依赖它的 `code`，
+ * 因此**不要改这个函数**。要看「任务中心」的完整进度（accept_status/progress/
+ * reward_credit/valid_end），用下方 fetchTasksV2。 */
 async function fetchTasks(info) {
   const r = await doReq(PATH_TASKS, info, { method: 'GET' });
   if (!r.ok) return { ok: false, reason: r.reason, code: r.code };
@@ -290,6 +300,56 @@ async function fetchTasks(info) {
     levelName: t.level_name || null,
   })) : [];
   return { ok: true, tasks };
+}
+
+/**
+ * 任务中心完整任务列表（只读，**v2**）。
+ *
+ * 与 v1 的区别（2026-10-30 探针实证，见 scripts/probes/probe-growth-plan-v2.js）：
+ *   v1 `/activity/growth/tasks`         → 5 个新手徽章，无进度/无奖励字段
+ *   v2 `/v2/activity/growth/tasks`      → 任务中心页真实数据，带 accept_status /
+ *                                          progress{current,target} / reward_credit /
+ *                                          reward_energy / valid_end / description
+ *
+ * 返回**上游原始形状**（不做归一），归一化交给调用方：
+ * 成长每日汇总需要 task_code/reward_*，而 accept/claim 仍走 v1 的 code ——
+ * 两套字段名不同，在各自消费点处理才不会串。
+ *
+ * v2 不可用（老客户端/灰度未开）时回退 v1，并把 v2 的失败原因带出供上层标注。
+ */
+async function fetchTasksV2(info) {
+  const r = await doReq(GROWTH_HOST + '/v2/activity/growth/tasks', info, { method: 'GET', absolute: true });
+  if (!r.ok) {
+    return { ok: false, reason: r.reason, code: r.code, http: r.http, source: 'v2' };
+  }
+  const tasks = Array.isArray(r.data.tasks) ? r.data.tasks : [];
+  return { ok: true, tasks, source: 'v2' };
+}
+
+/**
+ * 任务中心任务（优先 v2，失败回退 v1 并标记 source）。
+ * 供只读汇总使用；写链路（accept/claim）仍用 fetchTasks 的 v1 code。
+ */
+async function fetchTasksForProgress(info) {
+  const v2 = await fetchTasksV2(info).catch((e) => ({ ok: false, reason: e.message, source: 'v2' }));
+  if (v2.ok) return v2;
+  const v1 = await fetchTasks(info).catch((e) => ({ ok: false, reason: e.message, source: 'v1' }));
+  if (v1.ok) {
+    // v1 字段与 v2 不同名：把 code/status 映射成 progress 需要的键，
+    // 让归一化只有一套读法（v1 无进度与奖励，对应字段缺省为 0/null，不伪造）。
+    const tasks = v1.tasks.map((t) => ({
+      task_code: t.code,
+      title: t.title,
+      accept_status: t.status,
+      description: null,
+      valid_end: null,
+      reward_credit: null,
+      reward_energy: null,
+      progress: null,
+    }));
+    return { ok: true, tasks, source: 'v1', v2Error: v2.reason || null };
+  }
+  return { ok: false, reason: v2.reason || v1.reason, source: 'none', v2Error: v2.reason || null };
 }
 
 /** 批量接单（写；{task_codes:[], client_token}）。 */
@@ -465,6 +525,8 @@ module.exports = {
   fetchBuddyQuota,
   openBuddyBox,
   fetchTasks,
+  fetchTasksV2,
+  fetchTasksForProgress,
   acceptTasks,
   claimTask,
   fetchStreak,

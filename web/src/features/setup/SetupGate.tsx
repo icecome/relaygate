@@ -67,7 +67,11 @@ export default function SetupGate({ onReady }: Props) {
       setPhase('ready');
       onReady();
     } catch (e) {
-      setErr(e instanceof ApiError && e.status === 401 ? '登录密钥无效或已被重置' : (e as Error).message);
+      setErr(
+        e instanceof ApiError && e.status === 401
+          ? '登录密钥无效或已被重置，请向管理员索取新的密钥。'
+          : '无法连接服务端，请检查地址与网络后重试。',
+      );
     } finally {
       setVerifying(false);
     }
@@ -102,7 +106,7 @@ export default function SetupGate({ onReady }: Props) {
   if (phase === 'loading') {
     return (
       <div
-        className="min-h-screen flex items-center justify-center text-[13px] bg-white"
+        className="min-h-screen flex items-center justify-center text-[13px] bg-[var(--rg-bg-base)]"
         style={{ color: 'var(--rg-text-secondary)' }}
       >
         正在检查登录状态…
@@ -113,7 +117,7 @@ export default function SetupGate({ onReady }: Props) {
   if (phase === 'ready') return null;
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-white">
+    <div className="min-h-screen flex items-center justify-center p-4 bg-[var(--rg-bg-base)]">
       <div className="panel w-[min(440px,100%)]">
         <div className="panel-body">
           <div className="flex items-center gap-2.5 mb-5">
@@ -133,8 +137,8 @@ export default function SetupGate({ onReady }: Props) {
               </svg>
             </div>
             <div>
-              <div className="text-[16px] font-semibold leading-tight">RelayGate</div>
-              <div className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-block leading-tight">RelayGate</div>
+              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
                 管理面板 · {hasLoginKey ? '登录' : '首次使用'}
               </div>
             </div>
@@ -143,44 +147,39 @@ export default function SetupGate({ onReady }: Props) {
           {!fresh && (
             <>
               {hasLoginKey ? (
-                <>
+                <div className="flex flex-col gap-3">
                   <Field
                     label="登录密钥"
                     value={inputKey}
                     onChange={(e) => setInputKey(e.target.value)}
                     placeholder="粘贴登录密钥"
-                    aria-label="登录密钥"
                   />
-                  <div className="h-4" />
                   <Button variant="primary" className="w-full" disabled={verifying} onClick={doVerify}>
                     {verifying ? '校验中…' : '进入面板'}
                   </Button>
-                  <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--rg-border)' }}>
-                    <p className="text-[12px]" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <div className="mt-1 pt-4 rule-top">
+                    <p className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
                       没有可用的登录密钥？在服务器本机执行
                     </p>
-                    <code className="block mt-1 font-mono text-[11px]" style={{ color: 'var(--rg-text-primary)' }}>
+                    <code className="block mt-1 font-mono text-aux" style={{ color: 'var(--rg-text-primary)' }}>
                       node scripts/login-key.js reset
                     </code>
-                    <p className="mt-2 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                       重置会立即使旧登录密钥失效，需要重新分发；该命令只能在服务器本机执行。
                     </p>
                   </div>
-                </>
+                </div>
               ) : (
-                <>
-                  <p className="text-[13px] mb-4 leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
-                    库中尚未配置登录密钥，无法打开管理面板。
-                    请创建首把登录密钥，或粘贴已有的登录密钥。
+                <div className="flex flex-col gap-3">
+                  <p className="text-[13px] leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
+                    库中尚未配置登录密钥，无法打开管理面板。请创建首把登录密钥，或粘贴已有的登录密钥。
                   </p>
                   <Field
                     label="已有登录密钥（可选）"
                     value={inputKey}
                     onChange={(e) => setInputKey(e.target.value)}
                     placeholder="粘贴登录密钥"
-                    aria-label="已有登录密钥"
                   />
-                  <div className="h-3" />
                   <Button
                     variant="primary"
                     className="w-full"
@@ -189,8 +188,8 @@ export default function SetupGate({ onReady }: Props) {
                   >
                     {verifying ? '校验中…' : '使用该密钥进入'}
                   </Button>
-                  <div className="mt-4 pt-4" style={{ borderTop: '1px solid var(--rg-border)' }}>
-                    <p className="text-[12px] mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <div className="mt-1 pt-4 rule-top">
+                    <p className="text-aux mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
                       确认没有任何登录密钥时，创建一把新的
                     </p>
                     <Field
@@ -208,18 +207,18 @@ export default function SetupGate({ onReady }: Props) {
                     >
                       {phase === 'creating' ? '创建中…' : '创建登录密钥'}
                     </Button>
-                    <p className="mt-2 text-[11px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                       创建接口仅接受服务器本机来源的请求；创建后明文仅显示一次。
                     </p>
                   </div>
-                </>
+                </div>
               )}
             </>
           )}
 
           {fresh && (
             <>
-              <h1 className="text-[16px] font-semibold mb-1">登录密钥已生成</h1>
+              <h1 className="text-block mb-1">登录密钥已生成</h1>
               <p className="text-[13px] mb-4" style={{ color: 'var(--rg-text-secondary)' }}>
                 请立即复制并妥善保存。离开本页后将无法再次查看完整明文。
               </p>
@@ -247,7 +246,7 @@ export default function SetupGate({ onReady }: Props) {
           )}
 
           {err && (
-            <div className="text-[12px] mt-3" style={{ color: 'var(--rg-state-error)' }} role="alert">
+            <div className="text-aux mt-3" style={{ color: 'var(--rg-state-error)' }} role="alert">
               {err}
             </div>
           )}

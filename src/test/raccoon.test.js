@@ -1177,11 +1177,15 @@ async function run() {
     const asAll = modelAccess.canUseModel('all', 'sn-glm-5-3');
     assert.strictEqual(asAll.ok, true, '通用密钥可调');
     // 不误伤现有平台。
-    // ⚠️ 选模型要小心：`glm-4.6` 是 **WorkBuddy 独有**模型，用 trae 密钥调它本来
-    // 就该被拒 —— 拿它当「Trae 模型放行」的样本会得到一个假失败。
+    // 样本选择（2026-11-07 实测修正）：`glm-4.6` 曾被当作「WorkBuddy 独有」，
+    // 但上游取证（scripts/tmp-probe-trae.js + get_detail_param 全量条目）显示
+    // Trae 同样服务它（上游目录里是 hidden 项，llm_utils_chat 实测返回正常）。
+    // 归属判定改成「双平台事实源」后它不再算 WB 独有，故越界样本换成 `hy3`：
+    // WB 目录有、Trae 上游明确 `param is invalid` 且不在 get_detail_param 里。
     assert.strictEqual(modelAccess.canUseModel('trae', 'doubao-1-6').ok, true, 'Trae 模型不受影响');
     assert.strictEqual(modelAccess.canUseModel('workbuddy', 'glm-4.6').ok, true, 'WorkBuddy 裸 id 不受影响');
-    assert.strictEqual(modelAccess.canUseModel('trae', 'glm-4.6').ok, false, 'glm-4.6 是 WorkBuddy 独有，trae 密钥应被拒');
+    assert.strictEqual(modelAccess.canUseModel('trae', 'hy3').ok, false, 'hy3 是 WorkBuddy 独有，trae 密钥应被拒');
+    assert.strictEqual(modelAccess.canUseModel('trae', 'glm-4.6').ok, true, 'glm-4.6 两平台同名，trae 密钥可调（2026-11-07 误判修复）');
   });
 
   t('资源路径：Raccoon 模型走 model:raccoon/* 前缀', () => {

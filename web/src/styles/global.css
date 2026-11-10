@@ -51,21 +51,40 @@
   --rg-bg-secondary: #f5f5f5;
   --rg-bg-tertiary: #e5e5e5;
 
-  /* 语义文字 */
+  /*
+   * 语义文字
+   *
+   * 对比度约束（WCAG 2.1 AA，正常字号 4.5:1）：
+   *   - tertiary 用于 12px 辅助文字，可能落在 bg-base 与 bg-secondary 两种底上，
+   *     取 #6b6b6b（白底 5.33、灰底 4.89），原 #737373 在灰底只有 4.35，不达标；
+   *   - disabled 同时是 placeholder 的颜色，取 #707070（白底 4.95、灰底 4.54）。
+   *     真禁用控件本身不受对比度要求约束，但 placeholder 是可见提示，必须达标。
+   */
   --rg-text-primary: #171717;
   --rg-text-secondary: #404040;
-  --rg-text-tertiary: #737373;
-  --rg-text-disabled: #a1a1a1;
+  --rg-text-tertiary: #6b6b6b;
+  --rg-text-disabled: #707070;
   --rg-text-onbrand: #ffffff;
 
-  /* 语义状态：仅表达真实业务状态 */
-  --rg-state-success: #15a877;
+  /*
+   * 语义状态：仅表达真实业务状态
+   *
+   * 这四组色被 .pill-* / .note-* / .dot-* 同时用作「文字色」与「背景色」，
+   * 因此每个值必须同时在三块底上达到 4.5:1：纯白、自身 12% 淡底、--rg-bg-secondary。
+   * 实测（白 / 淡底 / 灰底）：
+   *   success #0f7d59  5.12 / 4.59 / 4.70
+   *   warning #a85800  5.17 / 4.57 / 4.74
+   *   error   #c23a30  5.33 / 4.55 / 4.89
+   *   info    #1f5fd6  5.73 / 4.93 / 5.25
+   * 原值 #15a877/#e27900/#e8463a 在白底只有 3.04/3.01/3.39，11px 的 pill 文字读不清。
+   */
+  --rg-state-success: #0f7d59;
   --rg-state-success-surface: rgba(64, 176, 139, 0.12);
-  --rg-state-warning: #e27900;
+  --rg-state-warning: #a85800;
   --rg-state-warning-surface: rgba(226, 121, 0, 0.12);
-  --rg-state-error: #e8463a;
+  --rg-state-error: #c23a30;
   --rg-state-error-surface: rgba(232, 70, 58, 0.12);
-  --rg-state-info: #2f74ff;
+  --rg-state-info: #1f5fd6;
   --rg-state-info-surface: rgba(47, 116, 255, 0.12);
 
   /* 描边 */
@@ -116,10 +135,14 @@
 /* 组件层 */
 
 @layer components {
-  /* 字体族 */
-  .font-mono {
-    font-family: var(--rg-font-mono);
-  }
+  /*
+   * 字体族
+   *
+   * 这里刻意不定义 .font-mono：tailwind.config.ts 的 fontFamily.mono 已产出同名
+   * utilities 类，且 utilities 层排在 components 之后，重复定义会让本文件的版本
+   * 永远被覆盖——写成 var(--rg-font-mono) 也只是看起来生效而已。
+   * 令牌的唯一入口在 tailwind.config.ts。
+   */
   .font-metric {
     font-family: var(--rg-font-metric);
   }
@@ -129,7 +152,10 @@
    *   page   22px  页面标题（每页唯一）
    *   block  16px  面板标题
    *   read   24px  关键读数
+   *   hero   28px  单页主读数（仅总览的额度与消耗）
    *   aux    12px  辅助信息 / 标签 / 时间戳
+   *   unit   11px  数字后的单位后缀（tok、Token、%）
+   * 11px 只允许出现在 .text-unit：正文辅助级一律 12px，再小会掉出可读区间。
    */
   .text-page {
     @apply text-[22px] leading-[1.3] font-semibold tracking-tight;
@@ -142,14 +168,24 @@
     font-family: var(--rg-font-metric);
     font-variant-numeric: tabular-nums;
   }
+  .text-hero {
+    @apply text-[28px] leading-tight;
+    font-family: var(--rg-font-metric);
+    font-variant-numeric: tabular-nums;
+  }
   .text-aux {
     @apply text-[12px] leading-[1.5];
   }
+  .text-unit {
+    @apply text-[11px] leading-none;
+    color: var(--rg-text-tertiary);
+  }
 
   /*
-   * 布局外壳：移动端由 @media 接管
-   * 桌面（≥768px）下侧栏常驻；窄屏下 .layout-aside 变抽屉、
-   * .layout-menu-btn 出现、.layout-nav-scrim 起遮罩作用。
+   * 布局外壳
+   *
+   * 本面板是桌面常驻运维界面，不做移动端抽屉：侧栏固定 216px，
+   * 窄于表格最小可读宽度时由表格自身横向滚动兜底（见 .panel-body-flush）。
    */
   .layout-aside {
     width: 216px;
@@ -157,28 +193,10 @@
     display: flex;
     flex-direction: column;
   }
-  .layout-menu-btn {
-    display: none;
-    position: fixed;
-    top: 10px;
-    left: 12px;
-    z-index: 60;
-    width: 44px;
-    height: 44px;
-    align-items: center;
-    justify-content: center;
-    border-radius: 8px;
-    border: 1px solid var(--rg-border-strong);
-    background: var(--rg-bg-base);
-    color: var(--rg-text-primary);
-    cursor: pointer;
-  }
-  .layout-nav-scrim {
-    display: none;
-    position: fixed;
-    inset: 0;
-    z-index: 40;
-    background: rgba(0, 0, 0, 0.3);
+
+  /* 侧栏导航项：悬停走 CSS，避免内联 style 与 NavLink 的状态回调互相覆盖 */
+  .nav-item:hover:not([aria-current='page']) {
+    background: var(--rg-bg-tertiary);
   }
 
   /* 按钮 */
@@ -227,6 +245,7 @@
   .field {
     @apply h-8 px-2.5 rounded-md border text-[13px] min-w-0;
     border-color: var(--rg-border-stronger);
+    background: var(--rg-bg-base);
     color: var(--rg-text-primary);
   }
   .field::placeholder {
@@ -235,6 +254,24 @@
   .field:focus {
     border-color: var(--rg-brand-600);
     box-shadow: 0 0 0 2px var(--rg-brand-100);
+  }
+  /* 多行输入：与 .field 同一套描边与焦点处理，只放大内边距 */
+  .textarea {
+    @apply w-full min-w-0 rounded-md border p-2.5 font-mono text-[12px];
+    border-color: var(--rg-border-stronger);
+    background: var(--rg-bg-base);
+    color: var(--rg-text-primary);
+  }
+  .textarea::placeholder {
+    color: var(--rg-text-disabled);
+  }
+  .textarea:focus {
+    border-color: var(--rg-brand-600);
+    box-shadow: 0 0 0 2px var(--rg-brand-100);
+  }
+  /* 等宽输入：调度里大量「令牌扫描分钟」「时分」这类数值字段 */
+  .field-mono {
+    @apply field font-mono;
   }
 
   /* 步进器：表格内嵌的紧凑数值控件 */
@@ -283,17 +320,77 @@
     @apply p-0;
   }
   /*
-   * 表格贴边铺满时的横向滚动兜底。
-   * .table-fixed 的列宽是显式的，视口窄于列宽总和时表格会溢出容器；
-   * 这里让它横向滚动，而不是把最右侧的「操作」列裁掉。
+   * 宽表格的横向滚动容器。
+   *
+   * ⚠️ 不要把 overflow 直接加在 .panel-body-flush 上。原实现是
+   * `.panel-body-flush:has(> table) { overflow-x: auto }`，而 CSS 规范规定
+   * 「一轴 auto、另一轴 visible」时 visible 会被算成 auto —— 于是面板体
+   * 同时变成了纵向滚动容器，和外层 main 的 overflow-y:auto 叠成两条纵向
+   * 滚动条（实测截图可见）。
+   *
+   * 这里显式把纵向设为 hidden：横向能滚、纵向不抢滚动条。
+   * 代价是超出的纵向内容会被裁掉，所以表格必须完整落在容器内（行高固定）。
+   * 菜单不受影响 —— MenuButton 走 portal 渲染到 body，不经过任何 overflow 祖先。
    */
-  .panel-body-flush:has(> table) {
+  .table-wrap {
     overflow-x: auto;
+    overflow-y: hidden;
   }
   .panel-foot {
     @apply px-4 py-2.5 border-t text-aux;
     border-color: var(--rg-border);
     background: var(--rg-bg-secondary);
+    color: var(--rg-text-secondary);
+  }
+  .panel-foot {
+    @apply px-4 py-2.5 border-t text-aux;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-secondary);
+    color: var(--rg-text-secondary);
+  }
+
+  /*
+   * 通用容器。此前同一套骨架在 features 下逐字重复了十几遍：
+   *   .subcard  一级卡片容器（13 处手写）
+   *   .subcard-flat  同上但保持白底，用于嵌套在灰底容器里的卡片
+   *   .code-block  等宽原文块（6 处手写）
+   *   .rule-top  顶部内分隔线（4 处手写）
+   */
+  .subcard {
+    @apply rounded-lg border px-3.5 py-3 min-w-0;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-base);
+  }
+  .subcard-soft {
+    @apply rounded-lg border px-3.5 py-3 min-w-0;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-secondary);
+  }
+  .subcard-flush {
+    @apply rounded-lg border p-3 min-w-0;
+    border-color: var(--rg-border);
+  }
+  /* 卡头：标题 + 一条占满剩余宽度的细线 */
+  .card-head {
+    @apply flex items-center gap-2;
+  }
+  .card-head-line {
+    @apply h-px flex-1;
+    background: var(--rg-border);
+  }
+  .rule-top {
+    border-top: 1px solid var(--rg-border);
+  }
+  .code-block {
+    @apply rounded-md border p-3 font-mono text-[12px] leading-[1.6] whitespace-pre-wrap break-all;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-secondary);
+    color: var(--rg-text-primary);
+  }
+  /* 紧凑键值表：标签列 64px，用于 subcard 内的多字段罗列 */
+  .kv-compact {
+    @apply grid gap-2 items-baseline py-[5px];
+    grid-template-columns: 64px minmax(0, 1fr);
   }
 
   /* 指标条 */
@@ -304,16 +401,98 @@
     background: var(--rg-border);
     border-color: var(--rg-border);
   }
+  /*
+   * 指标少于 4 项时四列会各留一片空白，改成按实际项数铺满。
+   * 用 data-cols 由组件传入，避免 nth-child 推断带来的脆性。
+   */
+  .metric-grid[data-cols='1'] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .metric-grid[data-cols='2'] {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .metric-grid[data-cols='3'] {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
   .metric-cell {
     @apply p-4;
     background: var(--rg-bg-base);
+  }
+  /*
+   * 可展开指标卡（总览页）
+   *
+   * 与 .metric-cell 的区别：这里每张卡自带展开区，展开区要在卡下方延展，
+   * 而不是像 metric-grid 那样四项等高。所以用独立容器 + grid auto-fit，
+   * 展开时只有那一张卡变高（align-items: start）。
+   */
+  .metric-cards {
+    @apply grid gap-4;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    align-items: start;
+  }
+  .metric-card {
+    @apply rounded-lg border min-w-0 overflow-hidden;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-base);
+  }
+  .metric-card-head {
+    @apply flex flex-col px-4 py-3 text-left w-full;
+    background: transparent;
+    border: 0;
+  }
+  .metric-card-head.is-clickable {
+    @apply cursor-pointer transition-colors;
+  }
+  .metric-card-head.is-clickable:hover {
+    background: var(--rg-bg-secondary);
+  }
+  .metric-card-title {
+    @apply flex items-center gap-2 min-w-0;
+  }
+  /* 展开角标固定在标题行最右，与卡片右边距对齐 */
+  .metric-card-caret {
+    @apply ml-auto shrink-0 text-center text-[14px] select-none w-5;
+    color: var(--rg-text-tertiary);
+  }
+  .metric-card-body {
+    @apply px-4 pb-3;
+    border-top: 1px solid var(--rg-border);
+    background: var(--rg-bg-secondary);
+  }
+  /* 展开区里的紧凑两列表：名称 + 金额 */
+  .metric-kv {
+    @apply flex flex-col;
+  }
+  .metric-kv-row {
+    @apply grid items-baseline gap-2 py-1.5 text-aux;
+    grid-template-columns: minmax(0, 1fr) auto;
+    border-bottom: 1px solid var(--rg-border);
+  }
+  .metric-kv-row:last-child {
+    border-bottom: 0;
+  }
+  .metric-kv-row > .k {
+    @apply truncate;
+    color: var(--rg-text-secondary);
+  }
+  .metric-kv-row > .v {
+    @apply font-mono tabular-nums text-right whitespace-nowrap;
+    color: var(--rg-text-primary);
+  }
+  .metric-kv-row.is-total {
+    @apply pt-2 font-semibold;
+    border-top: 1px solid var(--rg-border-stronger);
+  }
+  .metric-kv-row.is-muted > .k,
+  .metric-kv-row.is-muted > .v {
+    color: var(--rg-text-tertiary);
   }
   .metric-key {
     @apply text-[12px] leading-[18px];
     color: var(--rg-text-secondary);
   }
   .metric-delta {
-    @apply text-[11px] leading-4 mt-1;
+    @apply text-[12px] leading-4 mt-1;
     color: var(--rg-text-tertiary);
   }
   /* 区块小标题（面板内分组标题、接入说明标题等） */
@@ -374,6 +553,7 @@
   .seg-item {
     @apply inline-flex items-center h-[30px] px-3 text-[12px] cursor-pointer whitespace-nowrap
       transition-colors border-r;
+    border-color: var(--rg-border-strong);
     background: var(--rg-bg-base);
     color: var(--rg-text-secondary);
   }
@@ -411,37 +591,61 @@
 
   /* 列宽：仅用于 .table-fixed 表格，数值取自各表最长内容 + 换行余量 */
   .col-toggle {
-    width: 64px;
+    width: 52px;
   }
   .col-account {
     width: 176px;
   }
   .col-state {
-    width: 88px;
+    width: 76px;
   }
   /* 容得下 "WorkBuddy" 不折行（最长平台名） */
   .col-source {
-    width: 104px;
+    width: 84px;
   }
-  /* 「N 个可用」按钮，比原先的裸数字略宽 */
+  /*
+   * 权益列：跨平台统一渲染 `12 个可用包 · 21 天后` / `0 Token · 长期` /
+   * `赠送 1,621 · 长期`。取 156px 是「4 个可用包 · 21 天后」不折行的下限。
+   * 此前是「权益包」92px + 「权益到期」100px 两列，而后者实测 23 行全为「—」
+   * （worstExpiry 只在 ≤7 天返回，实际最近到期 8~22 天），等于白占 100px。
+   */
   .col-pack {
-    width: 92px;
+    width: 156px;
   }
   .col-expiry {
-    width: 100px;
+    width: 96px;
   }
   .col-token {
-    width: 124px;
+    width: 96px;
   }
   .col-balance {
-    width: 116px;
+    width: 104px;
   }
   .col-cool {
-    width: 92px;
+    width: 60px;
   }
-  /* 三个行内按钮（签到/查余额/删除）+ 间距，不折行所需宽度 */
+  /*
+   * 操作列：主按钮 2 个（签到 + 查余额 ≈ 112px）+ ⋯（26px）+ 间隙，
+   * 取 212px 让它们稳定在同一条基线上。
+   *
+   * 关键约束：单元格内**不换行**（.td-actions 的 flex-wrap: nowrap）。
+   * 此前是 200px + flex-wrap，实测 23 行里 21 行折成两行，
+   * td 的 40px 行高变成 72px，整表虚高 ≈670px。宽度不够时正确做法是
+   * 把次要动作移进菜单，而不是让每一行自己决定要不要换行。
+   *
+   * ⚠️ 固定列合计必须 ≤ 1100px（=1366 窗口 − 216 侧栏 − 48 内容内边距 − 余量），
+   * 否则 1366 及以下的窗口会常驻横向滚动条。当前合计 848px，账号列在
+   * 1366 下有 254px、1280 下有 168px，都够用。
+   */
   .col-actions {
-    width: 208px;
+    width: 212px;
+  }
+  .td-actions {
+    @apply flex items-center justify-end gap-1.5 flex-nowrap;
+  }
+  /* 表格里的等宽文本格：.td 已定 13px，这里只降一档并换字体 */
+  .td-mono {
+    @apply font-mono text-[12px];
   }
 
   .th {
@@ -449,6 +653,14 @@
     color: var(--rg-text-secondary);
     background: var(--rg-bg-secondary);
     border-color: var(--rg-border);
+  }
+  /*
+   * 表格骨架：只负责铺满与合并边框，字号与描边由 .th/.td 提供。
+   * 不叫 .table —— Tailwind 自带 display:table 的 .table，同名会让规则来源
+   * 难以判断（两条声明都会命中同一个元素）。
+   */
+  .data-table {
+    @apply w-full border-collapse;
   }
   .td {
     @apply px-3 py-2.5 border-b align-middle text-[13px];
@@ -489,10 +701,12 @@
   }
   .kv dt {
     @apply py-2 border-b text-[12px];
+    border-color: var(--rg-border);
     color: var(--rg-text-tertiary);
   }
   .kv dd {
     @apply py-2 border-b m-0 break-words;
+    border-color: var(--rg-border);
     color: var(--rg-text-primary);
   }
   .kv dt:last-of-type,
@@ -573,6 +787,243 @@
     border-color: var(--rg-border);
   }
 
+  /*
+   * 平台接入条（ChannelRail）
+   *
+   * 一条横向 rail 替代原来的四列卡片网格。为什么用「一条」而不是「五张小卡」：
+   * 卡片网格是等高布局，行高被最高的卡通吃——实测 WorkBuddy 卡 ≈542px、
+   * ZCode 卡 ≈250px，同排卡片下方各留 290px 死白，渠道区合计吃掉
+   * 640–700px 首屏高度，凭据表在 1440×900 下首屏不可见。
+   *
+   * 分隔用 1px 的容器底色（gap: 1px + container background）而不是给每段
+   * 加边框：五段连成一条视觉整体，表达「这是一组平台」而不是「五张卡」。
+   */
+  .rail {
+    @apply flex items-stretch flex-wrap rounded-lg border;
+    gap: 1px;
+    background: var(--rg-border);
+    border-color: var(--rg-border);
+    /* 圆角裁切放在这里，而不是复用 .panel 的 overflow:hidden：
+       菜单已改 portal 渲染，裁剪不再影响它。 */
+    overflow: hidden;
+  }
+  .rail-item {
+    @apply flex items-center gap-2.5 px-3 py-2;
+    /*
+     * ⚠️ 这里必须是 min-width 而不是 min-width:0 + flex-basis:0。
+     *
+     * 原先写的是 `flex: 1 1 0%` + `min-w-0`：basis 为 0 ⇒ 任意宽度下
+     * 每段都能「装下」，于是 flex-wrap 永不触发，只是把 5 段一起压扁；
+     * 窄窗口实测 5 个平台塌成一条，只剩最左一段可见（用户截图即此现象）。
+     *
+     * 改成「基准 0 但 min-width 有下限」：宽度够时等分铺满，
+     * 不够时按 min-width 换行 —— 这才是 flex-wrap 该有的行为。
+     */
+    flex: 1 1 168px;
+    min-width: 168px;
+    background: var(--rg-bg-base);
+    /* 已接入 / 待接入用左侧 2px 竖条表达，不再占一枚 Chip */
+    border-left: 2px solid transparent;
+  }
+  .rail-item[data-connected='on'] {
+    border-left-color: var(--rg-state-success);
+  }
+  .rail-item[data-connected='off'] {
+    border-left-color: var(--rg-text-disabled);
+  }
+  .rail-badge {
+    @apply grid place-items-center w-6 h-6 rounded-md text-[12px] font-semibold shrink-0;
+    background: var(--rg-bg-secondary);
+    border: 1px solid var(--rg-border);
+  }
+  .rail-main {
+    /*
+     * min-width:0 让内部的 truncate 生效：没有它，长平台名会把
+     * flex 子项撑到内容宽度，min-width:168 的下限就被顶穿了。
+     */
+    @apply flex flex-col min-w-0 flex-1 overflow-hidden;
+  }
+  .rail-name {
+    @apply text-[13px] font-semibold leading-[1.3] truncate;
+    color: var(--rg-text-primary);
+  }
+  .rail-meta {
+    @apply text-aux truncate;
+    color: var(--rg-text-tertiary);
+  }
+  .rail-acts {
+    @apply flex items-center gap-1 shrink-0;
+  }
+  /* 尾段：只放「重新探测」，不参与等分，宽度按内容 */
+  .rail-tail {
+    @apply flex items-center px-2;
+    background: var(--rg-bg-base);
+  }
+
+  /* 页头统计条：把「账号数 / 额度 / 临期 / 待处理」压成一行，替代原来的散落 Chip */
+  .stat-strip {
+    @apply flex items-center flex-wrap gap-x-5 gap-y-1 px-4 py-2 rounded-lg border text-aux;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-secondary);
+    color: var(--rg-text-secondary);
+  }
+  .stat-strip strong {
+    @apply font-mono text-[13px] font-semibold tabular-nums;
+    color: var(--rg-text-primary);
+  }
+
+  /*
+   * 权益总览（EntitlementOverview）
+   *
+   * 每个平台一行，点击展开该平台的账号明细。列宽用 grid-template-columns
+   * 而不是 table：这里没有表头（每行自带平台名与单位），用 table 会强制
+   * 三行空表头，且展开行需要跨列。用 grid 的 minmax(0,1fr) 让「明细」列
+   * 吃掉剩余宽度，其余列按内容定宽。
+   */
+  /*
+   * 积分口径汇总行。
+   *
+   * 这三个数原在页面顶部 stat-strip，随权益总览上移一并搬到这里：
+   * 同一屏出现两处「可用积分」会让人以为其中一个算错了。
+   * 与 .stat-strip 的区别是它**没有外框**——它属于本面板的汇总区，
+   * 再加一层边框会与面板边界叠成双线。
+   */
+  .ent-rollup {
+    @apply flex items-center flex-wrap gap-x-5 gap-y-1 px-3 py-2 text-aux border-b;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-secondary);
+    color: var(--rg-text-secondary);
+  }
+  .ent-rollup strong {
+    @apply font-mono text-[13px] font-semibold tabular-nums;
+    color: var(--rg-text-primary);
+  }
+  .ent-rows {
+    @apply flex flex-col;
+  }
+  .ent-row {
+    border-bottom: 1px solid var(--rg-border);
+  }
+  .ent-row:last-child {
+    border-bottom: 0;
+  }
+  .ent-head {
+    @apply grid items-center gap-3 w-full px-3 py-2.5 text-left cursor-pointer transition-colors;
+    grid-template-columns: 88px 48px 96px minmax(0, 1fr) 88px 132px 24px;
+    background: transparent;
+    border: 0;
+    color: var(--rg-text-primary);
+  }
+  .ent-head:hover {
+    background: var(--rg-bg-secondary);
+  }
+  .ent-name {
+    @apply text-[13px] font-semibold truncate;
+  }
+  .ent-unit {
+    @apply text-aux;
+    color: var(--rg-text-tertiary);
+  }
+  .ent-amount {
+    @apply text-[14px] font-semibold text-right tabular-nums;
+    font-family: var(--rg-font-mono);
+  }
+  .ent-detail {
+    @apply text-aux truncate;
+    color: var(--rg-text-tertiary);
+  }
+  .ent-expiry {
+    @apply text-aux text-right whitespace-nowrap;
+  }
+  .ent-snap {
+    @apply text-aux truncate text-right;
+    color: var(--rg-text-tertiary);
+  }
+  .ent-caret {
+    @apply text-center text-[14px] select-none;
+    color: var(--rg-text-tertiary);
+  }
+  .ent-body {
+    @apply px-3 pb-3;
+    background: var(--rg-bg-secondary);
+  }
+  .ent-body .data-table {
+    background: var(--rg-bg-base);
+  }
+  .ent-body .th:first-child {
+    border-top-left-radius: 6px;
+  }
+  .ent-body .th:last-child {
+    border-top-right-radius: 6px;
+  }
+
+  /*
+   * 成长中心摘要条
+   *
+   * 收起态就是这一行（44px），零上游请求。原实现的 toggle 在页面工具栏、
+   * 内容在页面最底部，点了以后视口内毫无变化——那个「必须滚到底」的感受
+   * 就是从这里来的。
+   */
+  .growth-bar {
+    @apply flex items-center justify-between gap-3 flex-wrap px-4 py-2.5 border-b;
+    border-color: var(--rg-border);
+  }
+  .growth-bar-main {
+    @apply flex items-center flex-wrap gap-x-4 gap-y-1 text-aux min-w-0;
+    color: var(--rg-text-secondary);
+  }
+  .growth-bar-main strong {
+    @apply font-mono text-[13px] font-semibold tabular-nums;
+    color: var(--rg-text-primary);
+  }
+  .growth-bar-acts {
+    @apply flex items-center gap-2 shrink-0;
+  }
+  .growth-body {
+    @apply p-3;
+  }
+
+  /*
+   * 额度占比混合条（总览页卡面）
+   *
+   * 解决的问题：卡面只有「46,347 积分」一个绝对数，用户无法判断这算多还是算少，
+   * 也不知道哪个平台占大头。而「按平台分行」的明细是展开后才有的，卡面上
+   * 没有任何比例信息。
+   *
+   * 为什么做成一条而不是饼图/环形图：卡面可用高度只有约 60px（主读数 + 副文案
+   * 之后），环形图最小时也要 100px 以上，塞进去会把三张卡的高度拉开。
+   * 一条 4px 的堆叠条 + 下面一行 legend 能在同一高度内表达「谁占多少」。
+   *
+   * 为什么不沿用 --rg-chart-* 序列色：那套是给折线/柱状的多序列用的，
+   * 相邻色相差很小（brand-600 与 brand-300 同为蓝紫），堆叠成条后分不清边界。
+   * 这里改成「品牌色阶 + 中性灰阶」交替，且每段之间留 1px 间隙靠底色分隔。
+   */
+  .share-bar {
+    @apply flex w-full overflow-hidden rounded-xs;
+    height: 6px;
+    gap: 1px;
+    background: var(--rg-border);
+  }
+  .share-bar > i {
+    @apply block h-full;
+    min-width: 2px;
+  }
+  .share-legend {
+    @apply flex flex-wrap items-center gap-x-3 gap-y-1 mt-2 text-aux;
+    color: var(--rg-text-secondary);
+  }
+  .share-legend > span {
+    @apply inline-flex items-center gap-1.5;
+  }
+  .share-legend i {
+    @apply inline-block w-2 h-2 rounded-xs shrink-0;
+  }
+  /* 占比数字右对齐等宽，避免 9.8% / 100% 两种宽度让 legend 抖动 */
+  .share-legend b {
+    @apply font-mono font-medium tabular-nums;
+    color: var(--rg-text-primary);
+  }
+
   /* 弹窗动画 */
   @keyframes rg-pop {
     from {
@@ -598,88 +1049,5 @@
     animation-iteration-count: 1 !important;
     animation-delay: -0.01ms !important;
     scroll-behavior: auto !important;
-  }
-}
-
-/* 移动端适配（<768px）
-   布局策略：侧栏收纳为抽屉、表格降级为卡片、触控目标放大到 44px。
-   桌面端（≥768px）完全不受本块影响。 */
-
-@media (max-width: 767px) {
-  /* 抽屉侧栏 */
-  .layout-aside {
-    position: fixed;
-    inset: 0 auto 0 0;
-    width: 240px;
-    z-index: 50;
-    transform: translateX(-100%);
-    transition: transform 0.18s ease-out;
-    box-shadow: 0 0 24px rgba(0, 0, 0, 0.12);
-  }
-  .layout-aside-open {
-    transform: translateX(0);
-  }
-  .layout-menu-btn {
-    display: inline-flex;
-  }
-  .layout-nav-scrim {
-    display: block;
-  }
-
-  /* 主区与触控 */
-  main > div {
-    padding: 12px !important;
-  }
-  .btn-sm {
-    min-height: 44px;
-    min-width: 44px;
-  }
-  .btn-danger {
-    border-color: var(--rg-state-error);
-    border-width: 1.5px;
-  }
-
-  /* 表格卡片化：thead 隐藏，tr 成卡，td 变「label: value」行 */
-  .card-table thead {
-    display: none;
-  }
-  .card-table tr {
-    display: block;
-    border: 1px solid var(--rg-border);
-    border-radius: 8px;
-    padding: 8px 10px;
-    margin-bottom: 8px;
-    background: var(--rg-bg-base);
-  }
-  .card-table td {
-    display: flex;
-    align-items: baseline;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 3px 0;
-  }
-  .card-table td::before {
-    content: attr(data-label);
-    color: var(--rg-text-tertiary);
-    flex-shrink: 0;
-    font-size: 12px;
-  }
-  /* 操作列不显示「操作:」前缀 */
-  .card-table td.cell-act::before,
-  .card-table td.cell-num-act::before {
-    content: none;
-  }
-  /* 单元格内的多行内容（账号名 + id）保持块状 */
-  .card-table td > div {
-    min-width: 0;
-  }
-}
-
-@media (min-width: 768px) {
-  .layout-menu-btn {
-    display: none;
-  }
-  .layout-nav-scrim {
-    display: none;
   }
 }

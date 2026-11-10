@@ -153,13 +153,13 @@ export function ImportWbDialog({ open, onClose, onImported }: {
           <dd>停用（启用后才参与转发调度）</dd>
         </dl>
         {imported.needVerify && (
-          <div className="mt-3">
-            <Note tone="warn">
-              跨机粘贴导入未做在线验证。
-              <Button size="sm" className="ml-2" onClick={verifyImported} disabled={busy}>
-                现在验证
-              </Button>
-            </Note>
+          <div className="mt-3 flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <Note tone="warn">跨机粘贴导入未做在线验证。</Note>
+            </div>
+            <Button size="sm" onClick={verifyImported} disabled={busy}>
+              现在验证
+            </Button>
           </div>
         )}
       </Modal>
@@ -210,21 +210,37 @@ export function ImportWbDialog({ open, onClose, onImported }: {
           {loadingLocal && !local ? (
             <LoadingBlock label="读取登录态" />
           ) : !local?.found ? (
-            <Note>{local?.hint ?? '未找到 WorkBuddy 桌面端登录态'}</Note>
+            <Note tone={local?.code === 'WB_TOKEN_ENCRYPTED' ? 'warn' : 'neutral'}>
+              {local?.hint ?? '未找到 WorkBuddy 桌面端登录态'}
+              {/* 两种「没读到」的恢复动作不同，必须分流：
+                  加密 = 去登录也没用，只能走粘贴（需先解 envelope）；
+                  未找到 = 装好并登录客户端后重新检测即可。
+                  后端用 code 表达这个区别，此前前端只读 hint，
+                  等于把后端已经分好的两种情形又混回一句提示。 */}
+              {local?.code === 'WB_TOKEN_ENCRYPTED' && (
+                <Button size="sm" className="ml-2" onClick={() => setMode('paste')}>
+                  改用粘贴导入
+                </Button>
+              )}
+            </Note>
           ) : (
             <dl className="kv">
               <dt>昵称</dt>
               <dd>{local.nickname || '—'}</dd>
-              <dt>uid</dt>
-              <dd className="font-mono text-[12px] break-all">{local.uid || '—'}</dd>
+              <dt>用户 ID</dt>
+              <dd className="font-mono text-aux break-all">{local.uid || '—'}</dd>
               <dt>手机号</dt>
-              <dd className="font-mono text-[12px]">{local.phoneNumber || '—'}</dd>
+              <dd className="font-mono text-aux">{local.phoneNumber || '—'}</dd>
               <dt>区域</dt>
-              <dd className="font-mono text-[12px]">{local.region || '—'}</dd>
-              <dt>accessToken</dt>
-              <dd className="font-mono text-[12px]">{local.accessToken || '—'}</dd>
+              <dd className="font-mono text-aux">{local.region || '—'}</dd>
+              <dt>访问令牌</dt>
+              <dd className="font-mono text-aux break-all">
+                {local.accessToken
+                  ? `${local.accessToken.slice(0, 6)}…${local.accessToken.slice(-4)}`
+                  : '—'}
+              </dd>
               <dt>过期时间</dt>
-              <dd className="font-mono text-[12px]">{local.expiresAt || '—'}</dd>
+              <dd className="font-mono text-aux">{local.expiresAt || '—'}</dd>
             </dl>
           )}
           <div className="mt-3">
@@ -234,8 +250,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
       ) : (
         <div>
           <textarea
-            className="w-full h-40 p-2.5 rounded-md border font-mono text-[12px]"
-            style={{ borderColor: 'var(--rg-border-stronger)' }}
+                className="textarea h-40"
             placeholder="粘贴 workbuddy-desktop.info 文件内容（JSON）"
             value={infoText}
             onChange={(e) => setInfoText(e.target.value)}

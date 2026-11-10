@@ -14,6 +14,7 @@ const wbAuth = require('./auth');
 const { isTruncatedFinish } = require('../transform/finish');
 const { createLineFeeder } = require('../lib/sse-lines');
 const identityScrub = require('../transform/identity-scrub');
+const systemRelocate = require('../transform/system-relocate');
 
 /** 请求体规范化（红线项）。 */
 function normalizeBody(body) {
@@ -21,14 +22,24 @@ function normalizeBody(body) {
   out.model = String(out.model || '').replace(/^wb\//, '');
   out.stream = true; // 强制流式（非流式由本地聚合）
   if (out.tool_choice && typeof out.tool_choice === 'object') out.tool_choice = 'auto';
-  // 内容层渠道检测应对（opt-in，WB_IDENTITY_SCRUB=true 开）：中和 system 里
-  // 第三方 harness 的身份声明（2026-10-20 起上游内容检测的实锤暴露面）。
-  // 只动 system、只动命中句，未启用时零行为差异。
-  if (identityScrub.scrubEnabled() && Array.isArray(out.messages)) {
-    const scrubbed = identityScrub.scrubMessages(out.messages);
-    if (scrubbed.changed) {
-      out.messages = scrubbed.messages;
-      console.log(`[wb-chat] identity scrub: ${scrubbed.hits} identity sentence(s) neutralized in system prompt`);
+  // 内容层渠道检测应对，两步（2026-11-10 实测，见 docs/05-incidents/
+  // workbuddy-channel-detection-2026-11-10.md §4）：
+  //   ① system-relocate（默认开）：上游只查 system，且「长度 × 特征密度」双条件。
+  //      同一份 13.6KB 系统提示放 system → 11128、放 user → 200。迁位不改任何
+  //      内容字节，模型所见信息量一致，只是 role 与位置变了。
+  //   ② identity-scrub（opt-in）：句级改写 Codex/Claude Code 这类身份自述。
+  if (Array.isArray(out.messages)) {
+    const prepared = systemRelocate.prepareMessages(out.messages, {
+      scrubMessages: identityScrub.scrubMessages,
+    });
+    if (prepared.changed) {
+      out.messages = prepared.messages;
+      if (prepared.relocated) {
+        console.log(`[wb-chat] system relocate: ${prepared.movedChars} chars moved from system to first user message`);
+      }
+      if (prepared.scrubbed) {
+        console.log(`[wb-chat] identity scrub: ${prepared.scrubbed} identity sentence(s) neutralized in system prompt`);
+      }
     }
   }
   return out;
@@ -61,7 +72,7 @@ async function chatStream(acct, body, opts = {}) {
   // 旧实现用 authHeaders（web/插件身份）在 2026-10-21 被上游 11128 拦截。
   const headers = wbAuth.chatHeaders(
     { accessToken: acct.token, uid: acct.userId, region: wbAuth.regionOf(host) },
-    { conversationId: opts.conversationId, requestId: opts.requestId },
+    { conversationId: opts.conversationId, requestId: opts.requestId, acpConnectionId: opts.acpConnectionId },
   );
   const resp = await fetch(url, { method: 'POST', headers, body: payload });
   return { status: resp.status, body: resp.ok ? resp.body : null, text: resp.ok ? '' : await resp.text().catch(() => '') };
@@ -137,16 +148,12 @@ async function chatAggregate(acct, body, opts = {}) {
   };
 }
 
-/** WorkBuddy 模型目录（静态最后手段；2026-09-12 实测 catalog）。 */
-const WB_MODELS = [
-  'auto', 'default',
-  'hy3', 'hy3-x', 'hy4-preview', 'hy4-preview-x',
-  'glm-5v-turbo', 'glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5.1', 'glm-5.0', 'glm-4.7', 'glm-4.6', 'glm-4.6v',
-  'minimax-m3', 'minimax-m2.5',
-  'kimi-k3-1', 'kimi-k2.8-preview', 'kimi-k2.7', 'kimi-k2.6', 'kimi-k2.5', 'kimi-k2-thinking',
-  'deepseek-v4-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'deepseek-v3-2-volc',
-  'hunyuan-2.0-thinking', 'hunyuan-chat', 'hunyuan-image-v3.0',
-];
+/**
+ * WorkBuddy 模型目录（静态最后手段；2026-09-12 实测 catalog）。
+ * 名单本体在 workbuddy/model-ids.js（零依赖叶子模块）：平台归属判定也要读它，
+ * 放在本文件会形成 chat.js ↔ models/platform-ownership.js 的双向依赖。
+ */
+const { WB_MODELS } = require('./model-ids');
 
 // 动态目录缓存（含积分倍率），10 分钟
 let _catalogCache = null;
@@ -188,6 +195,49 @@ function catalogCredentials() {
   return out;
 }
 
+/**
+ * 非对话模型识别（图片 / 视频生成）。
+ *
+ * 为什么必须区分：WB 目录（`/console/enterprises/personal/models`）是**售卖清单**，
+ * 里面同时有对话模型和图片/视频生成模型。后者的 tag 是 `text-to-image` /
+ * `text-to-video`，有的还带 `videoGeneration` 参数块。它们的推理走的是另一套
+ * 后端（`hunyuan-stream` / `maas`），**没有 chat 后端**。
+ *
+ * 用 chat 端点去探它们必然回 11103「Backend [x] is not supported」——那不是
+ * 「模型不可用」，是「这个模型不归 chat 管」（2026-11-08 现场：4 个媒体模型
+ * 被 chat 探活写成 unavailable，面板上长期挂着红点）。
+ *
+ * 判据优先级：上游 tags/videoGeneration > id 关键字兜底（静态名单没有 tags）。
+ */
+const NON_CHAT_TAGS = new Set([
+  'text-to-image', 'image-to-image', 'text-to-video', 'image-to-video',
+  'text-to-audio', 'text-to-speech', 'embedding',
+]);
+const NON_CHAT_ID_RE = /(^|[-_.])(image|video|kling|audio|tts|embed|rerank)([-_.]|$)/i;
+
+/**
+ * 该目录条目是不是可走 chat 端点的对话模型。
+ * @param {{id?:string, tags?:string[], videoGeneration?:object}} m 目录条目 / 静态 id 包装
+ */
+function isChatModel(m) {
+  if (!m) return false;
+  const id = String(m.id || '');
+  if (!id) return false;
+  if (m.videoGeneration) return false;
+  if (Array.isArray(m.tags) && m.tags.some((t) => NON_CHAT_TAGS.has(String(t).toLowerCase()))) return false;
+  if (NON_CHAT_ID_RE.test(id)) return false;
+  return true;
+}
+
+/** 非对话模型的粗略类型（面板展示用）：image | video | other。 */
+function mediaKindOf(m) {
+  const tags = Array.isArray(m && m.tags) ? m.tags.map((t) => String(t).toLowerCase()) : [];
+  const id = String((m && m.id) || '');
+  if (tags.some((t) => t.includes('video')) || /video|kling/i.test(id)) return 'video';
+  if (tags.some((t) => t.includes('image')) || /image/i.test(id)) return 'image';
+  return 'other';
+}
+
 async function fetchCatalog(info) {
   const url = wbAuth.chatHost(info.region || 'cn') + '/console/enterprises/personal/models';
   const resp = await fetch(url, { headers: wbAuth.authHeaders(info), signal: AbortSignal.timeout(10000) });
@@ -196,19 +246,28 @@ async function fetchCatalog(info) {
   const data = j.data || j.Result || j;
   const arr = Array.isArray(data) ? data : (data.models || data.list || []);
   if (!arr.length) throw new Error('empty catalog');
-  return arr.map((m) => ({
-    id: m.id,
-    name: m.name || m.id,
-    rateText: typeof m.credits === 'string' ? m.credits : null,
-    rate: parseRate(m.credits),
-    maxInputTokens: m.maxInputTokens || null,
-    maxOutputTokens: m.maxOutputTokens || null,
-    supportsToolCall: !!m.supportsToolCall,
-    supportsReasoning: !!m.supportsReasoning,
-    // 多模态：目录返回布尔就用，未返回留 null（未知）。路由侧发图只排除明确的 false，
-    // 因此这里不给默认值 —— 默认 false 会把它自家的视觉模型排除掉。
-    multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
-  }));
+  return arr.map((m) => {
+    const chat = isChatModel(m);
+    return {
+      id: m.id,
+      name: m.name || m.id,
+      rateText: typeof m.credits === 'string' ? m.credits : null,
+      rate: parseRate(m.credits),
+      maxInputTokens: m.maxInputTokens || null,
+      maxOutputTokens: m.maxOutputTokens || null,
+      supportsToolCall: !!m.supportsToolCall,
+      supportsReasoning: !!m.supportsReasoning,
+      // 多模态：目录返回布尔就用，未返回留 null（未知）。路由侧发图只排除明确的 false，
+      // 因此这里不给默认值 —— 默认 false 会把它自家的视觉模型排除掉。
+      multimodal: typeof m.multimodal === 'boolean' ? m.multimodal : null,
+      // 能力位：chat=true 才能进转发面 / 探活 / 虚拟模型候选；
+      // media 类只做目录展示，不参与路由（否则只会得到 11103）。
+      chat,
+      mediaKind: chat ? null : mediaKindOf(m),
+      tags: Array.isArray(m.tags) ? m.tags.map(String) : null,
+      relatedModels: m.relatedModels && typeof m.relatedModels === 'object' ? m.relatedModels : null,
+    };
+  });
 }
 
 /**
@@ -223,6 +282,17 @@ async function modelCatalog(force) {
     try {
       const models = await fetchCatalog(info);
       _catalogCache = { at: Date.now(), models };
+      // 归属快照：WB 动态目录是「WB 到底服务哪些名字」的上游事实源。
+      // 平台密钥越界判定（models/platform-ownership）据此区分「WB 独有」与
+      // 「两平台同名」，此前只看静态 WB_MODELS 会把 glm-5.3 这类两平台都有的
+      // 名字误判成 WB 专属。写盘失败不影响目录返回。
+      try {
+        require('../models/platform-ownership').recordWorkBuddyModels(models.map((m) => m.id));
+      } catch (e) {
+        // 写盘失败不影响目录返回，但必须留痕：快照不更新会让平台密钥越界判定
+        // 继续用旧名单，运维无从发现。
+        console.error('[wb-catalog] 平台归属快照写入失败:', e && e.message);
+      }
       return models;
     } catch (e) {
       errors.push(source + ': ' + e.message);
@@ -230,7 +300,14 @@ async function modelCatalog(force) {
   }
   if (errors.length) console.error('[wb-catalog] 动态目录拉取失败，回退静态目录（倍率不可用）:', errors.join(' | '));
   if (_catalogCache) return _catalogCache.models;
+  // 静态兜底：同样登记归属（静态名单本身就是 WB 服务的事实）
+  try {
+    const ownership = require('../models/platform-ownership');
+    ownership.recordWorkBuddyModels(WB_MODELS);
+  } catch (e) {
+    console.error('[wb-catalog] 静态归属快照写入失败:', e && e.message);
+  }
   return WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null, maxInputTokens: null, maxOutputTokens: null }));
 }
 
-module.exports = { chatStream, chatAggregate, normalizeBody, modelCatalog, WB_MODELS };
+module.exports = { chatStream, chatAggregate, normalizeBody, modelCatalog, isChatModel, mediaKindOf, WB_MODELS };

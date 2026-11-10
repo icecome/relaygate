@@ -73,6 +73,58 @@ export const deleteAccessKey = (id: string, key: string) =>
 export const revealAccessKey = (id: string, key: string) =>
   api<{ object: string; id: string; key: string }>(`/v1/api-keys/${encodeURIComponent(id)}/reveal`, {}, key);
 
+/**
+ * 修改访问密钥的属性（PATCH /v1/api-keys/:id）。
+ *
+ * 后端的可改字段白名单（src/routes/api-keys.js 的 patch 分支）：
+ *   label / enabled / scopes / resources / expiresAt / rpmLimit
+ *
+ * 注意 **platform 不在白名单里**：一把 sk- 建出来属于哪个平台是身份的一部分，
+ * 改它等于把已发给 IDE 的密钥偷偷扩大适用范围 —— 需要换平台请新建一把。
+ *
+ * 三个字段的取值语义（照抄后端，不要在前端另立一套）：
+ *   - scopes：六个枚举值，见 KEY_SCOPES；传空数组会被 normalizeScopes 回落到
+ *     平台默认值（所以「取消全部权限」不是传 []，而是停用这把密钥）；
+ *   - resources：形如 `*` / `model:trae/*` / `model:virtual:vm/x` / `provider/<id>/*`，
+ *     前缀通配；传空数组同样回落默认值；
+ *   - expiresAt：ISO 字符串或 null（null = 永不过期）。
+ */
+export const updateAccessKey = (
+  id: string,
+  patch: Partial<Pick<ApiKeyRow, 'label' | 'enabled' | 'scopes' | 'resources' | 'expiresAt' | 'rpmLimit'>>,
+  key: string,
+) =>
+  api<{ object: string; id: string }>(
+    `/v1/api-keys/${encodeURIComponent(id)}`,
+    { method: 'PATCH', body: patch },
+    key,
+  );
+
+/**
+ * scopes 枚举。**必须与后端 `credentials/api-keys.js#SCOPES` 逐字一致**：
+ * 多一个会被 normalizeScopes 静默过滤（保存成功但权限没给），
+ * 少一个则用户无法授予该权限。
+ */
+export const KEY_SCOPES = [
+  { value: 'models:read', label: '读取模型列表', hint: '/v1/models；缺它客户端连模型列表都拿不到' },
+  { value: 'models:invoke', label: '调用模型', hint: 'chat / messages / responses 三个转发端点' },
+  { value: 'router:read', label: '读取路由信息', hint: '查询虚拟模型的候选与健康度' },
+  { value: 'router:invoke', label: '调用虚拟模型', hint: '以 vm/ 开头的聚合模型名' },
+  { value: 'admin:keys', label: '管理密钥（高危）', hint: '仅管理面使用，不要发给 IDE' },
+  { value: 'admin:catalog', label: '管理模型目录（高危）', hint: '仅管理面使用' },
+] as const;
+
+/** 与后端 SCOPES 集合一致的取值集，用于把后端返回值过滤成已知项。 */
+export const KNOWN_SCOPES = new Set<string>(KEY_SCOPES.map((s) => s.value));
+
+/** 剩余有效期（自然日，向上取整）；无过期时间返回 null。 */
+export function keyDaysLeft(expiresAt: string | null | undefined, now = Date.now()): number | null {
+  if (!expiresAt) return null;
+  const t = Date.parse(expiresAt);
+  if (!Number.isFinite(t)) return null;
+  return Math.ceil((t - now) / 86_400_000);
+}
+
 /* 登录密钥 */
 
 /**

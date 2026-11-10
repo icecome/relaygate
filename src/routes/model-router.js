@@ -183,13 +183,44 @@ async function modelsForProvider(p) {
       try {
         const cat = await wbChat.modelCatalog(false);
         if (cat && cat.length) {
+          // 只列对话模型：目录里的图片/视频生成模型没有 chat 端点，放进候选
+          // 选择器只会让用户配出一个必然 11103 的候选（2026-11-08 修正）。
+          const chatModels = cat.filter((m) => (typeof m.chat === 'boolean' ? m.chat : wbChat.isChatModel(m)));
+          return toRows(chatModels.map((m) => m.id), (id) => {
+            const m = chatModels.find((x) => x.id === id);
+            return m && m.name && m.name !== id ? `${id}（${m.name}）` : id;
+          });
+        }
+      } catch { /* 回退静态 */ }
+      return toRows(
+        wbChat.WB_MODELS.filter((m) => m !== 'auto' && m !== 'default' && wbChat.isChatModel({ id: m })),
+      );
+    }
+    if (p.type === 'builtin' && p.builtin === 'raccoon') {
+      // Raccoon（商汤小浣熊）：目录由远端动态下发（含倍率与窗口），
+      // 失败时回退兜底表（6 个实测模型）。
+      //
+      // ⚠️ 没有启用账号时返回**空数组**而不是兜底表：候选选择器里出现
+      // 一组必然 503 的 id，只会让用户配出一个永远失败的虚拟模型。
+      const raccoon = require('../raccoon');
+      const store = require('../credentials/store');
+      const variant = require('../platform/variant');
+      const hasAccount = store.list().some((a) => a.enabled && variant.isEdition(a.edition, variant.RACCOON));
+      if (!hasAccount) return [];
+      try {
+        const cat = await raccoon.catalog();
+        if (cat && cat.length) {
           return toRows(cat.map((m) => m.id), (id) => {
             const m = cat.find((x) => x.id === id);
             return m && m.name && m.name !== id ? `${id}（${m.name}）` : id;
           });
         }
-      } catch { /* 回退静态 */ }
-      return toRows(wbChat.WB_MODELS.filter((m) => m !== 'auto' && m !== 'default'));
+      } catch { /* 回退兜底表 */ }
+      const fb = raccoon.fallbackCatalog();
+      return toRows(fb.map((m) => m.id), (id) => {
+        const m = fb.find((x) => x.id === id);
+        return m && m.name && m.name !== id ? `${id}（${m.name}）` : id;
+      });
     }
     if (p.type === 'builtin') {
       // trae：动态目录优先，失败回退本地 model-config

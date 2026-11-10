@@ -114,17 +114,58 @@ function markUsable(model) {
   save();
 }
 
-function markUnavailable(model, reason) {
+/**
+ * 标记不可用。
+ *
+ * @param {string} model
+ * @param {string} reason
+ * @param {{ttlMs?:number}} [opts] 覆盖默认 TTL。
+ *   默认 7 天适用于「模型在平台侧确实下线」这类稳定结论；
+ *   账号级/套餐级这类**可能随权益变化**的结论要给短 TTL（见 scheduler 的
+ *   PlanLimit 分支），否则会在面板上长期隐藏一个其实换个号就能用的模型。
+ */
+function markUnavailable(model, reason, opts = {}) {
   const key = String(model || '').toLowerCase();
   if (!key || key === 'auto') return;
+  const ttl = Number(opts && opts.ttlMs) > 0 ? Number(opts.ttlMs) : TTL_MS;
   const c = load();
   c[key] = {
     status: 'unavailable',
     at: Date.now(),
-    expireAt: Date.now() + TTL_MS,
+    expireAt: Date.now() + ttl,
     reason: String(reason || '').slice(0, 200),
   };
   save();
+}
+
+/**
+ * 目录对账：某前缀下、**不在** `keepIds` 里的可用性条目一律清除。
+ *
+ * 为什么需要：平台目录是模型存在性的权威来源。模型从目录消失后，旧的可用性
+ * 记录（哪怕是 usable）会一直留着——面板上出现「早就不在目录里、却仍显示可用」
+ * 的条目（2026-11-08 现场：wb/hy4-preview、wb/glm-5v-turbo、wb/minimax-m3）。
+ *
+ * 只对**目录可信**的前缀调用（WorkBuddy 动态目录是权威的；Trae 目录含
+ * hidden 项且不等于可调用集合，不能用来做删除判据）。
+ *
+ * @param {string} prefix 例如 'wb/'
+ * @param {Iterable<string>} keepIds 完整 id 列表（**含**前缀）
+ * @returns {string[]} 被清除的 id
+ */
+function reconcile(prefix, keepIds) {
+  const p = String(prefix || '');
+  if (!p) return [];
+  const keep = new Set([...keepIds].map((x) => String(x).toLowerCase()));
+  const c = load();
+  const removed = [];
+  for (const k of Object.keys(c)) {
+    if (!k.startsWith(p)) continue;
+    if (keep.has(k)) continue;
+    delete c[k];
+    removed.push(k);
+  }
+  if (removed.length) save();
+  return removed;
 }
 
 function reset(model) {
@@ -157,6 +198,7 @@ module.exports = {
   entryOf,
   markUsable,
   markUnavailable,
+  reconcile,
   reset,
   snapshot,
   isHidden,

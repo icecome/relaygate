@@ -14,10 +14,12 @@
 const { Router } = require('express');
 const store = require('../credentials/store');
 const wbAuth = require('../workbuddy/auth');
+const wbOauth = require('../workbuddy/oauth');
 const variant = require('../platform/variant');
 const { wbCheckinAccount, wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { authenticateAdmin } = require('../middleware/auth');
 const { maskSecret: maskToken } = require('../lib/mask');
+const { replyUpstreamError } = require('../lib/upstream-error');
 
 const router = Router();
 const admin = (req, res, next) => authenticateAdmin(req, res, next);
@@ -118,7 +120,11 @@ router.post('/import', admin, async (req, res) => {
 
     const userId = info.uid || info.phoneNumber || null;
     let account;
-    const existing = userId && store.list().find((a) => String(a.userId) === String(userId));
+    // 与 workbuddy/oauth.js 同源：去重限定在 WorkBuddy 账号内，避免 uid 碰撞
+    // 时把其它平台账号改写成 WB 账号并覆盖其 token。
+    const existing = userId && store.list().find(
+      (a) => a.edition === 'workbuddy' && String(a.userId) === String(userId),
+    );
     const patch = {
       label: labelOverride || info.nickname || info.phoneNumber || (userId ? 'wb-' + String(userId).slice(-6) : 'workbuddy'),
       edition: 'workbuddy',
@@ -162,7 +168,46 @@ router.post('/import', admin, async (req, res) => {
 
 function forceFlag(req) { return !!(req.body && req.body.force); }
 
-/** 登录验证 + 余额查询（body {accountId}；缺省时验证本机登录态）。 */
+/** 无感登录新账号（免退出 OAuth）：POST /v1/workbuddy/oauth/start。 */
+router.post('/oauth/start', admin, async (req, res) => {
+  try {
+    // 必须用 validRegion 而不是 regionOf：
+    //   regionOf 是「由域名/主机串推导区域」（按 hosts.regionPattern 正则匹配，
+    //   如 www.workbuddy.ai → global）；而这里收到的是前端下拉给出的**枚举** 'cn' | 'global'。
+    //   把枚举喂给推导函数时 'global' 不含 "workbuddy.ai" 子串 → 被判成 'cn'，
+    //   国际版授权链接/token/account 全部走国内 host（实测 regionOf('global') === 'cn'）。
+    const region = wbAuth.validRegion(((req.body || {}).region) || 'cn');
+    const r = await wbOauth.startLogin(region);
+    res.json({ object: 'wb_oauth_start', ...r, region, pollUrl: '/v1/workbuddy/oauth/poll' });
+  } catch (err) {
+    if (!err.status) err.status = 502;
+    replyUpstreamError(res, err, { tag: 'wb-oauth' });
+  }
+});
+
+/** 无感登录轮询：GET /v1/workbuddy/oauth/poll?loginId=…。 */
+router.get('/oauth/poll', admin, async (req, res) => {
+  const loginId = String(req.query.loginId || '').trim();
+  const status = req.query.status === '1' ? '1' : null;
+  if (!loginId) return res.status(400).json({ error: { message: 'loginId required', type: 'invalid_request_error' } });
+  try {
+    const r = await wbOauth.poll(loginId);
+    const payload = { object: 'wb_oauth_poll', ...r };
+    if (status) payload.pending = wbOauth.pendingCount();
+    res.json(payload);
+  } catch (err) {
+    if (!err.status) err.status = 502;
+    replyUpstreamError(res, err, { tag: 'wb-oauth' });
+  }
+});
+
+/** 取消一次未完成的无感登录（用户关闭弹窗 / 超时收尾）。 */
+router.post('/oauth/cancel', admin, (req, res) => {
+  const loginId = String((req.body || {}).loginId || '').trim();
+  res.json({ ok: !!loginId && wbOauth.cancel(loginId) });
+});
+
+// 登录验证 + 余额查询（body {accountId}；缺省时验证本机登录态）。
 router.post('/verify', admin, async (req, res) => {
   try {
     let info;
@@ -216,12 +261,25 @@ function checkinInfo(req) {
   return { info, accountId: null };
 }
 
-/** 签到状态查询（只读，不消耗）。body {accountId} 可选，缺省查本机登录态。 */
+/**
+ * 签到状态查询（只读，不消耗）。body {accountId} 可选，缺省查本机登录态。
+ *
+ * 顺带回写连登天数：这是**唯一一个不消耗积分**就能拿到 streak_days 的入口，
+ * 面板「连登」列刷新时走这里最划算（对比 growth/daily-progress 一轮 = 每账号 7 次上游）。
+ * 只在拿到数字时写，null 不覆盖旧值（与 upstream/wb-checkin.js 同口径）。
+ */
 router.post('/checkin-status', admin, async (req, res) => {
   try {
     const { error, info } = checkinInfo(req);
     if (error) return res.status(error.status).json({ error: { message: error.message, type: 'not_found' } });
-    res.json(await wbAuth.checkinStatus(info));
+    const st = await wbAuth.checkinStatus(info);
+    try {
+      const accountId = req.body && req.body.accountId ? String(req.body.accountId) : null;
+      if (accountId && st && st.ok && st.streakDays != null) {
+        require('../credentials/store').update(accountId, { checkinStreakDays: st.streakDays });
+      }
+    } catch { /* 回写失败不影响查询结果 */ }
+    res.json(st);
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: 'internal_error' } });
   }
@@ -305,7 +363,17 @@ router.post('/checkin', admin, async (req, res) => {
 /** 批量签到：全部 enabled 的 WorkBuddy 账号。手动触发不参与错峰。 */
 router.post('/checkin-all', admin, async (req, res) => {
   try {
-    const r = await wbCheckinAllEnabled({ spreadMinutes: 0 });
+    // 与 Trae / 跨平台批量入口共用轮级互斥锁：并发跑同一批 WB 账号会让
+    // 通知把「今日已签满」报成「领取 N · 已签 M」，看起来像失败。
+    const { withCheckinRound } = require('../upstream/checkin-lock');
+    const r = await withCheckinRound(() => wbCheckinAllEnabled({ spreadMinutes: 0 }), { label: 'route:/workbuddy/checkin-all' });
+    if (r && r.skipped) {
+      return res.status(409).json({
+        object: 'wb_checkin.batch',
+        skipped: true,
+        error: { message: '另一轮签到正在进行，本次未重复请求上游', type: 'conflict' },
+      });
+    }
     res.json({ ...r, object: 'wb_checkin.batch' });
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: 'internal_error' } });

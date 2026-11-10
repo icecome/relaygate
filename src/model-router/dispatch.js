@@ -164,13 +164,22 @@ function attachUpstreamCode(err, text) {
  * stickyKey（客户端会话键）派生 conversationId：同一客户端会话在多次请求间
  * 保持同一个 conversationId，符合上游对「会话」的语义；requestId 每次新建。
  *
+ * 客户端 5.9.3 还带 acp-connection-id（VlmSessionLedger 按 session 缓存，同会话稳定），
+ * 这里同样按 stickyKey 派生为标准 UUID 形态，保证同会话稳定、跨会话不同。
+ *
  * 不传 stickyKey（内部探活、测试）时两个都不传，由 auth.js#chatHeaders 各自
  * 生成 UUID —— 仍然是「每次请求一个新会话」，不会被判成重放。
  */
 function wbConversationOpts(opts) {
   const key = opts && typeof opts.stickyKey === 'string' ? opts.stickyKey.trim() : '';
   if (!key) return {};
-  return { conversationId: require('crypto').createHash('sha256').update('wb-conv:' + key).digest('hex').slice(0, 32) };
+  const crypto = require('crypto');
+  const hex32 = (label) => crypto.createHash('sha256').update(label + key).digest('hex');
+  const toUuid = (hex) => `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+  return {
+    conversationId: hex32('wb-conv:').slice(0, 32),
+    acpConnectionId: toUuid(hex32('wb-acp:')),
+  };
 }
 
 /** usage 只保留 OpenAI 官方三字段，避免客户端 Type validation 失败后无限重试。 */
@@ -322,9 +331,18 @@ async function dispatchTraeNonStream(provider, remoteModel, body, opts = {}) {
 }
 
 /** 非流式统一入口。 */
+/**
+ * 非流式统一入口。
+ *
+ * ⚠️ 分支顺序即「provider 归属判定」。新增一个 builtin 渠道时**必须**在这里
+ * 加一个分支，否则它会静默落到最后的 `dispatchTraeNonStream` —— 那种失败
+ * 不是「报错」，而是「拿着 A 平台的 token 去打 B 平台的上游」，表现为一个
+ * 很难归因的 4001/Not Found。Raccoon 曾正是如此。
+ */
 async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
   if (provider.type === 'openai') return dispatchOpenAINonStream(provider, remoteModel, body);
   if (provider.builtin === 'workbuddy') return dispatchWorkBuddy(provider, remoteModel, body, opts);
+  if (provider.builtin === 'raccoon') return dispatchRaccoonNonStream(provider, remoteModel, body, opts);
   return dispatchTraeNonStream(provider, remoteModel, body, opts);
 }
 
@@ -348,7 +366,152 @@ function dispatchStream(provider, remoteModel, body, res, opts = {}) {
   if (provider.builtin === 'workbuddy') {
     return dispatchWorkBuddyStream(provider, remoteModel, body, out, opts);
   }
+  if (provider.builtin === 'raccoon') {
+    return dispatchRaccoonStream(provider, remoteModel, body, out, opts);
+  }
   return dispatchTraeStream(provider, remoteModel, body, out, opts);
+}
+
+/**
+ * Raccoon 虚拟模型候选：非流式。
+ *
+ * 走 `raccoon/dispatch.run` —— 与统一端点、显式端点**同一份**调度语义
+ * （并发闸门、出口级冷却、换号、凭据续期都在里面）。这里只负责把
+ * 「虚拟模型的 body」翻译成 Raccoon 上游要的形状，并把结果整理成
+ * OpenAI completion（虚拟模型出口的通用契约）。
+ *
+ * ⚠️ 不做 model 改写：`opts.echoModel` 由 handleChat 在非流式分支统一处理
+ * （它会把 `result.model` 改回虚拟 ID），此处改写会被覆盖且引入两份真相。
+ */
+async function dispatchRaccoonNonStream(provider, remoteModel, body, opts = {}) {
+  const raccoonDispatch = require('../raccoon/dispatch');
+  const raccoonChat = require('../raccoon/chat');
+  const upBody = raccoonChat.buildUpstreamBody({
+    model: remoteModel,
+    messages: body.messages,
+    stream: false,
+    tools: body.tools || undefined,
+    tool_choice: body.tool_choice || undefined,
+    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    top_p: typeof body.top_p === 'number' ? body.top_p : undefined,
+    max_tokens: body.max_tokens,
+    stop: body.stop,
+  });
+  const { result, accountId } = await raccoonDispatch.run(
+    async (acct, runOpts) => raccoonChat.chatNonStream(acct, upBody, { signal: runOpts.signal }),
+    {
+      model: remoteModel,
+      signal: opts.signal || null,
+      stickyAccountId: opts.stickyAccountId || null,
+      onAccount: opts.onAccount,
+    },
+  );
+  // 记账：真实命中的池账号让 traffic 日志能对账（与 trae/workbuddy 分支同口径）
+  if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
+  return result;
+}
+
+/**
+ * Raccoon 虚拟模型候选：流式。
+ *
+ * 出口形状必须与其它候选**一致**（OpenAI SSE + `[DONE]`），但实现方式是
+ * **原样透传**：上游本来就是标准 OpenAI SSE，重新序列化只会引入风险。
+ *
+ * 与 `dispatchWorkBuddyStream` 的差异：那边要改写 model 字段（WB 返回的是
+ * 上游 id），这里同样要改 —— 客户端认的是虚拟模型 ID。改写在**行级**做
+ * （逐帧 JSON 解析 → 替换 model → 重新序列化），只影响被识别出的帧，
+ * 无法解析的字节原样透传（宁可少改一帧，也不要吞掉上游的字节）。
+ */
+async function dispatchRaccoonStream(provider, remoteModel, body, res, opts = {}) {
+  const raccoonDispatch = require('../raccoon/dispatch');
+  const raccoonChat = require('../raccoon/chat');
+  const raccoonStream = require('../raccoon/stream');
+  const shownModel = opts.echoModel || remoteModel;
+  const upBody = raccoonChat.buildUpstreamBody({
+    model: remoteModel,
+    messages: body.messages,
+    stream: true,
+    tools: body.tools || undefined,
+    tool_choice: body.tool_choice || undefined,
+    temperature: typeof body.temperature === 'number' ? body.temperature : undefined,
+    top_p: typeof body.top_p === 'number' ? body.top_p : undefined,
+    max_tokens: body.max_tokens,
+    stop: body.stop,
+  });
+
+  const sink = { usage: null, finishReason: null };
+
+  const { accountId } = await raccoonDispatch.run(
+    async (acct, runOpts) => {
+      const up = await raccoonChat.chatStream(acct, upBody, { signal: runOpts.signal });
+      raccoonStream.setSseHeaders(res);
+      // 逐块转发；model 改写只在能解析成 JSON 的 data 帧上做
+      const reader = up.body.getReader();
+      const dec = new TextDecoder();
+      let buf = '';
+      try {
+        for (;;) {
+          // eslint-disable-next-line no-await-in-loop
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (res.writableEnded) break;
+          const text = dec.decode(value, { stream: true });
+          if (!text) continue;
+          buf += text;
+          // 按行切，最后一段可能是不完整行，留到下一块
+          const lines = buf.split('\n');
+          buf = lines.pop() || '';
+          let out = '';
+          for (const line of lines) {
+            // 旁路计量用**改写前**的行（model 字段不影响 usage/finish_reason，
+            // 但用原始行能少一次序列化）
+            raccoonStream.sniffLine(line, sink);
+            out += `${rewriteSseModelLine(line, shownModel)}\n`;
+          }
+          if (out) res.write(out);
+        }
+        if (buf) {
+          raccoonStream.sniffLine(buf, sink);
+          res.write(rewriteSseModelLine(buf, shownModel));
+        }
+      } finally {
+        try { reader.releaseLock(); } catch { /* 已释放 */ }
+        if (!res.writableEnded) res.end();
+      }
+      return { ok: true };
+    },
+    {
+      model: remoteModel,
+      signal: opts.signal || null,
+      stickyAccountId: opts.stickyAccountId || null,
+      onAccount: opts.onAccount,
+    },
+  );
+  if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
+  return { usage: sink.usage, finishReason: sink.finishReason };
+}
+
+/**
+ * 把一行 SSE 里的 `model` 字段改写成虚拟模型 ID。
+ *
+ * 只处理 `data: {json}` 形态；`[DONE]`、注释帧、解析失败的帧一律原样返回。
+ * 这是**唯一的**字节级改写点，改动范围被限制在「能被 JSON.parse 的那一行」里。
+ *
+ * @param {string} line
+ * @param {string} shownModel
+ * @returns {string}
+ */
+function rewriteSseModelLine(line, shownModel) {
+  const m = /^(\s*data:\s*)(\{.*\})(\s*)$/.exec(line);
+  if (!m) return line;
+  try {
+    const obj = JSON.parse(m[2]);
+    if (!obj || typeof obj !== 'object' || obj.model === undefined) return line;
+    obj.model = shownModel;
+    return `${m[1]}${JSON.stringify(obj)}${m[3]}`;
+  } catch {
+    return line;
+  }
 }
 
 /**
@@ -397,6 +560,11 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
   let outText = '';
   let lastUsage = null;
   let started = false;
+  // 流式 tool_calls 的块序号：客户端（如 DSH）按 tool_calls[].index 聚合参数，
+  // 同一响应里每个调用必须递增。漏传时 emitters 默认补 0，多个调用的 arguments
+  // 会被客户端拼进同一个块，JSON.parse 在第二个对象处报
+  // "Unexpected non-whitespace character after JSON at position N"（2026-11-06 事故）。
+  let toolCallIndex = 0;
   const ensureStart = () => {
     if (started) return;
     started = true;
@@ -440,9 +608,10 @@ async function dispatchTraeStream(provider, remoteModel, body, res, opts = {}) {
           sawToolCalls = true;
           if (typeof res.commit === 'function') res.commit('tool_call');
           ensureStart();
-          for (const s of out.toolCall(completionId, shownModel, evt.call)) {
+          for (const s of out.toolCall(completionId, shownModel, evt.call, toolCallIndex)) {
             if (!res.writableEnded) res.write(s);
           }
+          toolCallIndex += 1;
           break;
         case 'done':
           roundFinish = evt.finish_reason || 'stop';
@@ -641,4 +810,8 @@ module.exports = {
   resolveStreamFinish,
   isTruncatedFinish,
   writeCompletionChunks,
+  // 仅暴露给单测：SSE model 改写的字节级契约（diff 之前要能钉住）
+  rewriteSseModelLine,
+  dispatchRaccoonNonStream,
+  dispatchRaccoonStream,
 };

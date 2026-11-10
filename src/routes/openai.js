@@ -23,8 +23,13 @@ const sticky = require('../session/sticky');
 const availability = require('../models/availability');
 const config = require('../config');
 const modelRouter = require('../model-router');
-const { canUseModel, isWorkBuddyOnlyModel } = require('../middleware/model-access');
+const { canUseModel, isRaccoonModel } = require('../middleware/model-access');
+const ownership = require('../models/platform-ownership');
 const { createLineFeeder } = require('../lib/sse-lines');
+const raccoonDispatch = require('../raccoon/dispatch');
+const raccoonStream = require('../raccoon/stream');
+const raccoonChat = require('../raccoon/chat');
+const { replyUpstreamError, clientMessage } = require('../lib/upstream-error');
 
 const router = Router();
 
@@ -37,6 +42,123 @@ function extractTools(body) {
   return null;
 }
 
+/**
+ * 统一端点的 Raccoon 分派（`sn-*` 模型）。
+ *
+ * ## 为什么单独一段而不是复用 routes/raccoon.js
+ *
+ * 两条入口的**协议出口不同**：显式端点（`/v1/raccoon/chat/completions`）是纯直通
+ * （上游 SSE 原样转发），而统一端点必须与其他平台的出口形状一致（model 字段回写、
+ * 非流式走 res.json）。但**调度语义完全一样** —— 两者都走
+ * `raccoon/dispatch.run`，所以并发闸门、冷却、换号只有一份实现。
+ *
+ * ## 与 Trae/WB 分支的差异（刻意）
+ *
+ * - **不做续写（autoContinue）**：那条逻辑是为 Trae 的截断语义写的，套到
+ *   OpenAI 兼容上游上没有意义（上游自己给 `finish_reason`）。
+ * - **不做 RTK 压缩**：Raccoon 的计费按 token，压缩确实能省钱，但压缩会改
+ *   messages 内容而这条链路是「原样透传」语义。要开由 model-router 的虚拟模型
+ *   路径处理（那里已经有 rtk）。
+ * - **模型名原样上行**：不剥 `sn-` 前缀 —— 它就是上游的 id。
+ *
+ * @param {import('express').Request} req
+ * @param {import('express').Response} res
+ * @param {object} ctx
+ */
+async function handleRaccoonChat(req, res, ctx) {
+  const {
+    model, messages, stream, tools, tool_choice,
+    max_tokens, startedAt,
+  } = ctx;
+  let requestError = null;
+  let lastUsage = null;
+  let usedAccountId = null;
+  let finishReason = null;
+  let cooledInfo = null;
+
+/*
+ * 与 /v1/raccoon/chat/completions 完全相同的请求体：逐字透传调用方字段，
+ * 只覆盖网关自己派生的 model / messages / stream / max_tokens / tools。
+ *
+ * 旧实现按白名单挑 10 个字段，把 reasoning_effort / thinking / seed / n /
+ * response_format / extra_body 等静默丢了；其中 reasoning_effort 与 thinking
+ * 是 raccoonChat.resolveThinking 生成 extra_body.thinking 的唯一输入 ——
+ * 丢了它们，统一端点的思考档位与「关闭思考」全部失效，而显式端点正常。
+ */
+  const upBody = raccoonChat.buildUpstreamBody({
+    ...(req.body || {}),
+    model,
+    messages,
+    stream: stream !== false,
+    max_tokens,
+    tools: tools || undefined,
+    tool_choice: tool_choice || undefined,
+  });
+
+  try {
+    const { result } = await raccoonDispatch.run(async (acct, runOpts) => {
+      usedAccountId = acct.id;
+      if (stream !== false) {
+        const up = await raccoonChat.chatStream(acct, upBody, { signal: runOpts.signal });
+        raccoonStream.setSseHeaders(res);
+        const r = await raccoonStream.pipeToClient(up.body, res);
+        return { streamed: true, ...r };
+      }
+      const data = await raccoonChat.chatNonStream(acct, upBody, { signal: runOpts.signal });
+      return { streamed: false, data };
+    }, {
+      model,
+      signal: res.locals.clientSignal || null,
+      onAccount: (id) => { usedAccountId = id; },
+    });
+
+    if (!result.streamed) {
+      lastUsage = result.data && result.data.usage;
+      const choice = result.data && result.data.choices && result.data.choices[0];
+      finishReason = choice && choice.finish_reason ? choice.finish_reason : null;
+      // 回写请求中的模型名（统一端点的契约：model 字段等于调用方给的那个）
+      if (result.data && typeof result.data === 'object') result.data.model = model;
+      if (!res.writableEnded) res.json(result.data);
+    } else {
+      lastUsage = result.usage;
+      finishReason = result.finishReason;
+    }
+  } catch (err) {
+    // traffic 日志记泛化摘要即可；上游原始报文由 replyUpstreamError 单独全量落 console.error。
+    requestError = clientMessage(err);
+    cooledInfo = err.raccoonCooldown || null;
+    // 客户端只拿泛化文案；上游原始报文（err.message / err.body）由
+    // replyUpstreamError 写进服务端日志，限流分类仍读 err.body，不受影响。
+    replyUpstreamError(res, err, {
+      tag: 'raccoon',
+      writeFrame: (r, msg) => raccoonStream.writeErrorFrame(r, msg),
+    });
+  } finally {
+    const usageFields = usageToLogFields(lastUsage);
+    const cost = usageFields.totalTokens
+      ? estimateCost(model, usageFields.promptTokens, usageFields.completionTokens, {
+        cacheRead: Number(usageFields.cacheReadTokens) || 0,
+        platform: 'raccoon',
+      })
+      : null;
+    logRequest({
+      endpoint: '/v1/chat/completions', method: 'POST', model,
+      account: usedAccountId,
+      status: requestError ? (cooledInfo ? 429 : 502) : 200,
+      toolCalls: 0, toolsIn: tools ? tools.length : 0,
+      durationMs: Date.now() - startedAt,
+      error: requestError,
+      platform: 'raccoon',
+      pricedModel: model,
+      routedTo: `raccoon/${model}`,
+      ...(finishReason ? { finishReason } : {}),
+      ...(cooledInfo ? { raccoonCooledForMs: cooledInfo.cooldownMs, raccoonCooldownStreak: cooledInfo.streak } : {}),
+      ...usageFields,
+      ...(cost != null ? { estimatedCost: cost } : {}),
+    });
+  }
+}
+
 function lastUserText(messages) {
   let userText = '';
   for (const m of messages || []) {
@@ -47,17 +169,15 @@ function lastUserText(messages) {
   return userText;
 }
 
-/** model-config.json 是否登记了该模型（含大小写不敏感 key）。 */
-function inLocalTraeModels(model) {
-  const lower = String(model || '').toLowerCase();
-  const mc = (config.modelConfig && config.modelConfig.models) || {};
-  if (mc[lower]) return true;
-  return Object.keys(mc).some((k) => k.toLowerCase() === lower);
-}
-
 /**
  * 通用密钥（platform=all）按模型名分派到实际上游平台（trae 或 workbuddy）。
  * 虚拟模型在调用前已被 model-router 拦截，此处只处理物理模型。
+ *
+ * 分派依据是 models/platform-ownership 的双平台归属表（不是单看 WB 静态名单）：
+ * `wb/` 前缀恒归 WB；其余名字「Trae 服务就归 Trae」，只有 Trae 明确不服务、
+ * WB 服务时才归 WB。此前只看 WB 名单，导致通用密钥把 `glm-5.3` 这类两平台
+ * 都有的名字分派给 WorkBuddy（Trae 侧本来就能用，白占 WB 配额，且 WB 目录
+ * 若没有该 id 就变成 11102）。
  *
  * Qoder 模型不在此分派：它有专属端点 /v1/qoder/chat/completions，
  * 在这里被当成 Trae 模型只会拿到「模型不存在」而非「你走错端点了」。
@@ -65,9 +185,7 @@ function inLocalTraeModels(model) {
  */
 function resolveKeyPlatform(keyPlatform, model) {
   if (keyPlatform === 'all') {
-    const raw = String(model || '');
-    if (raw.startsWith('wb/') || isWorkBuddyOnlyModel(raw)) return 'workbuddy';
-    return 'trae';
+    return ownership.ownerPlatformOf(model);
   }
   return keyPlatform === 'workbuddy' ? 'workbuddy' : 'trae';
 }
@@ -97,12 +215,13 @@ function resolveModelForPlatform(platform, model) {
   if (!raw) {
     return { ok: false, message: 'model is required' };
   }
-  // WB 独有且 Trae 未登记：明确报错，避免上游 4001 难以排查
-  const lower = raw.toLowerCase();
-  if (!inLocalTraeModels(lower) && wbChat.WB_MODELS.includes(lower) && lower !== 'auto' && lower !== 'default') {
+  // WB 独有（WB 服务、Trae 不服务）：明确报错，避免上游 4001 难以排查。
+  // 判据用 platform-ownership 的双平台归属，不再只看静态 WB 名单——
+  // 后者把 Trae 上游真实存在的 glm-5.3 等名字误报成「WB 模型」。
+  if (ownership.isWorkBuddyExclusive(raw)) {
     return {
       ok: false,
-      message: `model "${raw}" is a WorkBuddy model. Use a workbuddy-bound API key.`,
+      message: `model "${raw}" is a WorkBuddy-only model. Use a workbuddy-bound API key.`,
     };
   }
   return { ok: true, platform, modelId: raw };
@@ -363,11 +482,28 @@ router.post('/v1/chat/completions', async (req, res) => {
     return;
   }
 
+  // Raccoon 模型（`sn-` 前缀）：统一端点按模型名分派到独立的 Raccoon 账号池。
+  //
+  // 为什么在这里分派而不是让客户端换 baseURL：一个客户端配两个 baseURL 基本
+  // 不可行（DSH / Claude Code 都是一个 baseURL 走天下）。此前这里对 sn-* 直接
+  // 403 并提示「请用 /v1/raccoon/...」，那等于把「换端点」这件事强加给用户。
+  //
+  // 权限边界没有松动：canUseModel 已在上方把「平台密钥调 Raccoon 模型」拒成
+  // platform_mismatch，能走到这里的只有通用密钥（platform=all）。
+  if (isRaccoonModel(model)) {
+    // effMaxTokens 是给 Trae/WB 的思考预算折算值；Raccoon 上游按自己的
+    // max_tokens 语义处理，这里传调用方原值（未传则 undefined）。
+    return handleRaccoonChat(req, res, {
+      model, messages, stream, tools, tool_choice,
+      max_tokens,
+      startedAt,
+    });
+  }
+
   const completionId = `chatcmpl-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
   const stickyKey = sticky.stickyKeyFromRequest(req);
   const stickyAccountId = sticky.lookup(stickyKey);
   const runOpts = { stickyKey, stickyAccountId, model };
-
   const callOpts = {
     tools: tools || undefined,
     tool_choice: tool_choice || undefined,

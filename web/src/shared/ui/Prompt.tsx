@@ -52,7 +52,7 @@ export function PromptProvider({ children }: { children: ReactNode }) {
           {state.input && (
             <div className="mb-3">
               <label
-                className="block text-[12px] font-medium mb-2"
+                className="block text-aux font-medium mb-2"
                 style={{ color: 'var(--rg-text-secondary)' }}
                 htmlFor="prompt-input"
               >

@@ -220,6 +220,9 @@ const EVENT_TITLES = {
   // 补齐存量缺口：rotate_fail 一直在 scheduler 里被调用，但从未注册标题，
   // 面板上只能看到裸事件名。
   rotate_fail: '账号轮换部分失败',
+  // 轮换收尾汇总（成功路径）。与 rotate_fail 互斥：失败时发 fail，
+  // 全成功时发 done，两者不会同时出现，避免一次轮换推两条自相矛盾的消息。
+  rotate_done: '账号轮换完成',
 };
 
 function humanTitle(event, payload = {}, fallback) {

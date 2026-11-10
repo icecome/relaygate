@@ -89,6 +89,18 @@ const PATCH_COLUMNS = {
   lastPickedAt: { col: 'last_picked_at', val: (a) => bindInt(a.lastPickedAt, 0) },
   lastCheckinAt: { col: 'last_checkin_at', val: (a) => bindText(a.lastCheckinAt) },
   lastCheckinResult: { col: 'last_checkin_result', val: (a) => bindText(a.lastCheckinResult) },
+  /*
+   * 连登天数。NULL 表示从未查到过 —— 不能用 bindInt(a.x, 0) 兜底成 0，
+   * 那会把「不知道」写成「今天断了」（见 db.js 同名列注释）。
+   * 显式 null/undefined → NULL；有限数字 → 整数。
+   */
+  checkinStreakDays: {
+    col: 'checkin_streak_days',
+    val: (a) => {
+      const v = Number(a.checkinStreakDays);
+      return Number.isFinite(v) && a.checkinStreakDays != null ? Math.trunc(v) : null;
+    },
+  },
   lastKeepaliveAt: { col: 'last_keepalive_at', val: (a) => bindText(a.lastKeepaliveAt) },
   lastKeepaliveResult: { col: 'last_keepalive_result', val: (a) => bindText(a.lastKeepaliveResult) },
   // 最近一次**成功**续期的时刻（判据位）。与 lastKeepaliveAt（最近一次保活
@@ -219,6 +231,9 @@ function rowToDecrypted(r, withSecrets = true) {
     lastPickedAt: r.last_picked_at,
     lastCheckinAt: r.last_checkin_at,
     lastCheckinResult: r.last_checkin_result,
+    // 连登天数：null = 从未查到过。与 lastCheckinAt 同源同刻，隔天会过期，
+    // 面板展示时必须带上写入时刻（见 lastCheckinAt）。
+    checkinStreakDays: r.checkin_streak_days != null ? Number(r.checkin_streak_days) : null,
     lastKeepaliveAt: r.last_keepalive_at,
     lastKeepaliveResult: r.last_keepalive_result,
     lastRefreshAt: r.last_refresh_at || null,

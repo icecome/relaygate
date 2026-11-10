@@ -39,6 +39,7 @@
 |---|---|---|
 | [channel-onboarding.md](02-technical/channel-onboarding.md) | 新增一个上游渠道的标准步骤（变体表 → 凭据 → 签到 → 转发 → 测试） | 现行 |
 | [key-management.md](02-technical/key-management.md) | 登录密钥 / 访问密钥 / 凭据加密密钥三类密钥的职责与轮换 | 现行 |
+| [model-subsystem.md](02-technical/model-subsystem.md) | **模型子系统全景**：上游目录获取、可用性检测与归因、虚拟模型路由、面板状态口径；含「为什么不可用的模型还在列表里」的三种成因 | 现行 |
 | [model-router-autotier.md](02-technical/model-router-autotier.md) | 虚拟模型解析、候选池、健康度与自动分层 | 现行 |
 | [workbuddy-at-rest-crypto.md](02-technical/workbuddy-at-rest-crypto.md) | WorkBuddy 本地凭据的加密格式与解 envelope 方法 | 现行 |
 
@@ -67,6 +68,7 @@
 | 文档 | 范围 | 时间 |
 |---|---|---|
 | [code-review-2026-10-22.md](04-reviews/code-review-2026-10-22.md) | 最新一轮代码审查（凭据泄漏、幂等、续期判据等） | 2026-10-22 |
+| [ui-review-2026-11-09-model-pages.md](04-reviews/ui-review-2026-11-09-model-pages.md) | 模型相关前端页面对照后端能力的一致性审查（状态四档、媒体模型、套餐层结论、文案术语） | 2026-11-09 |
 | [ui-review-2026-10-04.md](04-reviews/ui-review-2026-10-04.md) | 管理端视觉与交互审查（含 v5 预览检查单） | 2026-10-04 |
 | [frontend-existence-audit-2026-10-15.md](04-reviews/frontend-existence-audit-2026-10-15.md) | 前端 31 个概念的存在性裁决（奥卡姆剃刀） | 2026-10-15 |
 | [code-review-2026-10-05/](04-reviews/code-review-2026-10-05/) | 首轮逐文件审查 6 份 + 修复验证报告（入口见该目录 README） | 2026-10-05 |
@@ -78,6 +80,7 @@
 |---|---|---|
 | [incident-2026-10-14-test-db-pollution.md](05-incidents/incident-2026-10-14-test-db-pollution.md) | 测试写进真实状态目录，污染生产库 | 已修复：测试强制隔离状态目录 |
 | [workbuddy-channel-detection-2026-10-21.md](05-incidents/workbuddy-channel-detection-2026-10-21.md) | WorkBuddy 上游渠道校验 `11128` 的定位与重建客户端身份 | 已修复：头形态按官方客户端重建 |
+| [workbuddy-channel-detection-2026-11-10.md](05-incidents/workbuddy-channel-detection-2026-11-10.md) | 11128 现状复核（7 天 0 例）、DSH 侧 403 根因、客户端 5.9.3 头集对齐 | 现行 |
 | [raccoon-capture-2026-10-15.md](05-incidents/raccoon-capture-2026-10-15.md) | Raccoon 抓包取证，修正早期错误结论 | 结论已落地 |
 | [raccoon-iam-confirm-2026-10-19.md](05-incidents/raccoon-iam-confirm-2026-10-19.md) | 新 IAM 登录链路确认 | 结论已落地 |
 | [raccoon-qr-login-repair-2026-10-18.md](05-incidents/raccoon-qr-login-repair-2026-10-18.md) | 扫码登录失败排查 | 已修复 |
@@ -88,7 +91,7 @@
 
 | 目录 | 内容 |
 |---|---|
-| [comparisons/](06-deliverables/comparisons/) | 同类项目对比：WorkBuddy 生态 4 家横向对比 + 勘误、WorkBuddy 同类项目对比报告、our-free-model 对比分析 |
+| [comparisons/](06-deliverables/comparisons/) | 同类项目对比：WorkBuddy 生态 4 家横向对比 + 勘误、WorkBuddy 同类项目对比报告、WorkDaddy 五大功能对标与复刻报告、our-free-model 对比分析 |
 | [benchmarks/](06-deliverables/benchmarks/) | DSH 对标：深入对标与择优优化报告、四组功能代码级对标 |
 | [analysis/](06-deliverables/analysis/) | 账号调度与积分消耗分析报告、模型参数实测报告 |
 | [previews/](06-deliverables/previews/) | 管理端界面预览：v5 原型（`v5-preview.html`）+ 4 张图表截图 |

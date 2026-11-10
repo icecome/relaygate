@@ -26,6 +26,7 @@ import {
 } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
+import { formatTime } from '../../shared/lib/format';
 import {
   Button,
   Chip,
@@ -133,7 +134,22 @@ function draftOf(src: NotifySettings | undefined): NotifySettings {
 /** 掩码提示：仅告知「已配置」，不回显明文。 */
 function maskHint(v: unknown): string {
   if (typeof v !== 'string' || !v) return '';
-  return v.length <= 10 ? '已配置' : `已配置 ${v.slice(0, 3)}…${v.slice(-2)}`;
+  return '已配置（重新输入可替换）';
+}
+
+/**
+ * 失败提示的统一模板。
+ *
+ * ApiError 携带后端给出的原因，直接用；其余（断网、超时、响应体解析失败）
+ * 此前一律退化成「保存失败」三个字，用户无从判断该重试还是该改配置。
+ * 这里至少保留原始异常文本，并给出下一步。
+ */
+function apiErrorText(e: unknown, action: string): string {
+  if (e instanceof ApiError) return e.message;
+  const detail = e instanceof Error ? e.message : '';
+  return detail
+    ? `${action}：${detail}。可重试一次；若持续失败请查看服务端日志。`
+    : `${action}。可重试一次；若持续失败请查看服务端日志。`;
 }
 
 /** 字节数转可读文本。 */
@@ -236,7 +252,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       notify.reload();
       toast('通知设置已保存', 'ok');
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '保存失败', 'err');
+      toast(apiErrorText(e, '保存失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -263,7 +279,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
         toast(`${results.length} 个渠道均已送达`, 'ok');
       }
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '测试失败', 'err');
+      toast(apiErrorText(e, '测试失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -282,7 +298,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       }
       backup.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '备份失败', 'err');
+      toast(apiErrorText(e, '备份失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -299,7 +315,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       });
       toast('备份设置已保存', 'ok');
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '保存备份设置失败', 'err');
+      toast(apiErrorText(e, '保存备份设置失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -312,7 +328,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       if (r.ok) toast(`校验通过：${file}`, 'ok');
       else toast(`校验未通过：${r.reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '校验失败', 'err');
+      toast(apiErrorText(e, '校验失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -324,7 +340,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
     try {
       setInspect(await inspectBackup(path, apiKey));
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '读取备份内容失败', 'err');
+      toast(apiErrorText(e, '读取备份内容失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -332,9 +348,9 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
 
   async function doRestore(path: string, file: string) {
     const ok = await prompt({
-      title: '从该备份恢复？',
-      message: `将用 ${file} 覆盖同 ID 的账号、密钥与配置。恢复前会自动生成一份当前状态快照。`,
-      okText: '恢复',
+      title: `从 ${file} 覆盖恢复？`,
+      message: '将覆盖同 ID 的账号、密钥与配置，覆盖后无法撤销。恢复前会自动生成一份当前状态的备份。',
+      okText: '覆盖恢复',
       danger: true,
     });
     if (ok !== true) return;
@@ -342,15 +358,15 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
     try {
       const r = await restoreBackup(path, apiKey, true);
       toast(
-        `恢复完成：账号 ${r.accounts}，密钥 ${r.apiKeys}，配置 ${r.configs}${
-          r.safetyBackupFile ? `；安全快照 ${r.safetyBackupFile}` : ''
+        `恢复完成：账号 ${r.accounts} 个，密钥 ${r.apiKeys} 个，配置 ${r.configs} 项${
+          r.safetyBackupFile ? `；已生成安全备份 ${r.safetyBackupFile}` : ''
         }`,
         'ok',
       );
       setInspect(null);
       backup.reload();
     } catch (e) {
-      toast(e instanceof ApiError ? e.message : '恢复失败', 'err');
+      toast(apiErrorText(e, '恢复失败'), 'err');
     } finally {
       setBusy(null);
     }
@@ -393,8 +409,8 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   setDirty(true);
                 }}
                 options={[
-                  { value: 'on', label: '启用' },
-                  { value: 'off', label: '停用' },
+                  { value: 'on', label: '已启用' },
+                  { value: 'off', label: '已停用' },
                 ]}
               />
               {notifyStatus.active > 0 ? (
@@ -413,13 +429,13 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             </div>
 
             {/* 四张渠道卡等高；字段多的渠道在卡内分两列，避免整行留白 */}
-            <div className="grid gap-4 grid-cols-2">
+            <div className="grid gap-4 grid-cols-1 lg:grid-cols-2">
               {channelRows.map((ch) => {
                 const dense = ch.fields.length > 2;
                 return (
                   <div
                     key={ch.id}
-                    className="rounded-lg border px-3.5 py-3 min-w-0 flex flex-col"
+                    className="subcard flex flex-col"
                     style={{ borderColor: 'var(--rg-border)' }}
                   >
                     <div className="mb-2.5 flex items-center gap-2">
@@ -431,12 +447,12 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                         {ch.active ? '生效中' : '未生效'}
                       </Chip>
                     </div>
-                    <div className={dense ? 'grid gap-x-4 gap-y-2.5 grid-cols-2' : 'flex flex-col gap-2.5'}>
+                    <div className={dense ? 'grid gap-x-4 gap-y-2.5 grid-cols-1 sm:grid-cols-2' : 'flex flex-col gap-2.5'}>
                       {ch.fields.map((f) => (
                         <Field
                           key={String(f.id)}
                           label={f.hint ? `${f.label}（${f.hint}）` : f.label}
-                          className="font-mono text-[12px]"
+                          className="font-mono text-aux"
                           // 密钥类字段不回显明文：已配置时留空并显示掩码提示，避免 token 出现在屏幕上
                           type={f.secret && notify.data?.[f.id] ? 'password' : 'text'}
                           value={String(draft[f.id] ?? '')}
@@ -461,14 +477,14 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               <div className="text-aux font-medium mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
                 事件开关
               </div>
-              <div className="grid gap-2 grid-cols-3">
+              <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
                 {events.map((ev) => (
                   <button
                     key={ev.id}
                     type="button"
                     aria-pressed={ev.enabled}
                     disabled={busy === 'notify'}
-                    className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-[12px] cursor-pointer transition-colors disabled:opacity-60"
+                    className="flex items-center justify-between gap-2 rounded-md border px-2.5 py-1.5 text-aux cursor-pointer transition-colors disabled:opacity-60"
                     style={{
                       borderColor: ev.enabled ? 'var(--rg-border-strong)' : 'var(--rg-border)',
                       background: ev.enabled ? 'var(--rg-brand-50)' : 'transparent',
@@ -477,7 +493,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                     onClick={() => saveNotify({ events: { ...(notify.data?.events ?? {}), [ev.id]: !ev.enabled } })}
                   >
                     <span className="truncate">{ev.label}</span>
-                    <span className="shrink-0">{ev.enabled ? '开启' : '关闭'}</span>
+                    <span className="shrink-0">{ev.enabled ? '已启用' : '已停用'}</span>
                   </button>
                 ))}
               </div>
@@ -502,9 +518,9 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
           <ErrorState message={backup.error} onRetry={backup.reload} />
         ) : (
           <div className="flex flex-col gap-3">
-            <div className="grid gap-4 grid-cols-2 items-start">
+            <div className="grid gap-4 grid-cols-1 lg:grid-cols-2 items-start">
               <div
-                className="rounded-lg border px-3.5 py-3 min-w-0"
+                className="subcard"
                 style={{ borderColor: 'var(--rg-border)' }}
               >
                 <div className="mb-2 flex items-center gap-2">
@@ -516,7 +532,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                     tone={backup.data?.enabled ? 'ok' : 'neutral'}
                     dot={backup.data?.enabled ? 'dot-ok' : 'dot-off'}
                   >
-                    {backup.data?.enabled ? '已开启' : '已关闭'}
+                    {backup.data?.enabled ? '已启用' : '已停用'}
                   </Chip>
                 </div>
                 <div className="flex flex-col gap-2.5">
@@ -534,7 +550,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   <Field
                     label="间隔（小时）"
                     type="number"
-                    className="font-mono text-[12px]"
+                    className="font-mono text-aux"
                     min={1}
                     max={168}
                     value={String(keepDraft.intervalHours)}
@@ -543,7 +559,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   <Field
                     label="保留份数"
                     type="number"
-                    className="font-mono text-[12px]"
+                    className="font-mono text-aux"
                     min={1}
                     max={50}
                     value={String(keepDraft.keep)}
@@ -560,16 +576,16 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   >
                     {busy === 'backup-settings' ? '保存中…' : '保存定时设置'}
                   </Button>
-                  <div className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                     {backup.data?.timer?.nextRunAt
-                      ? `下次运行：${backup.data.timer.nextRunAt}`
+                      ? `下次运行：${formatTime(backup.data.timer.nextRunAt)}`
                       : '定时任务未启动'}
                   </div>
                 </div>
               </div>
 
               <div
-                className="rounded-lg border px-3.5 py-3 min-w-0"
+                className="subcard"
                 style={{ borderColor: 'var(--rg-border)' }}
               >
                 <div className="mb-2 flex items-center gap-2">
@@ -580,7 +596,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                 </div>
                 <dl className="flex flex-col text-[13px]">
                   {[
-                    { k: '时间', v: backup.data?.lastBackupAt || '—', mono: true },
+                    { k: '时间', v: formatTime(backup.data?.lastBackupAt), mono: true },
                     {
                       k: '结果',
                       v:
@@ -600,11 +616,11 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                       className="grid gap-2 py-[5px] items-baseline"
                       style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                     >
-                      <dt className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                         {row.k}
                       </dt>
                       <dd
-                        className={`m-0 text-[12px] break-all ${row.mono ? 'font-mono' : ''}`}
+                        className={`m-0 text-aux break-all ${row.mono ? 'font-mono' : ''}`}
                       >
                         {row.v}
                       </dd>
@@ -614,8 +630,8 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               </div>
             </div>
 
-            <div className="border rounded-lg overflow-hidden" style={{ borderColor: 'var(--rg-border)' }}>
-              <table className="w-full border-collapse text-[13px]">
+            <div className="rounded-lg border overflow-x-auto" style={{ borderColor: 'var(--rg-border)' }}>
+              <table className="data-table">
                 <thead>
                   <tr>
                     <th className="th">文件</th>
@@ -636,9 +652,9 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                       const target = b.path ?? '';
                       return (
                         <tr key={b.file} className="row-hover">
-                          <td className="td font-mono text-[12px] break-all">{b.file}</td>
+                          <td className="td td-mono break-all">{b.file}</td>
                           <td className="td cell-num">{formatSize(b.sizeBytes)}</td>
-                          <td className="td font-mono text-[12px]">{b.createdAt || '—'}</td>
+                          <td className="td td-mono">{formatTime(b.createdAt)}</td>
                           <td className="td cell-act">
                             <div className="flex items-center gap-1.5 justify-end">
                               <Button
@@ -674,7 +690,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             </div>
 
             {inspect && (
-              <div className="rounded-lg border px-3.5 py-3" style={{ borderColor: 'var(--rg-border)' }}>
+              <div className="subcard">
                 <div className="mb-2 flex items-center gap-2">
                   <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
                     {inspect.file} 内容
@@ -686,7 +702,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                 </div>
                 <dl className="flex flex-col text-[13px]">
                   <div className="grid gap-2 py-[5px] items-baseline" style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}>
-                    <dt className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>校验</dt>
+                    <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>校验</dt>
                     <dd className="m-0">
                       <Chip tone={inspect.checksumOk ? 'ok' : 'danger'} dot={inspect.checksumOk ? 'dot-ok' : 'dot-error'}>
                         {inspect.checksumReason ?? (inspect.checksumOk ? '校验和一致' : '校验未通过')}
@@ -706,8 +722,8 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                       className="grid gap-2 py-[5px] items-baseline"
                       style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                     >
-                      <dt className="text-[12px]" style={{ color: 'var(--rg-text-tertiary)' }}>{row.k}</dt>
-                      <dd className="m-0 font-mono text-[12px]">{row.v}</dd>
+                      <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>{row.k}</dt>
+                      <dd className="m-0 font-mono text-aux">{row.v}</dd>
                     </div>
                   ))}
                 </dl>

@@ -401,6 +401,10 @@ router.post('/v1/messages', async (req, res) => {
 
   const out = exportAnthropic();
   let hadToolCall = false;
+  // content_block 序号分配：Anthropic 协议按 event.index 区分块，文本与每个
+  // 工具调用各占一个块；全部压在 0 会让客户端把多个工具的参数拼进同一块。
+  let anthropicNextBlock = 0;
+  let anthropicTextBlock = -1; // 文本块序号：首个 text 事件分配，连续 delta 共用
   let upstreamFinish = null; // 上游 done 事件的结束原因（截断判定依据）
   /**
    * 流式错误回灌账号池用的账号 id。
@@ -419,8 +423,24 @@ router.post('/v1/messages', async (req, res) => {
     sawEvent = true;
     let bytes = [];
     switch (evt.type) {
-      case 'text': bytes = out.text(msgId, model, evt.content, evt.reasoning); break;
-      case 'tool_call': hadToolCall = true; toolCallCount += 1; bytes = out.toolCall(msgId, model, evt.call); break;
+      case 'text':
+        if (anthropicTextBlock < 0) {
+          anthropicTextBlock = anthropicNextBlock++;
+          // 严格按 Anthropic 协议解析的客户端要求 index 对应的 start 帧先于
+          // delta；exportAnthropic.text 只发 delta，这里在首块时补 start。
+          bytes.push(`data: ${JSON.stringify({
+            type: 'content_block_start',
+            index: anthropicTextBlock,
+            content_block: { type: 'text', text: '' },
+          })}\n\n`);
+        }
+        bytes = bytes.concat(out.text(msgId, model, evt.content, evt.reasoning, anthropicTextBlock));
+        break;
+      case 'tool_call':
+        hadToolCall = true;
+        toolCallCount += 1;
+        bytes = out.toolCall(msgId, model, evt.call, anthropicNextBlock++);
+        break;
       case 'done': upstreamFinish = evt.finish_reason || 'stop'; return;
       case 'token_usage': lastUsage = evt.data || null; return;
       case 'error':
@@ -468,7 +488,10 @@ router.post('/v1/messages', async (req, res) => {
       if (hadToolCall) {
         res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
       } else {
-        res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+        // 文本块序号可能不是 0（工具调用先到时文本块排在后面）；
+        // 没有文本事件时退回 0，保持旧行为。
+        const textBlockIndex = anthropicTextBlock < 0 ? 0 : anthropicTextBlock;
+        res.write(`data: ${JSON.stringify({ type: 'content_block_stop', index: textBlockIndex })}\n\n`);
         res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
       }
       res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);

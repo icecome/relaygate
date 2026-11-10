@@ -157,7 +157,7 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
               {loading ? '探测中…' : '重新探测'}
             </Button>
             {preview?.path && (
-              <span className="text-[11px] break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
                 {preview.path}
               </span>
             )}
@@ -182,7 +182,7 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
         )}
 
         {!loading && canImport && !imported && (
-          <table className="card-table w-full border-collapse text-[13px]">
+          <table className="data-table">
             <thead>
               <tr>
                 <th className="th">账号</th>
@@ -193,12 +193,12 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
             </thead>
             <tbody>
               <tr className="row-hover">
-                <td className="td" data-label="账号">{account?.label || '—'}</td>
-                <td className="td font-mono text-[12px]" data-label="用户 ID">
+                <td className="td">{account?.label || '—'}</td>
+                <td className="td td-mono">
                   {account?.userId || '—'}
                 </td>
-                <td className="td" data-label="凭据模式">{account?.mode || '—'}</td>
-                <td className="td" data-label="状态">已登录，可导入</td>
+                <td className="td">{account?.mode || '—'}</td>
+                <td className="td">已登录，可导入</td>
               </tr>
             </tbody>
           </table>
@@ -214,8 +214,8 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
             />
             <Note>
               {imported.disabled
-                ? '该账号当前处于停用状态。ZCode 的套餐领取只处理已启用账号，点「启用并完成」后才会参与每日 00:30 / 21:30 的探测。'
-                : '导入即启用，已参与每日 00:30 / 21:30 的套餐探测与领取。ZCode 账号不参与对话转发（上游按设备指纹识别客户端，头形态未验证前不并入转发池）。'}
+                ? '该账号当前处于停用状态。ZCode 的套餐领取只处理已启用账号，点「启用并完成」后才会参与每日定时探测（时刻见「运营面」设置）。'
+                : '导入即启用，已参与每日定时探测与领取（时刻见「运营面」设置）。ZCode 账号不参与对话转发（上游按设备指纹识别客户端，头形态未验证前不并入转发池）。'}
             </Note>
           </>
         )}

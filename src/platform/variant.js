@@ -61,7 +61,10 @@ const VARIANTS = {
       // 是「逐会话聚合」而非 WorkBuddy 那种逐请求，一行等于一次完整会话的
       // 积分与 token 汇总。2026-10 实测 CN 域可用（v1 路径）。
       billing: true,
+      // oauthLogin = 授权换票续期（Trae 的 refreshToken 由 OAuth 换票端点发放）；
+      // oauthOnboarding = 渠道卡片上的「OAuth 登录」接入入口。Trae 两者皆有。
       oauthLogin: true,
+      oauthOnboarding: true,
       deviceFingerprint: true,
       // 有 refreshToken 且可静默续期（scheduler 的保活扫描按本能力位筛账号）。
       // 此前该扫描复用 oauthLogin，对 Trae 恰好成立；引入 Raccoon（非 OAuth
@@ -126,15 +129,24 @@ const VARIANTS = {
     // 离线拿不到），readAuthFile() 对这类文件一律返回 null。入口保留只为让探测
     // 路由（admin-channels.localProbe）能给出明确原因，而非笼统的「未找到登录态」。
     // 真正可用的接入路径是 'paste'（需先按 docs/02-technical/workbuddy-at-rest-crypto.md
-    // 第二节解密 envelope 得到明文 JWT）。
-    onboarding: ['local', 'paste'],
+    // 第二节解密 envelope 得到明文 JWT）与 'oauth'（无感登录：不退出当前客户端，
+    // 在系统浏览器完成授权后新账号自动入库；实现见 workbuddy/oauth.js，
+    // 端点为 {billing}/v2/plugin/auth/state + auth/token + login/account，
+    // 对标 WorkDaddy 的「免退出 OAuth 授权」）。
+    onboarding: ['oauth', 'local', 'paste'],
     capability: {
       chat: true,
       checkin: true,
       balance: true,
       growth: true,
       billing: true,
+      // oauthLogin 的语义是「OAuth 授权换票续期」（scheduler 兼作续期判据）。
+      // WorkBuddy 不是 OAuth 换票体系；它的「无感登录新账号」（state + 轮询，
+      // 见 workbuddy/oauth.js）由 oauthOnboarding 单独声明 —— 两者不是一件事，
+      // 此前混在一个位上，渠道卡片把「有无登录入口」误读成了这个位。
       oauthLogin: false,
+      // 有「无感登录新账号」入口（渠道卡片接入方式之一）。
+      oauthOnboarding: true,
       deviceFingerprint: false,
       // 有 refreshToken 且可静默续期（POST https://www.codebuddy.cn/v2/plugin/auth/token/refresh，
       // X-Refresh-Token 头；实现见 workbuddy/auth.js#refresh）。
@@ -157,7 +169,9 @@ const VARIANTS = {
       domain: { cn: 'copilot.tencent.com', global: 'www.workbuddy.ai' },
       regionPattern: 'workbuddy\\.ai',
     },
-    // 客户端身份（2026-10-21 起按桌面端 5.8.3 实测形态）。
+    // 客户端身份（2026-11-10 起按桌面端 5.9.3 实测形态；5.8.3 取证见
+    // docs/05-incidents/workbuddy-channel-detection-2026-10-21.md，5.9.3 差异见
+    // docs/05-incidents/workbuddy-channel-detection-2026-11-10.md §4）。
     //
     // 旧值 `CLI/2.63.2 CodeBuddy/2.63.2` + `X-Client-Platform: web` 是
     // 「CodeBuddy 插件（web 端）」的身份，而上游 chat 的渠道校验认的是
@@ -166,13 +180,13 @@ const VARIANTS = {
     // resources/app.asar 里 main/server.js 的 buildVlmGatewayHeaders 与
     // applyGatewayHeaders（见 docs/05-incidents/workbuddy-channel-detection-2026-10-21.md）。
     identity: {
-      userAgent: 'WorkBuddy/5.8.3 WorkBuddy/5.8.3 CLI/2.161.0',
+      userAgent: 'WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0',
       productCode: 'workbuddy',
       product: 'SaaS',
       // 桌面端版本：X-IDE-Version 与 UA 的第一段都取它
-      appVersion: '5.8.3',
+      appVersion: '5.9.3',
       // 随包 CLI 版本：UA 末段，取自 cli/package.json 的 publishConfig.customPackage.version
-      cliVersion: '2.161.0',
+      cliVersion: '2.165.0',
       // 客户端固定带 X-Private-Data: true（关闭「隐私数据通道」）
       privateData: 'true',
       // X-IDE-Type / X-IDE-Name 恒为 WorkBuddy（桌面端写死）

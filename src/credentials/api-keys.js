@@ -227,8 +227,8 @@ function updateKey(id, patch = {}) {
     rpm = patch.rpmLimit == null ? null : Math.trunc(Number(patch.rpmLimit));
   }
   db().prepare(
-    'UPDATE api_keys SET label = ?, enabled = ?, scopes = ?, resources = ?, expires_at = ?, rpm_limit = ? WHERE id = ?',
-  ).run(label, enabled, scopes, resources, expiresAt, rpm, id);
+    'UPDATE api_keys SET label = ?, enabled = ?, scopes = ?, resources = ?, expires_at = ?, rpm_limit = ?, platform = ? WHERE id = ?',
+  ).run(label, enabled, scopes, resources, expiresAt, rpm, existing.platform, id);
   return getKey(id);
 }
 
@@ -351,19 +351,77 @@ function resetLoginKey({ label = 'login', plainKey = null } = {}) {
  * 平台密钥默认 scopes 只有 models:invoke，直接上线会导致存量客户端模型列表 403。
  * 迁移在启动时执行一次：为所有启用且缺 models:read 的 access 密钥补上，幂等；
  * 管理面模型列表是双面端点的基础可用性，因此显式收窄过 scope 的密钥同样补齐。
+ *
+ * ⚠️ 2026-11-07 根因修复（本函数此前是「单个模型全部 401/403、只剩聚合虚拟模型
+ * 可用」的直接原因）：
+ *
+ * 上一版对**scopes 为 NULL 的历史密钥**（scopes 列引入于 2026-10-03，此前创建的
+ * 密钥该列为空）取 `parseJsonArr(row.scopes, [])` 得到 `[]`，再 `[...[], 'models:read']`
+ * 写回，于是把「NULL = 走默认值（含 models:invoke）」硬写成「只有 models:read」。
+ * 结果：这些密钥能列模型（models:read 命中）却**调不动任何单个物理模型**
+ * （`canUseModel` → `canInvokeModel` 要求 models:invoke），返回
+ * `403 access denied: scope_missing:models:invoke`，type=auth_error。
+ * 而虚拟模型分支不校验 scope（见 middleware/model-access.js 的虚拟分支），
+ * 于是症状恰好是「聚合虚拟模型可用、后端单个模型提示密钥失效」。
+ *
+ * 现在的口径分两路，不再有「空列表」这条静默降级路径：
+ *   - scopes 为 NULL/空（历史密钥，从未显式收窄）→ 物化该平台的完整默认 scope；
+ *   - scopes 非空（用户显式配过）→ 只补 models:read，尊重显式收窄。
+ *
  * @returns {string[]} 补齐过的密钥 ID 列表
  */
 function ensureModelsReadScope() {
   const patched = [];
-  const rows = db().prepare("SELECT id, scopes FROM api_keys WHERE kind = 'access' AND enabled = 1").all();
+  const rows = db().prepare("SELECT id, platform, scopes FROM api_keys WHERE kind = 'access' AND enabled = 1").all();
   for (const row of rows) {
-    const list = parseJsonArr(row.scopes, []);
-    if (list.includes('models:read')) continue;
-    const merged = [...list, 'models:read'];
+    const raw = parseJsonArr(row.scopes, null);
+    // 历史密钥：列值为 NULL/空 → 按平台默认值物化（与 verifyAccessKey 的隐含默认一致，
+    // 因此对鉴权结果零行为差异，只是把「隐含」变成「显式」）
+    if (raw == null || !raw.length) {
+      const full = DEFAULT_SCOPES[row.platform] || DEFAULT_SCOPES.trae;
+      db().prepare('UPDATE api_keys SET scopes = ? WHERE id = ?').run(JSON.stringify(full), row.id);
+      patched.push(row.id);
+      continue;
+    }
+    if (raw.includes('models:read')) continue;
+    const merged = [...raw, 'models:read'];
     db().prepare('UPDATE api_keys SET scopes = ? WHERE id = ?').run(JSON.stringify(merged), row.id);
     patched.push(row.id);
   }
   return patched;
+}
+
+/** 「能发起调用」的 scope：一把 access 密钥至少要有一个，否则它只能列模型、调不动任何东西。 */
+const INVOKE_SCOPES = ['models:invoke', 'router:invoke'];
+
+/**
+ * 访问密钥 scope 不变式修复：补齐缺失的 invoke 能力。
+ *
+ * 为什么单独一个函数而不是并进 ensureModelsReadScope：两者的判据不同——
+ * 前者是「缺一个具体 scope」，这里是「缺一整类能力」。把上一版迁移写坏的行
+ * （scopes 恰好被写成 `["models:read"]`）与「用户显式只要 models:read」区分不开，
+ * 但两者的**实际后果完全一样**：密钥调不动任何模型。既然 models:read 单独存在
+ * 没有任何可用场景（列得出模型却一个都调不了），这里按「坏行」修，并按平台
+ * 默认值补齐 invoke（不动用户已有的其它 scope）。
+ *
+ * 幂等：已有任一 invoke scope 的行不动。
+ * @returns {{id:string, platform:string, before:string[], after:string[]}[]}
+ */
+function ensureInvokeScope() {
+  const repaired = [];
+  const rows = db().prepare("SELECT id, platform, scopes FROM api_keys WHERE kind = 'access' AND enabled = 1").all();
+  for (const row of rows) {
+    const raw = parseJsonArr(row.scopes, null);
+    // NULL/空由 ensureModelsReadScope 负责物化，这里不重复处理
+    if (raw == null || !raw.length) continue;
+    if (INVOKE_SCOPES.some((s) => raw.includes(s))) continue;
+    const defaults = DEFAULT_SCOPES[row.platform] || DEFAULT_SCOPES.trae;
+    const merged = [...raw];
+    for (const s of defaults) if (!merged.includes(s)) merged.push(s);
+    db().prepare('UPDATE api_keys SET scopes = ? WHERE id = ?').run(JSON.stringify(merged), row.id);
+    repaired.push({ id: row.id, platform: row.platform, before: raw, after: merged });
+  }
+  return repaired;
 }
 
 /**
@@ -417,6 +475,7 @@ module.exports = {
   sweepExpired,
   bootstrapFromEnv,
   ensureModelsReadScope,
+  ensureInvokeScope,
   hashKey,
   genPlainKey,
   isUsableRow,

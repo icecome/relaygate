@@ -11,6 +11,7 @@ const store = require('../credentials/store');
 const auth = require('../auth');
 const legacy = require('../lib/auth');
 const { checkinAllEnabled } = require('../upstream/checkin');
+const { withCheckinRound } = require('../upstream/checkin-lock');
 const { wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { refreshBalanceAllEnabled } = require('../upstream/balance');
 const { llmUtilsChat } = require('../upstream/client');
@@ -18,6 +19,7 @@ const { isModelConfigError, isPlanLimitError, isModelRateLimitError } = require(
 const { normalizeTraeMessages } = require('../transform/request');
 const wbChat = require('../workbuddy/chat');
 const { sleep } = require('../lib/util');
+const dailyRunState = require('./daily-run-state');
 const pool = require('../credentials/pool');
 const availability = require('../models/availability');
 const catalog = require('../models/catalog');
@@ -27,6 +29,14 @@ const { checkCreditAlerts } = require('./credit-alerts');
 const { appendTaskLog } = require('./task-log');
 const { appendCheckinTaskLog } = require('./checkin-log');
 const schedulerLock = require('./scheduler-lock');
+
+/**
+ * 「套餐额度不足」类结论的 TTL（6 小时）。
+ *
+ * 与模型下线类结论（默认 7 天）分开：PlanLimit（1005）是账号/套餐维度的状态，
+ * 换个号或升级套餐立刻可用，按 7 天隐藏会让面板长期看不到一个其实还能用的模型。
+ */
+const PLAN_LIMIT_TTL_MS = 6 * 3600 * 1000;
 
 let timers = [];
 let started = false;
@@ -153,11 +163,34 @@ async function refreshExpiringTokens() {
   return { refreshed, failed };
 }
 
-/** 每日任务：Trae 签到 + WorkBuddy 签到 → 刷余额 → 解冻。
- *  多账号按（日期, 账号 ID）确定性错峰分散，避免固定时刻批量请求上游；
- *  窗口由 scheduler-settings 的 checkinSpreadMinutes / balanceSpreadMinutes 控制（0=关闭）。 */
-async function runDailyCheckin() {
-  console.log('[scheduler] daily checkin start');
+/**
+ * 每日任务：Trae 签到 + WorkBuddy 签到 → 刷余额 → 解冻。
+ * 多账号按（日期, 账号 ID）确定性错峰分散，避免固定时刻批量请求上游。
+ *
+ * 外层套 withCheckinRound：与手动「全部签到」（routes/credentials.js →
+ * checkin-all）共用同一把轮级互斥锁。此前两方可同时在跑同一批账号，
+ * 各自只看见自己那半边，通知把「今日已全部签完」报成「签到 3 · 已签 5」
+ * （2026-11-03 实测，见 upstream/checkin-lock.js 的文件头）。
+ *
+ * @param {{trigger?:string}} [opts] trigger 用于任务日志与补跑标记
+ */
+async function runDailyCheckin(opts = {}) {
+  const trigger = opts.trigger || 'checkin-chain';
+  const out = await withCheckinRound(() => runDailyCheckinInner(trigger), { label: `scheduler:${trigger}` });
+  if (out && out.skipped) {
+    // 被跳过不算失败，也不标记「今日已跑」：真实那一轮结束时自己会标。
+    // 但要写任务日志——否则面板只见成功，看不出这轮没跑。
+    console.log('[scheduler] daily checkin skipped: 另一轮签到正在进行');
+    appendTaskLog({ task: 'checkin', trigger, ok: 0, failed: 0, total: 0, skipped: 1, reason: 'checkin_round_busy' });
+  }
+  return out;
+}
+
+async function runDailyCheckinInner(trigger) {
+  console.log(`[scheduler] daily checkin start (${trigger})`);
+  // 起跑即标记本自然日已执行（落盘），供重启后的补跑判据读取。
+  // 刻意在真正开始执行时标记、而不是成功后：否则一轮上游故障会让当天反复重试打上游。
+  dailyRunState.mark('checkin', { trigger });
   const eff = scheduleSettings.getEffective();
   const checkinSpread = Number(eff.checkinSpreadMinutes) || 0;
   const balanceSpread = Number(eff.balanceSpreadMinutes) || 0;
@@ -176,6 +209,10 @@ async function runDailyCheckin() {
     try {
       const { autoRunGrowth } = require('./growth-auto');
       const ga = await autoRunGrowth();
+      // 签到链自带一轮成长中心：把 'growth' 一并标记，否则开机时 checkin 与 growth
+      // 两条补跑会在同一时刻各起一遍（runGrowthAuto 的幂等靠 client_token 日粒度
+      // 种子兜住，不重复入账，但白打一轮上游 + 重复通知）。
+      dailyRunState.mark('growth', { trigger: `${trigger}-chain`, ok: ga.okCount, failed: ga.failCount });
       const acted = ga.results.reduce((n, r) => n + r.actions.filter((x) => x.ok && !x.skip).length, 0);
       if (acted || ga.failCount) {
         console.log(`[scheduler] growth auto: accounts=${ga.total} acted=${acted} failed=${ga.failCount}`);
@@ -208,8 +245,8 @@ async function runDailyCheckin() {
     const failedCount = (r.failed?.length || 0) + (wb.failed?.length || 0);
     console.log(`[scheduler] checkin trae ok=${r.ok.length} failed=${r.failed.length} | wb ok=${wb.ok?.length || 0} failed=${wb.failed?.length || 0}`);
     // 签到流程写入任务日志（Trae 与 WorkBuddy 分批）
-    if (r.total || r.claimed?.length) appendCheckinTaskLog({ edition: 'trae', batch: r, trigger: 'checkin-chain' });
-    if (wb.total || wb.claimed?.length || wb.failed?.length) appendCheckinTaskLog({ edition: 'workbuddy', batch: wb, trigger: 'checkin-chain' });
+    if (r.total || r.claimed?.length) appendCheckinTaskLog({ edition: 'trae', batch: r, trigger });
+    if (wb.total || wb.claimed?.length || wb.failed?.length) appendCheckinTaskLog({ edition: 'workbuddy', batch: wb, trigger });
     // 签到完成即推送汇总（成功与失败均通知）
     if (okCount || failedCount) {
       const first = (r.failed && r.failed[0]) || (wb.failed && wb.failed[0]) || {};
@@ -232,7 +269,15 @@ async function runDailyCheckin() {
       if (b && b.skipped) {
         console.log('[scheduler] balance skipped: 另一轮批量刷新进行中');
       } else {
-        for (const item of b.ok) pool.unfreezeIfHealthy(item.accountId);
+        // item.accountId || item.id：Raccoon 分支历史上返回 store.update() 的账号对象
+        // （键是 id 不是 accountId），undefined 传进 unfreezeIfHealthy → store.get(undefined)
+        // 会让 node:sqlite 抛「cannot be bound to SQLite parameter 1」，整条解冻+告警链
+        // 静默中断 19 天。balance.js 侧已归一形状，这里再兜一层并跳过空值。
+        for (const item of b.ok) {
+          const id = item.accountId || item.id;
+          if (!id) continue;
+          pool.unfreezeIfHealthy(id);
+        }
         console.log(`[scheduler] balance ok=${b.ok.length} failed=${b.failed.length}`);
         try {
           appendTaskLog({
@@ -392,37 +437,74 @@ async function runRotateAccounts(opts = {}) {
     try {
       appendTaskLog({ task: 'account-rotate', trigger: manual ? 'manual' : 'scheduler', ok: r.ok, failed: r.failed, total: (r.results || []).length });
     } catch { /* ignore */ }
+    /*
+     * 轮换结果通知：成功与失败**互斥**地各发一条。
+     *
+     * 此前的缺口（2026-11-10 修复）：只有 `failed > 0` 才发 rotate_fail，
+     * 只有存在 0 分账号才发 rotate_inactive。于是「全部成功 + 所有账号活跃」
+     * 这一最理想的情况一条通知都没有，用户无法区分「跑完且正常」与「没跑」。
+     *
+     * 现在：
+     *   failed > 0  → rotate_fail（带失败数与逐账号原因）
+     *   failed == 0 → rotate_done（带成功数；不含「是否切回起始号」——
+     *                  该状态由 rotate-accounts 内部回滚分支表达，未作为返回值透出）
+     * 两者都不与下面的 rotate_inactive 冲突：那条是「活跃度」维度，独立事件。
+     */
     if (r.failed) {
+      const fails = (r.results || [])
+        .filter((x) => x && x.ok === false)
+        .map((x) => `${x.label || String(x.uid || '').slice(0, 8)}：${x.msg || '未知原因'}`)
+        .slice(0, 5);
       notify('rotate_fail', {
-        message: `账号轮换 ${r.failed} 个失败`,
+        ok: r.ok,
+        failed: r.failed,
+        accounts: fails,
+        message: `账号轮换 ${r.ok} 个成功 / ${r.failed} 个失败${fails.length ? `；${fails.join('；')}` : ''}`,
       }, '账号轮换部分失败').catch(() => {});
+    } else {
+      /*
+       * 成功路径。
+       *
+       * ⚠️ 只使用 `rotateAll()` 真实返回的字段：`{ ok, failed, results, skippedUids }`
+       * （见 src/jobs/rotate-accounts.js 的 rotateAllInner 末尾）。
+       * 这里刻意不渲染「是否已切回起始账号」——那个状态由 rotate-accounts 内部的
+       * 回滚分支表达，没有作为返回值透出；凭猜写一个 `r.restored` 会永远显示
+       * 「停留在最后一个账号」，比不说更糟。要展示它，先让 rotateAll 返回该字段。
+       *
+       * `busy:true` 是互斥锁生效时的返回（ok=0 failed=0），它不是「完成」，
+       * 必须单列出来，否则会推一条「轮换完成：0 个账号」的误导消息。
+       *
+       * dedupe:false：每日一次的结论类通知，同一天手动多跑几次时每次都该发出，
+       * 被 1 小时去重窗口吞掉就等于「今天没有报告」。
+       */
+      const skipped = Array.isArray(r.skippedUids) ? r.skippedUids.length : 0;
+      if (r.busy) {
+        notify('rotate_done', {
+          message: '本次触发被跳过：另一轮账号轮换正在进行中。',
+        }, '账号轮换未执行（已被另一轮占用）').catch(() => {});
+      } else {
+        require('../notify').notifyDetail('rotate_done', {
+          ok: r.ok,
+          failed: 0,
+          message:
+            `账号轮换完成：${r.ok} 个账号已切换` +
+            (skipped ? `，${skipped} 个按排除规则跳过` : '') +
+            (r.ok === 0 ? '（未切换任何账号：可能没有可轮换的备份账号）' : ''),
+        }, `账号轮换完成：${r.ok} 个账号`, { dedupe: false }).catch(() => {});
+      }
     }
     // 轮换跑完后核对当日活跃度：活跃度靠真实使用产生，轮换只负责把客户端
     // 登上去，所以「轮换完成但仍 0 分」的号通常是当天没人用——值得提醒一次。
     // 放在轮换之后而不是别处，是因为此刻客户端刚被逐个登过，数据最新。
-    try {
-      const status = await rotate.checkStatus();
-      const inactive = status.filter((s) => !s.isActive && !s.error);
-      if (inactive.length) {
-        // accounts 必须是数组：notify 的 buildText 对 accounts 做 join（传字符串会抛错）
-        const labels = inactive.map((s) => s.label || String(s.uid || '').slice(0, 8));
-        const list = labels.join('、');
-        console.log(`[scheduler] rotate heatmap: ${status.length - inactive.length}/${status.length} 个账号今日活跃，0 分：${list}`);
-        // 每日一次的报告用 dedupe:false：否则同一小时内手动触发过轮换就会把
-        // 真正的报告吞进合并桶，用户当天收不到活跃度提醒。
-        require('../notify').notifyDetail('rotate_inactive', {
-          total: status.length,
-          inactive: inactive.length,
-          accounts: labels,
-          message: `轮换已跑完，今日活跃度仍为 0 的账号（${inactive.length}/${status.length}）：${list}。活跃度需真实使用客户端产生，建议抽空用这些号聊一句。`,
-        }, `轮换后 ${inactive.length} 个账号活跃度为 0`, { dedupe: false }).catch(() => {});
-        appendTaskLog({ task: 'rotate-heatmap', trigger: manual ? 'manual' : 'scheduler', ok: status.length - inactive.length, failed: inactive.length, total: status.length });
-      } else if (status.length) {
-        console.log(`[scheduler] rotate heatmap: ${status.length}/${status.length} 个账号今日活跃`);
-      }
-    } catch (e) {
+    //
+    // ⚠️ 这一段**不能阻塞**结果通知：checkStatus 对每个账号打一次上游（15s 超时），
+    // 8 个号最坏 120s。实测后果：`rotate_done` 已经发过了没问题，但**活跃度报告**
+    // 会把整个 runRotateAccounts 拖长，而调用方（/rotate/run）等的是这个 Promise。
+    // 因此这里不 await 它，改为后台跑并把结果写进任务日志与通知。
+    // 失败只记 warn，不影响已经确定的轮换结论。
+    runRotateHeatmapCheck({ rotate, manual }).catch((e) => {
       console.warn('[scheduler] rotate heatmap check failed:', String(e.message || e).slice(0, 120));
-    }
+    });
     return r;
   } catch (e) {
     state.lastError = `account-rotate: ${e.message}`;
@@ -430,6 +512,46 @@ async function runRotateAccounts(opts = {}) {
     appendTaskLog({ task: 'account-rotate', trigger: manual ? 'manual' : 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
     return { ok: 0, failed: 1, error: e.message };
   }
+}
+
+/**
+ * 轮换后的活跃度核对（独立函数，从 runRotateAccounts 里拆出来）。
+ *
+ * 拆出来的理由有两个，都是实测踩出来的：
+ *
+ * 1. **不能阻塞轮换结论**：checkStatus 对每个 WorkBuddy 账号打一次
+ *    `/activity/growth/heatmap`（15s 超时）。8 个账号最坏 120s。此前它 await 在
+ *    runRotateAccounts 里，导致「轮换完成」这个结论要等两分钟才返回，
+ *    而 /v1/admin/rotate/run 是同步等这个 Promise 的——面板上表现为长时间无响应。
+ * 2. **通知与核对解耦**：rotate_done 描述的是「轮换本身跑完了」，这个事实在
+ *    rotateAll() 返回那一刻就已经确定，没有任何理由被下游的网络检查推迟。
+ *
+ * 判据保持原样：`!isActive && !error` —— 有 error 的账号是「没查到」不是
+ * 「0 分」，不能混为一谈（否则上游抖动会推一批假告警）。
+ *
+ * @param {{rotate:object, manual:boolean}} args
+ */
+async function runRotateHeatmapCheck({ rotate, manual }) {
+  const status = await rotate.checkStatus();
+  const inactive = status.filter((s) => !s.isActive && !s.error);
+  if (inactive.length) {
+    // accounts 必须是数组：notify 的 buildText 对 accounts 做 join（传字符串会抛错）
+    const labels = inactive.map((s) => s.label || String(s.uid || '').slice(0, 8));
+    const list = labels.join('、');
+    console.log(`[scheduler] rotate heatmap: ${status.length - inactive.length}/${status.length} 个账号今日活跃，0 分：${list}`);
+    // 每日一次的报告用 dedupe:false：否则同一小时内手动触发过轮换就会把
+    // 真正的报告吞进合并桶，用户当天收不到活跃度提醒。
+    await require('../notify').notifyDetail('rotate_inactive', {
+      total: status.length,
+      inactive: inactive.length,
+      accounts: labels,
+      message: `轮换已跑完，今日活跃度仍为 0 的账号（${inactive.length}/${status.length}）：${list}。活跃度需真实使用客户端产生，建议抽空用这些号聊一句。`,
+    }, `轮换后 ${inactive.length} 个账号活跃度为 0`, { dedupe: false });
+    appendTaskLog({ task: 'rotate-heatmap', trigger: manual ? 'manual' : 'scheduler', ok: status.length - inactive.length, failed: inactive.length, total: status.length });
+  } else if (status.length) {
+    console.log(`[scheduler] rotate heatmap: ${status.length}/${status.length} 个账号今日活跃`);
+  }
+  return { total: status.length, inactive: inactive.length };
 }
 
 /** 兼容保留的空实现：旧调用点（restartRotate 与设置保存后的重排）不再需要
@@ -472,10 +594,45 @@ async function runModelProbe() {
     if (enabledEditions.has('workbuddy')) {
       try {
         let wbModels = await wbChat.modelCatalog(false);
+        let fromUpstream = wbModels.some((m) => typeof m.chat === 'boolean');
         if (!wbModels.length) {
           wbModels = wbChat.WB_MODELS.map((id) => ({ id, name: id }));
+          fromUpstream = false;
         }
+
+        // 目录对账（仅当目录来自上游时）：模型从目录消失后，旧的可用性记录
+        // （哪怕是 usable）会一直留着，面板上出现「早不在目录里却仍显示可用」
+        // 的僵尸条目（2026-11-08 现场：wb/hy4-preview、wb/glm-5v-turbo、wb/minimax-m3）。
+        // Trae 侧**不做**这种对账：get_detail_param 含 hidden 项、且不等于可调用
+        // 集合，拿它当存在性权威会误删仍然可用的记录。
+        //
+        // 安全闸：目录条目过少时跳过对账。上游偶发返回截断列表（部分账号权限不同、
+        // 或中间层限流返回残缺 JSON）时，照单对账会把整片记录删光——宁可留着
+        // 僵尸条目等下一轮，也不要做一次不可逆的误删。
+        const MIN_RECONCILE_SIZE = 10;
+        if (fromUpstream && wbModels.length >= MIN_RECONCILE_SIZE) {
+          const removed = availability.reconcile('wb/', wbModels.map((m) => 'wb/' + m.id));
+          if (removed.length) console.log(`[scheduler] availability reconcile: dropped ${removed.length} stale wb entries: ${removed.join(', ')}`);
+        } else if (fromUpstream) {
+          console.warn(`[scheduler] availability reconcile skipped: catalog only ${wbModels.length} entries (< ${MIN_RECONCILE_SIZE}), looks truncated`);
+        }
+
         for (const m of wbModels) {
+          // 只探对话模型：目录里的图片/视频生成模型（tag = text-to-image /
+          // text-to-video，或带 videoGeneration 块）走的是另一套后端，没有 chat
+          // 端点。拿 chat 打它们必然 11103「Backend [x] is not supported」，
+          // 那是**探活方式错**，不是模型不可用——此前会把它们写进可用性表并
+          // 在面板上长期挂红（2026-11-08 现场 4 个）。
+          const isChat = typeof m.chat === 'boolean' ? m.chat : wbChat.isChatModel(m);
+          if (!isChat) {
+            // 媒体模型的历史错误结论一并清掉：它们本就不该有 chat 可用性记录。
+            const mediaId = 'wb/' + m.id;
+            if (availability.entryOf(mediaId)) {
+              availability.reset(mediaId);
+              console.log(`[scheduler] availability cleanup: ${mediaId} is a media model (no chat endpoint), dropped stale verdict`);
+            }
+            continue;
+          }
           const id = 'wb/' + m.id;
           if (availability.statusOf(id) !== 'unknown') continue;
           targets.push({ id, platform: 'workbuddy' });
@@ -510,6 +667,15 @@ async function runModelProbe() {
           );
         }
         availability.markUsable(t.id);
+        // 平台归属证据：探活结果同时喂给 platform-ownership。
+        // 「这个模型 Trae 到底服务不服务」的判定必须有实测证据，不能只靠
+        // 会过期的硬编码名单（2026-11-07 事故：WB 静态名单里的 glm-5.3 等
+        // 名字 Trae 实测也能调，却被判 WB 独占 → 平台密钥调单个模型全 403）。
+        try {
+          require('../models/platform-ownership').recordProbe(
+            t.id, true, { platform: t.platform === 'workbuddy' ? 'workbuddy' : 'trae' },
+          );
+        } catch { /* 证据写入失败不影响探活结论 */ }
         usable += 1;
         console.log(`[scheduler] probe ok ${t.id}`);
       } catch (e) {
@@ -518,11 +684,22 @@ async function runModelProbe() {
           console.warn(`[scheduler] probe skip ${t.id}: ${e.message}`);
         } else if (isModelConfigError(e)) {
           availability.markUnavailable(t.id, e.message);
+          // 模型配置类错误 = 「这个平台确实不服务它」的强证据，同样入归属表
+          try {
+            require('../models/platform-ownership').recordProbe(
+              t.id, false,
+              { platform: t.platform === 'workbuddy' ? 'workbuddy' : 'trae', note: e.message },
+            );
+          } catch { /* ignore */ }
           unavailable += 1;
           console.log(`[scheduler] probe unavailable ${t.id}: ${e.message}`);
         } else if (isPlanLimitError(e)) {
-          // 套餐额度不足：对当前池确实不可用，标明原因（7 天 TTL 后自动重探）
-          availability.markUnavailable(t.id, e.message);
+          // 套餐额度不足（1005）是**账号/套餐级**结论，不是模型级结论：
+          // 同池其它账号、或该账号升级套餐后就能用。此前按默认 7 天 TTL 写成
+          // 不可用并隐藏该模型（2026-11-08 现场：Trae 的 kimi-k3.1-pro 因为一次
+          // PlanLimit 被隐藏了一周）。这里给短 TTL，且 reason 前缀标明是「套餐」，
+          // 让面板能区分「模型下线」与「当前套餐不含该模型」。
+          availability.markUnavailable(t.id, `[套餐层] ${e.message}`, { ttlMs: PLAN_LIMIT_TTL_MS });
           unavailable += 1;
           console.log(`[scheduler] probe plan-limit ${t.id}: ${e.message}`);
         } else {
@@ -557,6 +734,71 @@ async function runModelProbe() {
     appendTaskLog({ task: 'model-probe', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
     return { probed: 0, usable: 0, unavailable: 0, skipped: 1, error: e.message };
   }
+}
+
+/**
+ * 错过时刻的补跑（关机跨过签到点 → 开机当天必须补上）。
+ *
+ * 此前的失败模式：nextAt() 只算「今天/明天 HH:mm」，已过点就 +1 天；
+ * state.lastCheckinAt 又是进程内变量，重启即失忆。于是「关机 → 次日开机」
+ * 这条路径上当天**永远不会**跑签到。实测 2026-10-31 / 11-01 两天
+ * task-log 里没有任何 checkin 记录，16 个号的每日积分整天漏领。
+ *
+ * 判据用落盘的 daily-runs.json（不是 task-log：500 行环形裁剪 + 手动触发写同一
+ * task 会污染判据；不是 last_checkin_at：整轮抛错时一行都没写，区分不了
+ * 「没跑」与「跑过且失败」）。
+ *
+ * 只给**有当日价值**的任务补跑：
+ *   - checkin：漏一天=少一天积分，必须补。
+ *   - growth：派猫旅行/任务奖励同样是当日额度，必须补。
+ *   - keepalive / rotate 不补：前者是凭据安全网，scheduleTokenSweep 每 15 分钟
+ *     已在扫临期 token，错过 22:00 那一轮不损失任何额度；后者只是把客户端
+ *     登上去，补跑没有收益还会在刚开机时抢事件循环。
+ *
+ * @param {number} hour 计划时刻（本地）
+ * @param {number} minute 计划时刻（本地）
+ * @param {'checkin'|'growth'} label 任务名，同时作为 daily-runs.json 的键
+ * @param {(opts:{trigger:string}) => Promise<any>} fn 实际执行体
+ * @param {{delayMs?:number}} [options] delayMs 覆盖开机延迟（测试用；生产默认 60s）
+ * @returns {{scheduled:boolean, reason?:string, lagMinutes?:number}} 决策结果（供测试与日志）
+ */
+function scheduleCatchup(hour, minute, label, fn, options = {}) {
+  const due = new Date();
+  due.setHours(hour, minute, 0, 0);
+  const dueMs = due.getTime();
+  if (Date.now() <= dueMs) return { scheduled: false, reason: 'not_due_yet' }; // 还没到点：正常墙钟排程会跑，不补
+  if (dailyRunState.ranToday(label)) {
+    const last = dailyRunState.lastRun(label);
+    console.log(`[scheduler] ${label} 今日已执行（${last.at}），不补跑`);
+    return { scheduled: false, reason: 'already_ran_today', lagMinutes: Math.round((Date.now() - dueMs) / 60000) };
+  }
+  const lagMin = Math.round((Date.now() - dueMs) / 60000);
+  // 开机后默认延迟 60s：让 token 预扫与 auth-sync 先把凭据落定，避免拿旧 token 打签到
+  const delayMs = Number(options.delayMs) > 0 ? Number(options.delayMs) : 60 * 1000;
+  const epoch = scheduleEpoch;
+  const t = setTimeout(async () => {
+    // 只看代次：stop()/restart() 会递增 scheduleEpoch，本回调随即作废。
+    // 刻意不再附加 `started` 条件——本函数唯一的生产调用点在 start() 内，
+    // 那时 started 恒为真，加上它只会让这条判据在测试里不可达。
+    if (epoch !== scheduleEpoch) return;
+    // 到点再判一次：延迟窗口内可能已有别的链路把这件事做了
+    //（checkin 补跑链尾就包含成长中心；或用户在这几分钟里手动跑过）。
+    // 只在排程时判过一次的话，两条补跑会各跑一遍。
+    if (dailyRunState.ranToday(label)) {
+      console.log(`[scheduler] ${label} 补跑取消：延迟窗口内今日已执行`);
+      return;
+    }
+    console.log(`[scheduler] ${label} 补跑：计划时刻已过 ${lagMin}min 且今日未执行`);
+    try {
+      await fn({ trigger: 'catchup' });
+    } catch (e) {
+      console.error(`[scheduler] ${label} catchup failed: ${e.message}`);
+    }
+  }, delayMs);
+  t.unref?.();
+  timers.push(t);
+  console.log(`[scheduler] ${label} 已过点 ${lagMin}min 且今日未跑，${delayMs / 1000}s 后补跑`);
+  return { scheduled: true, reason: 'catchup_scheduled', lagMinutes: lagMin };
 }
 
 function scheduleOnce(hour, minute, label, fn) {
@@ -622,8 +864,11 @@ function scheduleModelProbe(eff) {
   console.log(`[scheduler] model probe every ${hours}h (max ${maxPerRun}/run, first in ${firstDelay / 1000}s)`);
 }
 
-async function runGrowthAuto() {
-  console.log('[scheduler] growth auto start');
+async function runGrowthAuto(opts = {}) {
+  const trigger = opts.trigger || 'scheduler';
+  console.log(`[scheduler] growth auto start (${trigger})`);
+  // 起跑即标记今日已执行（与 checkin 同一判据文件），供补跑逻辑读取
+  dailyRunState.mark('growth', { trigger });
   try {
     const { autoRunGrowth } = require('./growth-auto');
     const ga = await autoRunGrowth();
@@ -632,7 +877,7 @@ async function runGrowthAuto() {
     if (ga.total > 0) {
       appendTaskLog({
         task: 'growth-auto',
-        trigger: 'scheduler',
+        trigger,
         ok: ga.okCount,
         failed: ga.failCount,
         total: ga.total,
@@ -653,7 +898,7 @@ async function runGrowthAuto() {
     state.lastError = `growth-auto: ${e.message}`;
     console.error('[scheduler] growth auto error', e.message);
     // 整轮抛错时也要落任务日志：否则面板「任务日志」里这条任务永远只有成功记录
-    appendTaskLog({ task: 'growth-auto', trigger: 'scheduler', ok: 0, failed: 1, total: 0, error: e.message });
+    appendTaskLog({ task: 'growth-auto', trigger, ok: 0, failed: 1, total: 0, error: e.message });
     notify('checkin_fail', { message: `成长中心自动化失败：${e.message}` }, '成长中心自动化失败').catch(() => {});
     return { total: 0, okCount: 0, failCount: 1, error: e.message };
   }
@@ -676,6 +921,8 @@ function scheduleGrowthPoll(eff) {
     return;
   }
   scheduleOnce(eff.growthHour, eff.growthMinute, 'growth', runGrowthAuto);
+  // 成长中心同样是当日额度（派猫旅行/任务奖励），错过要补
+  scheduleCatchup(eff.growthHour, eff.growthMinute, 'growth', runGrowthAuto);
 }
 
 function start() {
@@ -701,6 +948,10 @@ function start() {
   scheduleTokenSweep(eff.tokenSweepMinutes);
 
   scheduleOnce(eff.checkinHour, eff.checkinMinute, 'checkin', runDailyCheckin);
+  // 关机跨过签到时刻 → 开机补跑（判据见 daily-run-state.js）。
+  // 放在 scheduleOnce 之后：两者互不冲突——scheduleOnce 排的是**下一次**到点，
+  // 补跑处理的是**今天这一次**已错过且未执行的到点。
+  scheduleCatchup(eff.checkinHour, eff.checkinMinute, 'checkin', runDailyCheckin);
   scheduleOnce(eff.keepaliveHour, eff.keepaliveMinute, 'keepalive', runKeepalive);
   // 轮换定时仅看时刻是否排上；执行与否由 runRotateAccounts 内部的
   // rotate-settings.enabled 唯一开关判定（m-32）
@@ -785,6 +1036,10 @@ function snapshot() {
     growthHour: eff.growthHour,
     growthMinute: eff.growthMinute,
     rotateSettings,
+    // 签到轮互斥状态 + 今日执行判据：面板据此回答「今天这一轮到底跑没跑」，
+    // 不再只能看进程内 lastCheckinAt（重启即失忆，正是漏签的成因）
+    checkinRoundRunning: require('../upstream/checkin-lock').isRoundRunning(),
+    dailyRuns: { checkin: dailyRunState.lastRun('checkin'), growth: dailyRunState.lastRun('growth') },
     ...state,
   };
 }
@@ -795,6 +1050,10 @@ module.exports = {
   restart,
   restartRotate,
   snapshot,
+  // 导出给测试与面板：补跑决策本身是纯判据（不依赖真实定时器），
+  // 不导出的话「关机错过 08:45 会不会补」这条根因就没有可回归的验证面。
+  scheduleCatchup,
+  dailyRunState,
   refreshExpiringTokens,
   runDailyCheckin,
   runKeepalive,

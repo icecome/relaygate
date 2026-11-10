@@ -15,7 +15,16 @@ export interface ChannelCapability {
   balance: boolean;
   growth: boolean;
   billing: boolean;
+  /**
+   * OAuth **换票续期**（refreshToken 由授权换票端点发放，保活链路按此判）。
+   * 与「面板上有 OAuth 登录入口」不是一件事——后者是 `oauthOnboarding`。
+   */
   oauthLogin: boolean;
+  /**
+   * 有「OAuth 登录」接入方式（onboarding kind='oauth'）：
+   * Trae = 授权页换票；WorkBuddy = 无感登录新账号（不退出当前客户端）。
+   */
+  oauthOnboarding?: boolean;
   deviceFingerprint: boolean;
   /** 运营面：限时套餐 / 积分活动探测与领取（ZCode、Qoder） */
   rewardClaim?: boolean;
@@ -28,6 +37,13 @@ export interface ChannelCapability {
   tokenRefresh?: boolean;
   /** 一次性登录奖励（Raccoon；与每日活动领取区分开） */
   loginReward?: boolean;
+  /**
+   * 「每日保活」：每天代做一次等价动作以延长额度有效期（目前仅 Raccoon）。
+   * 与 `checkin` 不是一回事——checkin=false 是「没有领取端点」（事实），
+   * dailyKeepalive=true 是「有等价动作可代做」（能力）。后端 variant.js
+   * 从 2026-10-15 起就下发这个位，前端类型一直没声明。
+   */
+  dailyKeepalive?: boolean;
 }
 
 export interface ChannelAccounts {
