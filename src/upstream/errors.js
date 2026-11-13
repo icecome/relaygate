@@ -115,6 +115,28 @@ function isRateLimitCode(code) {
 }
 
 /**
+ * 是否为「账号池耗尽」类错误（pool.js 的 POOL_UNAVAILABLE，或上游把池空以
+ * 429/文案形态原样抛出）。
+ *
+ * 为什么必须是独立判据而不是只看 e.code：pool.run() 在 lastErr 存在时会把
+ * 上游错误原样抛出（errors.js:850 `if (lastErr) throw lastErr;`），只有池里
+ * 一个账号都没选出来时才造出带 code='POOL_UNAVAILABLE' 的合成错误。探活链路
+ * （scheduler / repair-model-key-access）拿到的失败两种形态都有——2026-11-13
+ * 现场：deepseek-v4.1-flash 探活赶上整池冷却，抛的是池空的 lastErr（文案
+ * "No account available in pool (all accounts throttled or cooling)"），不带
+ * POOL_UNAVAILABLE 标记，被当「模型结论」写进归属表，Trae 平台密钥调它
+ * 403 platform_mismatch，客户端显示「API 密钥无效」。池空是临时状态，
+ * 永远不是模型级结论。
+ */
+function isPoolUnavailableError(err) {
+  if (!err) return false;
+  if (err.code === 'POOL_UNAVAILABLE') return true;
+  const msg = String(err.message || '');
+  return /No account available in pool/i.test(msg)
+    || /all accounts throttled or cooling/i.test(msg);
+}
+
+/**
  * 是否为模型配置问题（上游业务码 modelUnavailable / modelBackendUnsupported /
  * "model config is empty" / "service info not found"）：
  * 模型在当前 function 下不可用，属模型问题非账号问题。
@@ -257,6 +279,7 @@ module.exports = {
   isModelConfigError,
   isPlanLimitError,
   isModelRateLimitError,
+  isPoolUnavailableError,
   isContextLengthError,
   isContextLengthErrorKind,
   isChannelBlockedError,

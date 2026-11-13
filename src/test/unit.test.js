@@ -207,6 +207,59 @@ t('4001 模型配置问题归为 model 类', () => {
   const e3 = new Error('upstream error: model config is empty');
   assert.strictEqual(isModelConfigError(e3), true);
 });
+t('isPoolUnavailableError：池空两种形态都识别（2026-11-13 事故回归）', () => {
+  const { isPoolUnavailableError } = require('../upstream/errors');
+  // 形态一：pool 自造的合成错误（带 code 标记）
+  const synthetic = new Error('No account available in pool (all accounts throttled or cooling)');
+  synthetic.code = 'POOL_UNAVAILABLE';
+  assert.strictEqual(isPoolUnavailableError(synthetic), true);
+  // 形态二：pool.run 把池空 lastErr 原样抛出——无 code 标记，只能靠文案
+  const bare = new Error('llm_utils_chat failed: 429 No account available in pool (all accounts throttled or cooling)');
+  assert.strictEqual(isPoolUnavailableError(bare), true, '池空文案兜底必须命中（事故形态）');
+  // 对照：普通限流/模型错误不误判
+  const plain429 = new Error('rate limited');
+  plain429.status = 429;
+  assert.strictEqual(isPoolUnavailableError(plain429), false);
+  assert.strictEqual(isPoolUnavailableError(null), false);
+  // 判据进入 scheduler 探活的「本次没探成」分支：与 isModelRateLimitError 并列
+  const { isModelRateLimitError } = require('../upstream/errors');
+  const skip = isPoolUnavailableError(bare) || isModelRateLimitError(bare) || bare.code === 'POOL_UNAVAILABLE';
+  assert.strictEqual(skip, true, '池空必须归入「本次没探成」，不写归属证据');
+});
+t('池空探活结论不得写成 WB 独占（deepseek-v4.1-flash 事故回归）', () => {
+  const ownership = require('../models/platform-ownership');
+  ownership._resetForTest();
+  // 事故现场的归属表状态：目录两侧都有该 id，probe 是池空被误写的失败结论
+  const WS = process.env.WORKSPACE_DIR || 'output';
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const file = pathMod.join(WS, '.trae-api', 'model-ownership.json');
+  const backup = fsMod.existsSync(file) ? fsMod.readFileSync(file, 'utf-8') : null;
+  try {
+    fsMod.mkdirSync(pathMod.dirname(file), { recursive: true });
+    fsMod.writeFileSync(file, JSON.stringify({
+      version: 2,
+      trae: { at: Date.now(), ids: ['deepseek-v4.1-flash', 'glm-5.3'], source: 'upstream-full-catalog' },
+      workbuddy: { at: Date.now(), ids: ['deepseek-v4.1-flash', 'glm-5.3'], source: 'test' },
+      probes: {
+        // 事故形态：池空错误被 recordProbe 写成 ok=false
+        'deepseek-v4.1-flash': { at: Date.now(), ok: false, platform: 'trae', note: 'No account available in pool (all accounts throttled or cooling)' },
+        'glm-5.3': { at: Date.now(), ok: true, platform: 'trae' },
+      },
+    }));
+    ownership._resetForTest();
+    assert.strictEqual(ownership.traeServes('deepseek-v4.1-flash'), false, '事故现场复现：probe 失败压过目录证据');
+    assert.strictEqual(ownership.isWorkBuddyExclusive('deepseek-v4.1-flash'), true, '事故现场复现：被误判 WB 独占');
+    // 修复动作（数据侧）：清掉毒 probe 后目录证据接管 → 恢复两平台同名
+    ownership.recordProbe('deepseek-v4.1-flash', true, { platform: 'trae' });
+    assert.strictEqual(ownership.traeServes('deepseek-v4.1-flash'), true);
+    assert.strictEqual(ownership.isWorkBuddyExclusive('deepseek-v4.1-flash'), false, '修复后不再误判独占');
+    assert.strictEqual(ownership.traeServes('glm-5.3'), true, '健康条目不受影响');
+  } finally {
+    if (backup != null) fsMod.writeFileSync(file, backup);
+    ownership._resetForTest();
+  }
+});
 t('pool.record model 类不冷却不记错误', () => {
   const a = pStore.add({ label: 'model-err', token: 'm1' }, 'import');
   pool.record(a.id, 'model');

@@ -15,7 +15,7 @@ const { withCheckinRound } = require('../upstream/checkin-lock');
 const { wbCheckinAllEnabled } = require('../upstream/wb-checkin');
 const { refreshBalanceAllEnabled } = require('../upstream/balance');
 const { llmUtilsChat } = require('../upstream/client');
-const { isModelConfigError, isPlanLimitError, isModelRateLimitError } = require('../upstream/errors');
+const { isModelConfigError, isPlanLimitError, isModelRateLimitError, isPoolUnavailableError } = require('../upstream/errors');
 const { normalizeTraeMessages } = require('../transform/request');
 const wbChat = require('../workbuddy/chat');
 const { sleep } = require('../lib/util');
@@ -679,8 +679,12 @@ async function runModelProbe() {
         usable += 1;
         console.log(`[scheduler] probe ok ${t.id}`);
       } catch (e) {
-        // 池空/限流/网络属「本次没探成」，不是模型结论：不写状态表
-        if (isModelRateLimitError(e) || e.code === 'POOL_UNAVAILABLE') {
+        // 池空/限流/网络属「本次没探成」，不是模型结论：不写状态表。
+        // isPoolUnavailableError 兜底 pool.run 把池空 lastErr 原样抛出的形态——
+        // 那条错误不带 POOL_UNAVAILABLE 标记，2026-11-13 它被当成模型结论写进
+        // platform-ownership，Trae 密钥调 deepseek-v4.1-flash 403（客户端显示
+        // 「API 密钥无效」）。池空是临时状态，永远不能作为归属证据。
+        if (isPoolUnavailableError(e) || isModelRateLimitError(e) || e.code === 'POOL_UNAVAILABLE') {
           console.warn(`[scheduler] probe skip ${t.id}: ${e.message}`);
         } else if (isModelConfigError(e)) {
           availability.markUnavailable(t.id, e.message);

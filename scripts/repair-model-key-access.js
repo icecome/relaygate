@@ -102,8 +102,16 @@ function log(...a) { if (!AS_JSON) console.log(...a); }
         ownership.recordProbe(m, true, { platform: 'trae' });
         log(`      OK    ${m}`);
       } catch (e) {
-        ownership.recordProbe(m, false, { platform: 'trae', note: String(e.message).slice(0, 120) });
-        log(`      FAIL  ${m}  ${String(e.message).slice(0, 90)}`);
+        // 池空/限流/网络属「本次没探成」：不写归属表（写 false 等于给
+        // 「Trae 不服务」投票，2026-11-13 池空误写 deepseek-v4.1-flash 的
+        // 同款事故）。只有明确的模型级失败才算证据。
+        const { isPoolUnavailableError, isModelRateLimitError } = require('../src/upstream/errors');
+        if (isPoolUnavailableError(e) || isModelRateLimitError(e)) {
+          log(`      SKIP  ${m}  ${String(e.message).slice(0, 90)}（池空/限流，不计入归属证据）`);
+        } else {
+          ownership.recordProbe(m, false, { platform: 'trae', note: String(e.message).slice(0, 120) });
+          log(`      FAIL  ${m}  ${String(e.message).slice(0, 90)}`);
+        }
       }
     }
     out.probes = ownership.stats();
