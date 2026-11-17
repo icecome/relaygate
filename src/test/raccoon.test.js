@@ -698,7 +698,7 @@ async function run() {
     assert.deepStrictEqual(out.messages, [{ role: 'user', content: 'hi' }]);
   });
 
-  t('buildUpstreamBody：未表达思考意图时不写 extra_body；已有 extra_body 其它键要保留', () => {
+  t('buildUpstreamBody：未表达思考意图时不写 extra_body；已有 extra_body 其他键要保留', () => {
     const a = raccoonChat.buildUpstreamBody({ model: 'm', messages: [] });
     assert.strictEqual(a.extra_body, undefined, '不提就一个字节都不改');
     const b = raccoonChat.buildUpstreamBody({ model: 'm', messages: [], extra_body: { other: 1 }, reasoning_effort: 'low' });
@@ -1204,7 +1204,7 @@ async function run() {
       assert.strictEqual(store.list().find((x) => x.id === a.id).raccoonOrg, 'org-abc', 'list 也要带（面板展示）');
       const updated = store.update(a.id, { raccoonOrg: 'org-xyz' });
       assert.strictEqual(updated.raccoonOrg, 'org-xyz');
-      // 其它平台的账号不受影响：该列为 null
+      // 其他平台的账号不受影响：该列为 null
       const trae = store.add({ label: 'trae-org-test', edition: 'cn', token: 'y'.repeat(40) }, 'import');
       assert.strictEqual(store.get(trae.id).raccoonOrg, null);
       store.remove(trae.id);

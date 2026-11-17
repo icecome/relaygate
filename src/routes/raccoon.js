@@ -571,7 +571,7 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     });
     return chatError(
       res, 400,
-      `model "${model}" is not a Raccoon model. 本端点只服务 Raccoon 模型（id 以 sn- 开头）；其它模型请调用 /v1/chat/completions。`,
+      `model "${model}" is not a Raccoon model。本端点只服务 Raccoon 模型（id 以 sn- 开头）；其他模型请调用 /v1/chat/completions。`,
       'INVALID_MODEL',
     );
   }

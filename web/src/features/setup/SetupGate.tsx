@@ -165,14 +165,14 @@ export default function SetupGate({ onReady }: Props) {
                       node scripts/login-key.js reset
                     </code>
                     <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-                      重置会立即使旧登录密钥失效，需要重新分发；该命令只能在服务器本机执行。
+                      重置会使旧密钥立即失效，需要重新分发；该命令只能在服务器本机执行。
                     </p>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
                   <p className="text-[13px] leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
-                    库中尚未配置登录密钥，无法打开管理面板。请创建首把登录密钥，或粘贴已有的登录密钥。
+                    尚未配置登录密钥。请创建首把登录密钥，或粘贴已有密钥。
                   </p>
                   <Field
                     label="已有登录密钥（可选）"

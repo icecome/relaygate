@@ -13,7 +13,7 @@
  * 幂等与安全：
  *   - 已领取（1003）按 already 计，不重复扣、不告警
  *   - 风控（3012）立即中止该账号并通知（不再继续领取）
- *   - 无凭据或无求解器 → 记 failed，不影响其它账号
+ *   - 无凭据或无求解器 → 记 failed，不影响其他账号
  */
 const store = require('../credentials/store');
 const variant = require('../platform/variant');

@@ -48,7 +48,7 @@ function t(name, fn) { queue.push({ name, fn }); }
  * 规则：
  *  1. weighted 且未显式声明 rotateTopN → 池 = 全部启用候选；
  *  2. 显式声明 rotateTopN > 0 → 池 = 成本序前 N 个（autotier 生成模型用）；
- *  3. 其它（priority 且 rotateTopN=0）→ 池 = 第一个候选（降级按顺序回退）；
+ *  3. 其他（priority 且 rotateTopN=0）→ 池 = 第一个候选（降级按顺序回退）；
  *  4. 置顶候选额外入池，且不占 rotateTopN 名额。
  *
  * @param {{strategy?:string, rotateTopN?:number, candidates:Array}} vm

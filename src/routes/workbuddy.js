@@ -121,7 +121,7 @@ router.post('/import', admin, async (req, res) => {
     const userId = info.uid || info.phoneNumber || null;
     let account;
     // 与 workbuddy/oauth.js 同源：去重限定在 WorkBuddy 账号内，避免 uid 碰撞
-    // 时把其它平台账号改写成 WB 账号并覆盖其 token。
+    // 时把其他平台账号改写成 WB 账号并覆盖其 token。
     const existing = userId && store.list().find(
       (a) => a.edition === 'workbuddy' && String(a.userId) === String(userId),
     );

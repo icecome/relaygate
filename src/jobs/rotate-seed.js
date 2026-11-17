@@ -90,7 +90,7 @@ function seedAccount(acct, opts = {}) {
   // 多账号注册表（客户端 5.9.x 起必需）：renderer 启动按 accounts/allAccounts
   // 校验当前会话是否在册；缺失时弹「登录已过期」→ auth:logout → 删除 auth 文件。
   // 2026-10-26 实测：restore 成功 uid=925172d2，3 秒后被此路径清空。
-  // 取骨架注册表原样保留（含其它账号条目），仅确保本账号在列。
+  // 取骨架注册表原样保留（含其他账号条目），仅确保本账号在列。
   if (skeleton && Array.isArray(skeleton.accounts) && skeleton.accounts.length) {
     payload.accounts = skeleton.accounts.some((x) => x && x.uid === uid)
       ? skeleton.accounts

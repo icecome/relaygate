@@ -320,7 +320,7 @@ async function run() {
     JSON.stringify(zO),
   );
   const res3Ids = (res3.json?.data || []).map((c) => c.id);
-  check('探测异常时其它渠道照常返回', res3Ids.length === expectedIds.length, res3Ids.join(','));
+  check('探测异常时其他渠道照常返回', res3Ids.length === expectedIds.length, res3Ids.join(','));
 
   // ---------- 前后端注册表一致性（防「加了平台忘了加入口」复发） ----------
   const idsSrc = fs.readFileSync(path.join(ROOT, 'web', 'src', 'shared', 'lib', 'channelIds.ts'), 'utf8');

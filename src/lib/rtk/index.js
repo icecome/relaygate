@@ -28,7 +28,7 @@
  *   { role: 'tool', tool_call_id, content: [{ type: 'text', text: '...' }] }
  *
  * 因此这里只保留「遍历 messages → 找到 role==='tool' → 遍历 content → 压缩
- * type==='text' 块的 text」这一条路径；源里其它 walker 分支没有搬过来，不是遗漏。
+ * type==='text' 块的 text」这一条路径；源里其他 walker 分支没有搬过来，不是遗漏。
  * 连带的行为差异：
  *   - 源实现形态 1「`content` 是字符串的 OpenAI tool 消息」不再被压缩；
  *     本项目形态下这种消息不该出现，出现就逐字节放过，也不计入 stats.calls。

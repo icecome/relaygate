@@ -85,7 +85,7 @@ function PasswordLoginForm({
       style={{ borderColor: 'var(--rg-border)' }}>
       <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
         为 <strong>{targetLabel}</strong> 配置密码登录（手机号 + 密码）。保存前网关会先试登录一次，
-        成功才落库。密码在服务端加密存储、永不回显。留空点清除即删除凭据。
+        成功才落库。密码在服务端加密存储、不回显。留空点清除即删除凭据。
       </div>
       <div className="flex gap-2 flex-wrap items-center">
         <input
@@ -173,7 +173,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
     }
   }, [key]);
 
-  /** 探测本机客户端凭据（失败不影响弹窗其它部分）。 */
+  /** 探测本机客户端凭据（失败不影响弹窗其他部分）。 */
   const loadLocalPreview = useCallback(async () => {
     if (!key) return;
     try {
@@ -520,7 +520,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               网关代打无法触发发放（2026-10-19/20 实证）。开启后网关对<strong>已配置密码</strong>
               的账号每天代做一次真实登录（这是唯一可编程复刻的发放载体），并读取当日账单
               <strong>如实上报</strong>有效期；未配置密码的账号只观测、不伪造成功。
-              若某日上游未产生当日账单，会显示「上游未发放」而非失败 —— 这是上游状态，非网关故障。
+              上游未产生当日账单时显示「上游未发放」，属上游状态，不是故障。
             </div>
             {keepalive.lastSummary && (
               <div className="text-aux flex gap-3 flex-wrap" style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -539,7 +539,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
         <div className="flex flex-col items-center gap-3">
           {phase === 'done' ? (
             <Note tone="neutral">
-              登录成功，账号已入库并启用。可以继续「再登一个账号」，或用下方的账号操作查积分 / 领奖励。
+              登录成功，账号已入库并启用。可继续「再登一个账号」，或查积分 / 领奖励。
             </Note>
           ) : phase === 'failed' ? (
             <Note tone="danger">{error || '扫码登录失败，请重试'}</Note>
@@ -561,7 +561,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               </svg>
               <div className="text-aux text-center" style={{ color: 'var(--rg-text-secondary)' }}>
                 {phase === 'scanned'
-                  ? '已扫码 —— 请在微信内确认授权，本页会自动进入下一步'
+                  ? '已扫码，请在微信内确认授权，本页会自动进入下一步'
                   : '打开微信「扫一扫」，扫描上方二维码完成授权'}
               </div>
               <div className="flex items-center gap-2 flex-wrap justify-center">
@@ -596,7 +596,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
             <span>已接入账号 {accounts?.length ?? 0} 个</span>
             {models && (
               <span style={{ color: 'var(--rg-text-tertiary)' }}>
-                模型目录 {models.count} 个（{models.source === 'remote' ? '远端' : '兜底表，倍率可能不是最新'}）
+                模型目录 {models.count} 个（{models.source === 'remote' ? '远端' : '内置静态表，倍率可能不是最新'}）
               </span>
             )}
             <Button size="sm" onClick={loadAccounts}>
@@ -608,10 +608,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">账号</th>
-                  <th className="th cell-num">积分</th>
-                  <th className="th">凭据到期</th>
-                  <th className="th cell-act">操作</th>
+                  <th scope="col" className="th">账号</th>
+                  <th scope="col" className="th cell-num">积分</th>
+                  <th scope="col" className="th">凭据到期</th>
+                  <th scope="col" className="th cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -690,7 +690,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                         <Button
                           size="sm"
                           disabled={busy}
-                          title="查询该号是否已领过一次性登录奖励（走账单明细，不请求上游写端点）"
+                          title="查询该号是否已领一次性登录奖励（走账单明细，不写上游）"
                           onClick={() =>
                             act('查奖励', async () => {
                               const s = await raccoonRewardStatus(a.id, key);
@@ -776,7 +776,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
         <Note>
           <strong>每日 300 积分没有签到端点</strong>：它由服务端按日自动发放（账单里的
           <code>daily_grant</code>），所以这里（以及凭据池行内）都不会出现「签到」按钮——
-          做一个必然失败的按钮不如不做。可领的只有一次性的<strong>桌面端登录奖励</strong>（每号一次）。
+          不提供必然失败的按钮。可领的只有一次性的<strong>桌面端登录奖励</strong>（每号一次）。
           <br />
           Raccoon 账号<strong>不参与 Trae 转发池</strong>：它的模型走独立端点
           <code>/v1/raccoon/chat/completions</code>，需要通用密钥（platform=all）。

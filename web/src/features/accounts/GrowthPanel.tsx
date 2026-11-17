@@ -298,14 +298,14 @@ function GrowthTable({
     <table className="data-table">
       <thead>
         <tr>
-          <th className="th">账号</th>
-          <th className="th">成长任务</th>
-          <th className="th cell-num">奖励</th>
-          <th className="th">今日签到</th>
-          <th className="th">今日活跃</th>
-          <th className="th cell-num">连登</th>
-          <th className="th">Buddy / 旅行</th>
-          <th className="th cell-act">明细</th>
+          <th scope="col" className="th">账号</th>
+          <th scope="col" className="th">成长任务</th>
+          <th scope="col" className="th cell-num">奖励</th>
+          <th scope="col" className="th">今日签到</th>
+          <th scope="col" className="th">今日活跃</th>
+          <th scope="col" className="th cell-num">连登</th>
+          <th scope="col" className="th">Buddy / 旅行</th>
+          <th scope="col" className="th cell-act">明细</th>
         </tr>
       </thead>
       <tbody>

@@ -210,7 +210,7 @@ t('streak / makeup 解析（余额兼容对象与数字）', async () => {
   assert.strictEqual(nb.ok, false);
   assert.strictEqual(nb.result, 'not_broken');
 
-  // 其它 400 归为 error
+  // 其他 400 归为 error
   global.fetch = sig(400, 'invalid target_date', null);
   const er = await useMakeupCard({ token: 'x', uid: 'u', region: 'cn' }, '2026-09-14');
   assert.strictEqual(er.result, 'error');

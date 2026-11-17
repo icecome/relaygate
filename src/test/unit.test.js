@@ -582,7 +582,7 @@ t('分组：PATCH 白名单 + 分组过滤', () => {
   process.env.POOL_GROUPS = 'work';
   try {
     const picked = pool.pick(null, { exclude: [] });
-    // 只允许 work 组：选到账号则必属 work 组（可能为 null——池内其它测试账号无分组且会被排除）
+    // 只允许 work 组：选到账号则必属 work 组（可能为 null——池内其他测试账号无分组且会被排除）
     if (picked) assert.strictEqual(picked.group, 'work');
   } finally {
     delete process.env.POOL_GROUPS;
@@ -610,7 +610,7 @@ t('积分快照：差分统计消耗', () => {
 t('least_balance 优先选余额更高账号', () => {
   const low = pStore.add({ label: 'bal-low', token: 'l', balance: 10 }, 'import');
   const high = pStore.add({ label: 'bal-high', token: 'h', balance: 9999 }, 'import');
-  // 禁用其它 enabled 账号，避免干扰选号
+  // 禁用其他 enabled 账号，避免干扰选号
   for (const a of pStore.list()) {
     if (a.id !== low.id && a.id !== high.id) pStore.update(a.id, { enabled: false });
   }
@@ -3323,7 +3323,7 @@ t('checkinPlatforms 归一 Trae 历史 edition 后纳入 trae', () => {
   }
 });
 
-t('checkinAllByPlatform 汇总各平台明细且单平台失败不影响其它平台', async () => {
+t('checkinAllByPlatform 汇总各平台明细且单平台失败不影响其他平台', async () => {
   const { checkinAllByPlatform } = require('../upstream/checkin-all');
   const store = require('../credentials/store');
   const traeMod = require('../upstream/checkin');
@@ -4619,7 +4619,7 @@ t('stats-cache：桶内三计数与逐日聚合口径一致，且桶版本已递
   assert.strictEqual(got.turnsFailed, 1, 'tY 两次都没成功（这里只有一行）——全败');
   assert.strictEqual(got.recoveredTurns, 1, 'tX 失败一次后成功');
   assert.strictEqual(got.requests, 3);
-  // 清掉，避免影响其它用例
+  // 清掉，避免影响其他用例
   fs.rmSync(dir, { recursive: true, force: true });
   sc.clearCache();
 });
@@ -4846,7 +4846,7 @@ console.log('本地应答的计量口径（第四类 local，不污染 exact 与
 t('tokenSource：localAnswer 行归入 local，而不是 exact/none', () => {
   const { tokenSource } = require('../log/stats');
   assert.strictEqual(tokenSource({ localAnswer: 'quota' }), 'local');
-  assert.strictEqual(tokenSource({ localAnswer: 'title', promptTokens: 0 }), 'local', 'local 优先于其它判定');
+  assert.strictEqual(tokenSource({ localAnswer: 'title', promptTokens: 0 }), 'local', 'local 优先于其他判定');
   // 反证：若本地应答也写 0 值 token 字段，会被 isMetered 判成 exact（上游真值）——所以按约定不写
   assert.strictEqual(tokenSource({ promptTokens: 0, completionTokens: 0 }), 'exact',
     '这就是「本地应答绝不能写 0 值 token 字段」的原因');

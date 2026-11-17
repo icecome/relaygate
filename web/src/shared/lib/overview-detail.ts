@@ -62,7 +62,7 @@ export function amountByPlatform(accounts: Account[]): PlatformAmountRow[] {
  * 积分口径的「按平台占比」序列，供卡面混合条使用。
  *
  * 只统计 `unit === 'credit'` 且平台不是 raccoon 的行——那是唯一可相加的口径
- * （Trae + WorkBuddy）。Token / 配额 / 分池积分不进来：它们的量级差 4~5 个
+ * （Trae + WorkBuddy）。Token / 配额 / 分池积分不进来：它们的量级差 4～5 个
  * 数量级，混进同一条百分比条会变成「WorkBuddy 占 99.9%」这种没有信息的图。
  *
  * `unknown` 是「有账号但一次都没查过余额」的平台数。它必须能被单独说出来：
@@ -72,7 +72,7 @@ export interface CreditShareRow {
   platform: Platform;
   label: string;
   amount: number;
-  /** 占积分口径合计的比例 0~1 */
+  /** 占积分口径合计的比例 0～1 */
   share: number;
 }
 

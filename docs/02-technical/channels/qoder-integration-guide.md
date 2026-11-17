@@ -401,7 +401,7 @@ COSY 实现的四个易错点（错一个就是 `{"code":"101","message":"Signat
 |---|---|---|
 | `cosyVersion` | `1.1.64` | `0.4.3`（桌面版版本号，不是协议版本） |
 | `ideVersion` | `""` | 任意非空 |
-| `version` | `"v1"` | 其它 |
+| `version` | `"v1"` | 其他 |
 | identity 键集 | 9 键：`name/aid/uid/yx_uid/organization_id/organization_name/user_type/security_oauth_token/refresh_token` | `machine*` 字段 |
 
 另：请求必须带同款 body（`qoderEncode("{}")`）且用 `node:https` 的 `GET` + `req.write(body)`

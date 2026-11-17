@@ -88,7 +88,7 @@ export default function AuditPage() {
   return (
     <PageShell
       title="审计日志"
-      description="谁在什么时候查看过密钥明文、导出过凭据——事后可追溯，不可在此修改"
+      description="谁查看过密钥明文、导出过凭据。本页只读。"
       actions={
         <Segmented
           ariaLabel="结果筛选"
@@ -114,7 +114,7 @@ export default function AuditPage() {
 
         <Panel
           title="审计事件"
-          description={`最近 ${rows.length} 条（最多拉取 ${AUDIT_LIMIT} 条）`}
+          description={`最近 ${rows.length} 条`}
           flush
         >
           {audit.loading && !audit.data ? (
@@ -122,17 +122,17 @@ export default function AuditPage() {
           ) : rows.length === 0 ? (
             <EmptyState
               label="还没有审计记录"
-              hint="查看密钥明文、导出凭据等敏感操作会记录在这里；本页只读，不可修改。"
+              hint="密钥明文查看、凭据导出等敏感操作记录在此。本页只读。"
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">时间</th>
-                  <th className="th">动作</th>
-                  <th className="th">对象</th>
-                  <th className="th">结果</th>
-                  <th className="th">原因</th>
+                  <th scope="col" className="th">时间</th>
+                  <th scope="col" className="th">动作</th>
+                  <th scope="col" className="th">对象</th>
+                  <th scope="col" className="th">结果</th>
+                  <th scope="col" className="th">原因</th>
                 </tr>
               </thead>
               <tbody>

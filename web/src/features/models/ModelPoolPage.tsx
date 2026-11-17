@@ -40,6 +40,7 @@ import {
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
+import { NO_REASON_HINT } from '../../shared/api/action';
 
 /**
  * 来源筛选。
@@ -59,7 +60,7 @@ const SOURCE_LABEL: Record<string, string> = {
   upstream: '上游接口',
   remote: '上游接口',
   local: '本地缓存',
-  fallback: '内置兜底表',
+  fallback: '内置静态表',
   cache: '本地缓存',
 };
 
@@ -279,7 +280,7 @@ export default function ModelPoolPage() {
         catalog.reload();
       } else {
         // 后端拉取失败会带 error 文本，属业务层失败
-        toast(`拉取未成功：${r.error ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
+        toast(`拉取未成功：${r.error ?? NO_REASON_HINT}`, 'err');
       }
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '拉取失败', 'err');
@@ -359,12 +360,7 @@ export default function ModelPoolPage() {
           <div className="flex items-center gap-3 flex-wrap">
             {/* 来源筛选：选项由当前数据派生（含 Raccoon 等），不再写死三档 */}
             <select
-              className="h-8 rounded-md border px-2 text-[13px] max-w-[220px]"
-              style={{
-                borderColor: 'var(--rg-border-stronger)',
-                background: 'var(--rg-bg-base)',
-                color: 'var(--rg-text-primary)',
-              }}
+              className="select max-w-[220px]"
               aria-label="来源筛选"
               value={source}
               onChange={(e) => setSource(e.target.value)}
@@ -481,7 +477,7 @@ export default function ModelPoolPage() {
           ) : rows.length === 0 ? (
             <EmptyState
               label="没有符合当前筛选条件的模型"
-              hint="当前来源与状态筛选没有命中任何模型；可放宽筛选，或点右上角「拉取上游模型」重新同步目录。"
+              hint="当前筛选没有命中模型。放宽筛选，或点右上角「拉取上游模型」重新同步。"
               action={{
                 label: '清空筛选',
                 onClick: () => {
@@ -495,16 +491,16 @@ export default function ModelPoolPage() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th className="th">模型</th>
-                    <th className="th">来源</th>
-                    <th className="th">状态</th>
-                    <th className="th cell-num">倍率</th>
-                    <th className="th">能力</th>
-                    <th className="th cell-num">上下文窗口</th>
-                    <th className="th cell-num">请求</th>
-                    <th className="th cell-num">错误</th>
-                    <th className="th cell-num">平均延迟</th>
-                    <th className="th cell-act">操作</th>
+                    <th scope="col" className="th">模型</th>
+                    <th scope="col" className="th">来源</th>
+                    <th scope="col" className="th">状态</th>
+                    <th scope="col" className="th cell-num">倍率</th>
+                    <th scope="col" className="th">能力</th>
+                    <th scope="col" className="th cell-num">上下文窗口</th>
+                    <th scope="col" className="th cell-num">请求</th>
+                    <th scope="col" className="th cell-num">错误</th>
+                    <th scope="col" className="th cell-num">平均延迟</th>
+                    <th scope="col" className="th cell-act">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -655,8 +651,8 @@ export default function ModelPoolPage() {
         </Panel>
 
         <Note>
-          状态列有三种来源：可用 / 不可用 / 未探测来自真实调用结论（不可用带有效期，到期自动重探）；
-          媒体模型来自目录能力位——图片与视频生成模型没有 chat 端点，不参与转发与探测。
+          状态来源：可用 / 不可用 / 未探测来自真实调用结论（不可用到期自动重探）；
+          媒体模型来自目录能力位：没有 chat 端点，不参与转发与探测。
           倍率（×）为积分消耗倍率，两个平台的目录接口均未提供峰谷价格。
         </Note>
       </Stack>

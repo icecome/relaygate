@@ -371,7 +371,7 @@ export default function CredentialsPage() {
         const why = r.result === 'disabled'
           ? '签到功能未对该账号开启'
           : (r.note || r.reason || '上游未返回签到结果，积分未到账');
-        toast(`签到未到账：${label} —— ${why}`, 'warn');
+        toast(`签到未到账：${label}（${why}）`, 'warn');
       }
       list.reload();
     } catch (e) {
@@ -662,7 +662,7 @@ export default function CredentialsPage() {
 
         {/*
           权益总览：**提到统计条之下、平台接入之上**。
-          进页面的第一问题是「各平台还剩多少、哪些快到期」，不是「怎么接入新平台」。
+          页面的第一问题是「各平台还剩多少、哪些快到期」，不是「怎么接入」。
           此前它在凭据表之后（第 4 位），必须滚过整张表才能看到。
           积分口径汇总（原统计条那三个数）由 rollup prop 传入，不在此重算。
         */}
@@ -748,12 +748,7 @@ export default function CredentialsPage() {
                 选项里带计数，比纯 Segmented 信息量更高。
               */}
               <select
-                className="h-8 rounded-md border px-2 text-[13px]"
-                style={{
-                  borderColor: 'var(--rg-border-stronger)',
-                  background: 'var(--rg-bg-base)',
-                  color: 'var(--rg-text-primary)',
-                }}
+                className="select"
                 aria-label="按平台筛选"
                 value={platformFilter}
                 onChange={(e) => setPlatformFilter(e.target.value)}
@@ -777,12 +772,7 @@ export default function CredentialsPage() {
               />
               {groupOptions.length > 1 && (
                 <select
-                  className="h-8 rounded-md border px-2 text-[13px] max-w-[180px]"
-                  style={{
-                    borderColor: 'var(--rg-border-stronger)',
-                    background: 'var(--rg-bg-base)',
-                    color: 'var(--rg-text-secondary)',
-                  }}
+                  className="select max-w-[180px]"
                   aria-label="按分组筛选"
                   value={groupFilter}
                   onChange={(e) => setGroupFilter(e.target.value)}
@@ -800,12 +790,7 @@ export default function CredentialsPage() {
                 「哪个号额度快用完」「哪个号最早到期」只能肉眼扫 23 行。
               */}
               <select
-                className="h-8 rounded-md border px-2 text-[13px]"
-                style={{
-                  borderColor: 'var(--rg-border-stronger)',
-                  background: 'var(--rg-bg-base)',
-                  color: 'var(--rg-text-secondary)',
-                }}
+                className="select"
                 aria-label="账号排序"
                 value={sortKey}
                 onChange={(e) => setSortKey(e.target.value as SortKey)}
@@ -855,20 +840,20 @@ export default function CredentialsPage() {
               <table className="data-table table-fixed">
                 <thead>
                   <tr>
-                    <th className="th col-toggle">启用</th>
+                    <th scope="col" className="th col-toggle">状态</th>
                     {/*
                       账号列不设固定宽：table-fixed 下它会吃掉剩余空间。
                       min-width 是给窄窗口的下限——低于它时表格横向滚动，
                       而不是把账号名压成 1px 的竖条（1105px 窗口实测会这样）。
                     */}
-                    <th className="th" style={{ minWidth: 150 }}>账号</th>
-                    <th className="th col-source">平台</th>
-                    <th className="th col-state">状态</th>
-                    <th className="th col-pack">权益</th>
-                    <th className="th col-token cell-num">额度</th>
-                    <th className="th col-expiry">有效期</th>
-                    <th className="th col-cool">冷却</th>
-                    <th className="th col-actions cell-act">操作</th>
+                    <th scope="col" className="th" style={{ minWidth: 150 }}>账号</th>
+                    <th scope="col" className="th col-source">平台</th>
+                    <th scope="col" className="th col-state">状态</th>
+                    <th scope="col" className="th col-pack">权益</th>
+                    <th scope="col" className="th col-token cell-num">额度</th>
+                    <th scope="col" className="th col-expiry">有效期</th>
+                    <th scope="col" className="th col-cool">冷却</th>
+                    <th scope="col" className="th col-actions cell-act">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -891,16 +876,43 @@ export default function CredentialsPage() {
                     return (
                       <tr key={a.id} className="row-hover">
                         <td className="td">
-                          <Button
-                            size="sm"
-                            variant={a.enabled ? 'primary' : 'default'}
+                          {/*
+                            启用/停用是一个**状态开关**，不是一个主操作。
+                            原实现用 Button variant={a.enabled ? 'primary' : 'default'}，
+                            21 行全是实心主色按钮 —— 主色被高频可逆动作吃满，
+                            页面真正的主动作（刷新/导入）反而没有视觉重量。
+
+                            改成两级文字按钮：
+                              已启用 → 文案「已启用」，点击停用，btn-ghost（弱）
+                              已停用 → 文案「已停用」，点击启用，btn-sm default（稍强，
+                                       因为「启用」是用户当下想达成的事）
+                            文案恒定表达**当前状态**，动作由 title/aria-label 补齐，
+                            不再出现「表头写启用、格内写停用」的语义倒置。
+                          */}
+                          <button
+                            type="button"
+                            className={`btn btn-sm ${a.enabled ? 'btn-ghost' : ''}`}
                             disabled={busyId === a.id}
                             onClick={() => toggleEnabled(a)}
-                            aria-pressed={a.enabled}
-                            aria-label={a.enabled ? '停用该账号' : '启用该账号'}
+                            aria-pressed={!!a.enabled}
+                            aria-label={
+                              a.enabled
+                                ? `已启用：${a.label || a.id}，点击停用`
+                                : `已停用：${a.label || a.id}，点击启用`
+                            }
+                            title={a.enabled ? '点击停用该账号' : '点击启用该账号'}
+                            style={{
+                              color: a.enabled
+                                ? 'var(--rg-text-secondary)'
+                                : 'var(--rg-text-primary)',
+                            }}
                           >
-                            {a.enabled ? '停用' : '启用'}
-                          </Button>
+                            <i
+                              className={`dot ${a.enabled ? 'dot-ok' : 'dot-off'}`}
+                              aria-hidden="true"
+                            />
+                            {a.enabled ? '已启用' : '已停用'}
+                          </button>
                         </td>
                         <td className="td">
                           <div className="truncate text-[13px]" title={`${a.label || a.id}\nID: ${a.id}`}>
@@ -1021,7 +1033,7 @@ export default function CredentialsPage() {
             className="flex items-center justify-between gap-3 px-4 py-2.5 border-t text-aux"
             style={{ borderColor: 'var(--rg-border)', color: 'var(--rg-text-secondary)' }}
           >
-            <span>余额每 60 秒自动刷新一次，仅在页面可见时执行</span>
+            <span>余额每 60 秒刷新一次，仅页面可见时执行</span>
             <Button size="sm" onClick={resetDevices} disabled={busyId === '__dev__'}>
               {busyId === '__dev__' ? '重置中' : '重置全部设备标识'}
             </Button>

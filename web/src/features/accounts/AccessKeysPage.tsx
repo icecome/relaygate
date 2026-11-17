@@ -283,21 +283,21 @@ export default function AccessKeysPage() {
           ) : rows.length === 0 ? (
             <EmptyState
               label="还没有访问密钥"
-              hint="IDE 或脚本要调用本网关，需要一把 sk- 开头的访问密钥；登录管理面板用的是另一把登录密钥，两者互不通用。"
+              hint="IDE 或脚本调用网关用这把密钥；登录面板用登录密钥，两者不通用。"
               action={{ label: '创建第一把访问密钥', onClick: create }}
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">备注</th>
-                  <th className="th">平台</th>
-                  <th className="th">密钥</th>
-                  <th className="th">权限与配额</th>
-                  <th className="th">状态</th>
-                  <th className="th">创建时间</th>
-                  <th className="th">最近使用</th>
-                  <th className="th cell-act">操作</th>
+                  <th scope="col" className="th">备注</th>
+                  <th scope="col" className="th">平台</th>
+                  <th scope="col" className="th">密钥</th>
+                  <th scope="col" className="th">权限与配额</th>
+                  <th scope="col" className="th">状态</th>
+                  <th scope="col" className="th">创建时间</th>
+                  <th scope="col" className="th">最近使用</th>
+                  <th scope="col" className="th cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -481,7 +481,7 @@ export default function AccessKeysPage() {
             <SecretBox value={loginFresh.key} />
             <div className="mt-3">
               <Note tone="warn">
-                请立即复制并妥善保存。明文只在这里显示一次，关闭后列表仅保留掩码
+                立即复制保存。明文只显示一次，关闭后列表仅留掩码
                 （必要时可用「查看明文」按密文备份取回）。登录密钥用于打开管理面板，
                 不需要配置到 IDE；IDE 用的是访问密钥。
               </Note>

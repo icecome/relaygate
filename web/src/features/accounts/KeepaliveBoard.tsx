@@ -42,7 +42,7 @@ export function KeepaliveBoard({
     return (
       <EmptyState
         label="没有启用中的账号"
-        hint="保活统计只覆盖已启用账号；在凭据池启用账号后，这里会按平台分别汇总。"
+        hint="只统计已启用账号，按平台汇总。"
       />
     );
   }
@@ -121,13 +121,13 @@ export function KeepaliveBoard({
               <table className="data-table table-fixed">
                 <thead>
                   <tr>
-                    <th className="th col-account">账号</th>
-                    <th className="th">最近选用</th>
-                    <th className="th">最近签到</th>
-                    <th className="th">签到结果</th>
-                    <th className="th">最近保活</th>
-                    <th className="th">保活结果</th>
-                    <th className="th">Token 到期</th>
+                    <th scope="col" className="th col-account">账号</th>
+                    <th scope="col" className="th">最近选用</th>
+                    <th scope="col" className="th">最近签到</th>
+                    <th scope="col" className="th">签到结果</th>
+                    <th scope="col" className="th">最近保活</th>
+                    <th scope="col" className="th">保活结果</th>
+                    <th scope="col" className="th">Token 到期</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -191,7 +191,7 @@ export function KeepaliveBoard({
           // 而 WorkBuddy 的 tokenRefresh 早在 2026-10-18 就开了 —— 文案与实现相反。
         }
         {unscannedNames.length > 0
-          ? `未纳入扫描的平台（${unscannedNames.join(' / ')}）的空记录不代表故障 —— 它们的 Token 仍会在转发请求与每日签到前按需续期，只是不留保活痕迹。`
+          ? `未纳入扫描的平台（${unscannedNames.join(' / ')}）不代表故障：Token 仍会在转发与签到前按需续期，只是不留保活记录。`
           : '所有已接入平台都纳入了定时保活扫描；空记录表示该池尚未执行过一轮。'}
       </p>
       </div>

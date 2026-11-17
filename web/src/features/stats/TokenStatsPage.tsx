@@ -234,7 +234,7 @@ export default function TokenStatsPage() {
   /**
    * 该日账单是否已完整入账。
    *
-   * Trae 按会话入账，滞后 1~2 天；滞后期内该日只有 WB 侧的账单，
+   * Trae 按会话入账，滞后 1～2 天；滞后期内该日只有 WB 侧的账单，
    * 而网关估算覆盖双平台 —— 拿全平台估算除单平台账单会算出 1000%+
    * 的假差异。窗口内统一标「入账中」，不出差异率。
    */
@@ -305,8 +305,7 @@ export default function TokenStatsPage() {
       actions={
         <>
           <select
-            className="h-8 rounded-md border px-2 text-[13px] max-w-[220px]"
-            style={{ borderColor: 'var(--rg-border-stronger)', background: 'var(--rg-bg-base)', color: 'var(--rg-text-secondary)' }}
+            className="select max-w-[220px]"
             aria-label="按账号筛选"
             value={accountFilter}
             onChange={(e) => setAccountFilter(e.target.value)}
@@ -359,7 +358,7 @@ export default function TokenStatsPage() {
                 }
                 tone="muted"
               />
-              {/* 主口径的可信度前提：Trae 按会话入账有 1~2 天滞后，最近一两日必然偏低。
+              {/* 主口径的可信度前提：Trae 按会话入账有 1～2 天滞后，最近一两日必然偏低。
                   该警告只放在读数旁边，不重复出现在页面底部。 */}
               <CaliberRow k="入账滞后" v="Trae 1 至 2 天" tone="muted" />
             </div>
@@ -491,28 +490,28 @@ export default function TokenStatsPage() {
           title="每日积分对照"
           description="官方账单为权威口径，网关估算仅作对照"
           flush
-          footer="网关估算基于已计量 Token：缺 Token 的行显示「数据缺失」，属数据丢失，不是零消耗；官方账单与估算不可相加。"
+          footer="估算基于已计量 Token。缺 Token 的行显示「数据缺失」，不是零消耗；账单与估算不可相加。"
         >
           {daily.loading && !daily.data ? (
             <LoadingBlock />
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有统计数据"
-              hint="产生转发请求后即会出现；官方账单通常还有 1 至 2 天的入账滞后。"
+              hint="产生转发请求后出现；官方账单另有 1 至 2 天入账滞后。"
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">日期</th>
-                  <th className="th cell-num">官方账单积分</th>
-                  <th className="th cell-num">网关估算积分</th>
-                  <th className="th cell-num">差异</th>
+                  <th scope="col" className="th">日期</th>
+                  <th scope="col" className="th cell-num">官方账单积分</th>
+                  <th scope="col" className="th cell-num">网关估算积分</th>
+                  <th scope="col" className="th cell-num">差异</th>
                 </tr>
               </thead>
               <tbody>
                 {/* 差异只在账单「已完整入账」的日子才有意义：
-                  Trae 按会话入账有 1~2 天滞后，滞后期内账单只覆盖 WB 一侧，
+                  Trae 按会话入账有 1～2 天滞后，滞后期内账单只覆盖 WB 一侧，
                   而网关估算覆盖双平台，拿全平台估算除单平台账单会算出
                   1000%+ 的假差异。故近 TRAE_LAG_DAYS 天不出差异，标「入账中」。 */}
                 {(daily.data?.data ?? []).map((d) => {
@@ -569,14 +568,14 @@ export default function TokenStatsPage() {
 
         <Panel
           title="Token 构成"
-          description="非缓存输入 / 缓存读 / 输出三段；缓存读是输入的子集，已从输入中扣除"
+          description="非缓存输入 / 缓存读 / 输出；缓存读是输入子集，已扣除"
         >
           {models.loading && !models.data ? (
             <LoadingBlock />
           ) : (models.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有可拆分的模型用量"
-              hint="产生转发请求且上游回传 usage 后即会出现。"
+              hint="产生转发请求且上游回传 usage 后出现。"
             />
           ) : (
             <TokenMixRing rows={models.data?.data ?? []} />
@@ -592,7 +591,7 @@ export default function TokenStatsPage() {
           ) : (daily.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有请求记录"
-              hint="产生转发请求后即会出现。"
+              hint="产生转发请求后出现。"
             />
           ) : (
             <DailyTrendChart rows={daily.data?.data ?? []} />
@@ -601,7 +600,7 @@ export default function TokenStatsPage() {
 
         <Panel
           title="Token 热力图"
-          description="最近 17 周 · 按本地日期；虚线格＝有请求但上游未回传计量，不代表零消耗"
+          description="最近 17 周，按本地日期；虚线格＝有请求但未回传计量，非零消耗"
         >
           {/* 用 180 天单独取数，老后端若不接受该参数，错误只落在本面板内，不影响页面其余部分 */}
           {heatmap.error ? (
@@ -611,7 +610,7 @@ export default function TokenStatsPage() {
           ) : (heatmap.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="最近 17 周内没有 Token 记录"
-              hint="产生转发请求后即会出现；本图不随顶部时间范围切换。"
+              hint="产生转发请求后出现；不随顶部时间范围切换。"
             />
           ) : (
             <TokenHeatmap rows={heatmap.data?.data ?? []} />
@@ -635,12 +634,12 @@ export default function TokenStatsPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">账号</th>
-                  <th className="th">平台 / 粒度</th>
-                  <th className="th">状态</th>
-                  <th className="th cell-num">明细行</th>
-                  <th className="th cell-num">Token</th>
-                  <th className="th cell-num">积分</th>
+                  <th scope="col" className="th">账号</th>
+                  <th scope="col" className="th">平台 / 粒度</th>
+                  <th scope="col" className="th">状态</th>
+                  <th scope="col" className="th cell-num">明细行</th>
+                  <th scope="col" className="th cell-num">Token</th>
+                  <th scope="col" className="th cell-num">积分</th>
                 </tr>
               </thead>
               <tbody>
@@ -731,19 +730,19 @@ export default function TokenStatsPage() {
           ) : (models.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有模型用量"
-              hint="产生转发请求后即会出现。"
+              hint="产生转发请求后出现。"
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">模型</th>
-                  <th className="th cell-num">请求</th>
-                  <th className="th cell-num">错误</th>
-                  <th className="th cell-num">Token</th>
-                  <th className="th cell-num">计量 / 未计量</th>
-                  <th className="th cell-num">平均延迟</th>
-                  <th className="th cell-num">估算成本*</th>
+                  <th scope="col" className="th">模型</th>
+                  <th scope="col" className="th cell-num">请求</th>
+                  <th scope="col" className="th cell-num">错误</th>
+                  <th scope="col" className="th cell-num">Token</th>
+                  <th scope="col" className="th cell-num">计量 / 未计量</th>
+                  <th scope="col" className="th cell-num">平均延迟</th>
+                  <th scope="col" className="th cell-num">估算成本*</th>
                 </tr>
               </thead>
               <tbody>
@@ -792,17 +791,17 @@ export default function TokenStatsPage() {
           ) : (accounts.data?.data ?? []).length === 0 ? (
             <EmptyState
               label="所选区间内没有账号用量"
-              hint="产生转发请求后即会出现。"
+              hint="产生转发请求后出现。"
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">账号</th>
-                  <th className="th cell-num">请求</th>
-                  <th className="th cell-num">错误率</th>
-                  <th className="th cell-num">Token 占比</th>
-                  <th className="th cell-num">估算成本*</th>
+                  <th scope="col" className="th">账号</th>
+                  <th scope="col" className="th cell-num">请求</th>
+                  <th scope="col" className="th cell-num">错误率</th>
+                  <th scope="col" className="th cell-num">Token 占比</th>
+                  <th scope="col" className="th cell-num">估算成本*</th>
                 </tr>
               </thead>
               <tbody>
@@ -854,15 +853,15 @@ export default function TokenStatsPage() {
               <LoadingBlock />
             ) : !client.data?.available ? (
               <Note>
-                本机统计不可用：{client.data?.reason || '网关未返回原因'}。该数据依赖本机会话日志文件，网关转发数据不受影响。
+                本机统计不可用：{client.data?.reason || '网关未返回原因'}。网关转发数据不受影响。
               </Note>
             ) : (
               <table className="data-table">
                 {/* 无表头的两列小表：补 <thead> 让读屏能播报列名 */}
                 <thead>
                   <tr>
-                    <th className="th w-[110px]">项目</th>
-                    <th className="th">数值</th>
+                    <th scope="col" className="th w-[110px]">项目</th>
+                    <th scope="col" className="th">数值</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -894,15 +893,15 @@ export default function TokenStatsPage() {
             ) : (credit.data?.data ?? []).length === 0 ? (
               <EmptyState
                 label="还没有积分快照差分记录"
-                hint="余额自动刷新任务运行过至少两轮后，这里会出现按账号的消耗估计。"
+                hint="余额自动刷新运行两轮后，显示按账号的消耗估计。"
               />
             ) : (
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th className="th">账号</th>
+                    <th scope="col" className="th">账号</th>
                     {/* usedTotal 取的是所选区间的 consumed_amount 增量，不是「今日」 */}
-                    <th className="th cell-num">{range === '1' ? '今日消耗' : `近 ${range} 日消耗`}</th>
+                    <th scope="col" className="th cell-num">{range === '1' ? '今日消耗' : `近 ${range} 日消耗`}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -934,19 +933,19 @@ export default function TokenStatsPage() {
           ) : calibRows.length === 0 ? (
             <EmptyState
               label="还没有积分标定样本"
-              hint="官方账单同步过来之后会自动生成；在那之前估算成本使用内置费率表。"
+              hint="官方账单同步后自动生成；之前用内置费率表估算。"
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">平台</th>
-                  <th className="th">模型</th>
-                  <th className="th cell-num">样本</th>
-                  <th className="th cell-num">R²</th>
-                  <th className="th cell-num">未缓存输入（积分 / 千 Token）</th>
-                  <th className="th cell-num">输出（积分 / 千 Token）</th>
-                  <th className="th cell-num">缓存读（积分 / 千 Token）</th>
+                  <th scope="col" className="th">平台</th>
+                  <th scope="col" className="th">模型</th>
+                  <th scope="col" className="th cell-num">样本</th>
+                  <th scope="col" className="th cell-num">R²</th>
+                  <th scope="col" className="th cell-num">未缓存输入（积分 / 千 Token）</th>
+                  <th scope="col" className="th cell-num">输出（积分 / 千 Token）</th>
+                  <th scope="col" className="th cell-num">缓存读（积分 / 千 Token）</th>
                 </tr>
               </thead>
               <tbody>
@@ -978,10 +977,10 @@ export default function TokenStatsPage() {
         </Panel>
 
         <Note>
-          官方账单积分是上游精确值；带 * 的估算成本是网关推算值，仅供对照，官方账单与估算不可相加。
+          官方账单为上游精确值；带 * 的是网关推算值，仅供对照，两者不可相加。
         </Note>
         <Note>
-          后端返回的估算值可能带 ↑ 标记：表示该日缺缓存读信息、按全未缓存计价，估算偏高，不是真实账单。
+          ↑ 表示该日缺缓存读信息，按全未缓存计价，估算偏高，不是真实账单。
         </Note>
       </Stack>
     </PageShell>

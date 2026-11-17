@@ -282,7 +282,7 @@ export function ProviderDialog({
               />
               <span className="text-aux leading-[1.6]" style={{ color: 'var(--rg-state-warning)' }}>
                 密钥值写在项目根 .env：<code className="font-mono">{draft.apiKeyEnv.trim() || 'MY_PROVIDER_API_KEY'}=sk-…</code>
-                ，保存后需重启进程。面板不存密钥——后端会剥离明文，只按变量名在运行时取。
+                ，保存后需重启进程。面板不存密钥：后端剥离明文，运行时按变量名取。
               </span>
             </div>
 
@@ -335,7 +335,7 @@ export function ProviderDialog({
         <Note>
           保存后不会自动重载路由：需要回到页面点「重载路由」，或调用
           <code className="font-mono"> POST /v1/admin/model-router/reload</code>。
-          新增 Provider 后还要建一个虚拟模型把对外模型名映射过去，客户端才能调到它。
+          新增 Provider 后还需建虚拟模型映射名称，客户端才能调用。
         </Note>
       </div>
     </Modal>

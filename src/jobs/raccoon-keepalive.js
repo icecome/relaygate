@@ -37,7 +37,7 @@
  *
  * ## 幂等与安全
  *   - grant 幂等：已领过 `granted:false`，不会重复发分，也不会改当日已发的 expire
- *   - 观测失败不写库、不改状态；upstreamSkipped 不告警；不影响其它账号与任务
+ *   - 观测失败不写库、不改状态；upstreamSkipped 不告警；不影响其他账号与任务
  *   - 无 Raccoon 账号 → skipped，不报错
  */
 const store = require('../credentials/store');

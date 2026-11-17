@@ -28,7 +28,7 @@ const buf = fs.readFileSync(ASAR);
 const jsonLen = buf.readUInt32LE(12);
 const hdr = JSON.parse(buf.slice(16, 16 + jsonLen).toString('utf8'));
 // asar（Chrome pickle）数据区基点 = 8 + u32@4（4 字节对齐）；用 16+jsonLen
-// 会差 1~3 字节填充，读出的内容错位。
+// 会差 1～3 字节填充，读出的内容错位。
 const DATA = 8 + buf.readUInt32LE(4);
 
 const index = new Map();

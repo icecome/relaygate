@@ -227,7 +227,7 @@ function traeUsableIds() {
  *
  * 证据按**强度**排序，强的覆盖弱的：
  *   1. 实测结论（最强）：跑过一次真实调用，成功=服务、失败=不服务。
- *      它能推翻其它任何来源——本地登记表里的 deepseek-v4-pro 就是这类：
+ *      它能推翻其他任何来源——本地登记表里的 deepseek-v4-pro 就是这类：
  *      登记表说它归 Trae，实测却是 "the model is unknown"。
  *   2. 上游目录快照（含 hidden 项）：上游自己声明的可用模型。
  *   3. 本地 model-config 登记表（弱）：网关把该名绑定到 Trae 上游，

@@ -220,7 +220,7 @@ function rowToDecrypted(r, withSecrets = true) {
     host: r.host,
     userRegion: r.user_region,
     devices: r.devices ? JSON.parse(r.devices) : null,
-    // ZCode 设备档案与账号类型（其它平台为 null，不影响既有读取方）
+    // ZCode 设备档案与账号类型（其他平台为 null，不影响既有读取方）
     fingerprint: parseSnapshotJson(r.fingerprint),
     mode: r.mode || null,
     source: r.source,
@@ -369,7 +369,7 @@ function update(id, patch) {
       // 注意不能直接 return get(id) —— get() 按设计返回解密后的密文字段。
       return safeTok(get(id));
     }
-    // changes === 0：期间被其它写入方改过（version 变了），重读重试。
+    // changes === 0：期间被其他写入方改过（version 变了），重读重试。
     // 账号被删也会落到这里（下一轮 rawRow 返回 null，返回 null）。
   }
   const e = new Error(`账号 ${id} 并发写入冲突：连续 ${RETRY_MAX} 次 version 不匹配`);

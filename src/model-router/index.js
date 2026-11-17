@@ -585,7 +585,7 @@ async function handleChat(req, res, ctx) {  const virtualId = ctx.model;
   if (gate) gate.dispose();
   if (res.writableEnded) return { ok: false, error: err.message, attempts };
   // 渠道校验全灭时给可执行的提示：原始报文（Illegal API invocation…）对使用者
-  // 没有任何指向性，而真正的动作是「更新客户端身份版本」或「改用其它平台」。
+  // 没有任何指向性，而真正的动作是「更新客户端身份版本」或「改用其他平台」。
   const lastKind = classifyError(err);
   const channelBlocked = lastKind === 'channel';
   // 账号受限全灭：动作是「换账号/等冷却」，而不是重试或续期——受限不在

@@ -235,7 +235,7 @@ export function TransferDialog({ open, onClose, onDone }: {
           </div>
 
           <Note>
-            导出文件包含可恢复登录态的 token，请像保护密码一样保存和传输；迁移完成后删除不再需要的副本。
+            导出文件含可恢复登录态的 token，请按密码标准保管；迁移完成后删除副本。
             访问密钥不会导出（密钥绑定本机，不应跨机搬走）。
           </Note>
         </div>

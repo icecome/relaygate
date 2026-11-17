@@ -71,7 +71,7 @@ export function ClientAccessPanel({
     <Panel
       title="客户端接入"
       description="把 IDE 或脚本指向本服务，使用访问密钥调用"
-      footer="访问密钥在「账号 → 访问密钥」页创建，与打开面板用的登录密钥不能混用。"
+      footer="访问密钥在「账号 → 访问密钥」创建，不能与登录密钥混用。"
     >
       {error ? (
         <ErrorState message={error} onRetry={onRetry} />

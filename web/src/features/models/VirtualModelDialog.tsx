@@ -145,7 +145,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
       open={open}
       onClose={onClose}
       title="新增虚拟模型"
-      desc="把一个对外模型名映射到多个上游候选；限流或故障时按候选顺序自动切换"
+      desc="对外模型名映射到多个上游候选，限流或故障时按序切换"
       size="lg"
       footer={
         <>
@@ -316,7 +316,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
           「声明上下文窗口」用于请求分发前的输入超限拦截（超过窗口 75% 直接返回
           400 context_length_exceeded），避免上游静默截断导致早期记忆丢失；
           留空则不拦截。候选级窗口留空时继承该声明。
-          候选下拉只列出可走对话接口的模型：目录中的图片与视频生成模型没有 chat 端点，
+          候选只列出可对话的模型：图片与视频生成模型没有 chat 端点，
           不在列表中；需要时可在「上游无目录时手动输入模型名」里填写。
         </Note>
       </div>

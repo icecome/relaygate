@@ -156,7 +156,7 @@ function PackTable({ account }: { account: Account }) {
     return (
       <EmptyState
         label="该账号还没有权益包数据"
-        hint="权益包由上游签到 / 活动发放；点行内「查余额」会重新查询一次。"
+        hint="由上游签到或活动发放，点行内「查余额」重新查询。"
       />
     );
   }
@@ -166,11 +166,11 @@ function PackTable({ account }: { account: Account }) {
       <table className="data-table">
         <thead>
           <tr>
-            <th className="th">权益包</th>
-            <th className="th cell-num">剩余 / 总量</th>
-            <th className="th">到期时间</th>
-            <th className="th cell-num">剩余天数</th>
-            <th className="th">状态</th>
+            <th scope="col" className="th">权益包</th>
+            <th scope="col" className="th cell-num">剩余 / 总量</th>
+            <th scope="col" className="th">到期时间</th>
+            <th scope="col" className="th cell-num">剩余天数</th>
+            <th scope="col" className="th">状态</th>
           </tr>
         </thead>
         <tbody>
@@ -232,7 +232,7 @@ function TokenBucketTable({ account }: { account: Account }) {
     return (
       <EmptyState
         label="还没有查到额度桶"
-        hint="ZCode 的额度按 Token 计量，需点行内「查额度」向上游查询一次；它与积分是两套计量，不会并入任何积分汇总。"
+        hint="按 Token 计量，点行内「查额度」向上游查询。"
       />
     );
   }
@@ -244,11 +244,11 @@ function TokenBucketTable({ account }: { account: Account }) {
       <table className="data-table mt-3">
         <thead>
           <tr>
-            <th className="th">额度桶</th>
-            <th className="th cell-num">剩余 Token</th>
-            <th className="th cell-num">总量</th>
-            <th className="th cell-num">已用</th>
-            <th className="th">到期时间</th>
+            <th scope="col" className="th">额度桶</th>
+            <th scope="col" className="th cell-num">剩余 Token</th>
+            <th scope="col" className="th cell-num">总量</th>
+            <th scope="col" className="th cell-num">已用</th>
+            <th scope="col" className="th">到期时间</th>
           </tr>
         </thead>
         <tbody>
@@ -301,7 +301,7 @@ function QuotaTable({ account }: { account: Account }) {
     return (
       <EmptyState
         label="还没有查到配额"
-        hint="Qoder 的额度分「基础」与「赠送」两段，需点行内「查额度」向上游查询一次。"
+        hint="分「基础」与「赠送」两段，点行内「查额度」向上游查询。"
       />
     );
   }
@@ -321,11 +321,11 @@ function QuotaTable({ account }: { account: Account }) {
       <table className="data-table mt-3">
         <thead>
           <tr>
-            <th className="th">额度段</th>
-            <th className="th cell-num">剩余</th>
-            <th className="th cell-num">总量</th>
-            <th className="th cell-num">已用</th>
-            <th className="th">到期时间</th>
+            <th scope="col" className="th">额度段</th>
+            <th scope="col" className="th cell-num">剩余</th>
+            <th scope="col" className="th cell-num">总量</th>
+            <th scope="col" className="th cell-num">已用</th>
+            <th scope="col" className="th">到期时间</th>
           </tr>
         </thead>
         <tbody>
@@ -368,7 +368,7 @@ function RaccoonPoolTable({ account }: { account: Account }) {
     return (
       <EmptyState
         label="还没有查到积分分池"
-        hint="Raccoon 的积分分「奖励 / 每日 / 充值」几个池，需点行内「查余额」向上游查询一次。"
+        hint="分「奖励 / 每日 / 充值」三个池，点行内「查余额」向上游查询。"
       />
     );
   }
@@ -379,13 +379,13 @@ function RaccoonPoolTable({ account }: { account: Account }) {
         Raccoon 也没有签到端点，无需手动领取。
       </Note>
       {pkgs.length === 0 ? (
-        <EmptyState label="没有分池明细" hint="上游只返回了总额，未给分池明细。" />
+        <EmptyState label="没有分池明细" hint="上游只返回总额，未给分池明细。" />
       ) : (
         <table className="data-table mt-3">
           <thead>
             <tr>
-              <th className="th">积分池</th>
-              <th className="th cell-num">剩余</th>
+              <th scope="col" className="th">积分池</th>
+              <th scope="col" className="th cell-num">剩余</th>
             </tr>
           </thead>
           <tbody>

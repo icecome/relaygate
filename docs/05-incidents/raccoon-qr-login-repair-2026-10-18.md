@@ -68,7 +68,7 @@ POST /api/iam/v1/auth/login/password/{phone|email}
 
 ### P0：把扫码切到新 IAM 链路（这是让「扫码能登上」的唯一路径）
 
-改动范围（集中在 Raccoon 一个渠道，不动其它平台）：
+改动范围（集中在 Raccoon 一个渠道，不动其他平台）：
 
 1. `src/platform/variant.js` 的 `[RACCOON].paths`：
    - 新增 `qrCreate: '/api/iam/v1/auth/mp/qrcode'`
@@ -106,7 +106,7 @@ POST /api/iam/v1/auth/login/password/{phone|email}
 - 不做短信登录（新 IAM 的 `sms/send` 实测仍强制滑块 `captcha_token`；
   参考项目当年用的是旧 `/api/web/auth/v1/send_sms`，那条链路同样要滑块 ——
   「不用滑块直接发」在两代 API 上都实测不通）
-- 不动其它四个渠道
+- 不动其他四个渠道
 
 ## 六、实施结果（2026-10-18 深夜完成）
 
@@ -142,7 +142,7 @@ POST /api/iam/v1/auth/login/password/{phone|email}
 1. **扫码登录当前不可用**（等上游部署 `/login/mp` 后自动恢复，代码无需再改）。
 2. **多账号唯一可用路径**：
    - 客户端当前账号 → 本机导入（已有）
-   - 其它账号 → 手机号 + 密码登录（新 IAM 有 `auth/login/password/phone`，
+   - 其他账号 → 手机号 + 密码登录（新 IAM 有 `auth/login/password/phone`，
      需要账号设过密码；可作下一步实现）
 3. **Anthony 补登**：等 `/login/mp` 恢复后用面板扫码，或给该账号设密码后走密码登录。
 4. **保活不受影响**：Olivia 的每日保活与本次改动无关，照常 09:05 自动跑。

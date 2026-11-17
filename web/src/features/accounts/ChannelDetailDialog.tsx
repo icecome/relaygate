@@ -66,7 +66,7 @@ export function ChannelDetailDialog({
           <div className="text-label mb-2">接入方式</div>
           {entry === null ? (
             <Note tone="warn">
-              该平台后端已就绪，但前端还没有对应的接入向导。可先用 API 接入，或等待面板补齐。
+              该平台后端已就绪，前端尚无接入向导。可先用 API 接入。
             </Note>
           ) : (
             <div className="flex flex-col gap-2">
@@ -111,7 +111,7 @@ export function ChannelDetailDialog({
 
         {/* 能力清单 */}
         <section>
-          <div className="text-label mb-2">平台能力（共 {caps.length} 项）</div>
+          <div className="text-label mb-2">平台能力（{caps.length} 项）</div>
           {caps.length === 0 ? (
             <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
               该平台没有声明任何能力位。

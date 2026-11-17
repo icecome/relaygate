@@ -421,7 +421,7 @@ t('[P0-2] 导入新建账号保留原始 source，不得一律写成 workbuddy',
   assert.strictEqual(qoder.edition, 'qoder', 'edition 不被改写');
 });
 
-t('无感登录去重按 edition 收口：同 uid 的其它平台账号不得被改写', () => {
+t('无感登录去重按 edition 收口：同 uid 的其他平台账号不得被改写', () => {
   const wbOauth = require('../workbuddy/oauth');
   // 造一个 userId 与 WB oauth stub 完全相同、但属于 Trae 的账号
   const COLLIDE_UID = 'uid-edition-collision-1';

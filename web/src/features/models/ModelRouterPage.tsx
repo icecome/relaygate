@@ -39,6 +39,7 @@ import { usePrompt } from '../../shared/ui/Prompt';
 import { VirtualModelDialog } from './VirtualModelDialog';
 import { ProviderDialog } from './ProviderDialog';
 import Modal from '../../shared/ui/Modal';
+import { NO_REASON_HINT } from '../../shared/api/action';
 
 /**
  * 候选不可用原因的中文说明。
@@ -174,7 +175,7 @@ export default function ModelRouterPage() {
         toast(`自动分层已同步：${r.tiers?.length ?? 0} 个层级`, 'ok');
       } else {
         // 业务层失败：展示后端原因，不按网络错误处理
-        toast(`同步未成功：${r.errors?.join('；') || '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
+        toast(`同步未成功：${r.errors?.join('；') || NO_REASON_HINT}`, 'err');
       }
       overview.reload();
     } catch (e) {
@@ -319,21 +320,21 @@ export default function ModelRouterPage() {
           ) : (overview.data?.providers ?? []).length === 0 ? (
             <EmptyState
               label="尚未配置上游 Provider"
-              hint="内置 Provider 由凭据池账号生成；要接外部模型 API，点右上角「新增 Provider」填 Base URL 与环境变量名。"
+              hint="内置 Provider 由凭据池生成。接外部 API 点右上角「新增 Provider」，填 Base URL 与环境变量名。"
               action={{ label: '新增 Provider', onClick: () => setProviderDialog({ provider: null }) }}
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">名称</th>
-                  <th className="th">类型</th>
-                  <th className="th">状态</th>
-                  <th className="th">密钥</th>
-                  <th className="th cell-num">模型数</th>
-                  <th className="th cell-num">超时</th>
-                  <th className="th">Base URL</th>
-                  <th className="th cell-act">操作</th>
+                  <th scope="col" className="th">名称</th>
+                  <th scope="col" className="th">类型</th>
+                  <th scope="col" className="th">状态</th>
+                  <th scope="col" className="th">密钥</th>
+                  <th scope="col" className="th cell-num">模型数</th>
+                  <th scope="col" className="th cell-num">超时</th>
+                  <th scope="col" className="th">Base URL</th>
+                  <th scope="col" className="th cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -428,20 +429,20 @@ export default function ModelRouterPage() {
           ) : (overview.data?.virtualModels ?? []).length === 0 ? (
             <EmptyState
               label="尚未创建虚拟模型"
-              hint="创建一个对外模型名，并把它映射到若干上游候选，即可让客户端直接调用该名称。"
+              hint="创建对外模型名并映射到上游候选，客户端即可直接调用。"
               action={{ label: '新增虚拟模型', onClick: () => setCreateOpen(true) }}
             />
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">虚拟模型</th>
-                  <th className="th">策略</th>
-                  <th className="th">生成方式</th>
-                  <th className="th">声明上下文窗口</th>
-                  <th className="th cell-num">候选</th>
-                  <th className="th">健康度</th>
-                  <th className="th cell-act">操作</th>
+                  <th scope="col" className="th">虚拟模型</th>
+                  <th scope="col" className="th">策略</th>
+                  <th scope="col" className="th">生成方式</th>
+                  <th scope="col" className="th">声明上下文窗口</th>
+                  <th scope="col" className="th cell-num">候选</th>
+                  <th scope="col" className="th">健康度</th>
+                  <th scope="col" className="th cell-act">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -511,7 +512,7 @@ export default function ModelRouterPage() {
                           {v.auto && (
                             <div
                               className="mt-1 flex items-center gap-1"
-                              title="轮转池大小：按排序取前 N 个候选做加权轮转（sort=rate 时为倍率升序）。0 表示关闭轮转，固定使用排序第一位的候选。"
+                              title="轮转池大小：取排序前 N 个候选加权轮转（sort=rate 时按倍率升序）。0 表示关闭，固定用第一位。"
                             >
                               <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
                                 轮转
@@ -608,14 +609,14 @@ export default function ModelRouterPage() {
                               <thead>
                                 <tr>
                                   {/* 列宽合计 704px：候选列吃剩余宽度，其余定宽 */}
-                                  <th className="th">候选</th>
-                                  <th className="th" style={{ width: 120 }}>上游</th>
-                                  <th className="th cell-num" style={{ width: 56 }}>优先</th>
-                                  <th className="th cell-num" style={{ width: 56 }}>权重</th>
-                                  <th className="th cell-num" style={{ width: 72 }}>倍率</th>
-                                  <th className="th cell-num" style={{ width: 92 }}>窗口</th>
-                                  <th className="th" style={{ width: 168 }}>状态</th>
-                                  <th className="th cell-act" style={{ width: 168 }}>操作</th>
+                                  <th scope="col" className="th">候选</th>
+                                  <th scope="col" className="th" style={{ width: 120 }}>上游</th>
+                                  <th scope="col" className="th cell-num" style={{ width: 56 }}>优先</th>
+                                  <th scope="col" className="th cell-num" style={{ width: 56 }}>权重</th>
+                                  <th scope="col" className="th cell-num" style={{ width: 72 }}>倍率</th>
+                                  <th scope="col" className="th cell-num" style={{ width: 92 }}>窗口</th>
+                                  <th scope="col" className="th" style={{ width: 168 }}>状态</th>
+                                  <th scope="col" className="th cell-act" style={{ width: 168 }}>操作</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -717,14 +718,14 @@ export default function ModelRouterPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th">虚拟模型</th>
-                  <th className="th">候选</th>
-                  <th className="th cell-num">成功</th>
-                  <th className="th cell-num">失败</th>
-                  <th className="th cell-num">成功率</th>
-                  <th className="th cell-num">平均延迟</th>
-                  <th className="th">状态</th>
-                  <th className="th">最近错误</th>
+                  <th scope="col" className="th">虚拟模型</th>
+                  <th scope="col" className="th">候选</th>
+                  <th scope="col" className="th cell-num">成功</th>
+                  <th scope="col" className="th cell-num">失败</th>
+                  <th scope="col" className="th cell-num">成功率</th>
+                  <th scope="col" className="th cell-num">平均延迟</th>
+                  <th scope="col" className="th">状态</th>
+                  <th scope="col" className="th">最近错误</th>
                 </tr>
               </thead>
               <tbody>
@@ -758,7 +759,7 @@ export default function ModelRouterPage() {
         )}
 
         <Note>
-          自动分层的候选由网关按模型目录的上下文窗口生成，面板可逐个停用或置顶；
+          候选由网关按模型目录的上下文窗口生成，可逐个停用或置顶；
           这些手工调整会被后台的自动分层同步保留，不会被覆盖。
           目录中的图片与视频生成模型没有 chat 端点，不进入候选。
         </Note>
@@ -830,7 +831,7 @@ export default function ModelRouterPage() {
                 </div>
               ) : (
                 <Note tone="danger">
-                  没有可用候选：这个虚拟模型当前调用必然失败。检查下面的排除原因，
+                  没有可用候选：该虚拟模型当前调用必然失败。检查下面的排除原因，
                   或到「模型池状态」页探测对应上游模型是否真的可用。
                 </Note>
               )}
@@ -842,11 +843,11 @@ export default function ModelRouterPage() {
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th className="th">候选</th>
-                      <th className="th">上游</th>
-                      <th className="th cell-num">优先</th>
-                      <th className="th cell-num">倍率</th>
-                      <th className="th">判定</th>
+                      <th scope="col" className="th">候选</th>
+                      <th scope="col" className="th">上游</th>
+                      <th scope="col" className="th cell-num">优先</th>
+                      <th scope="col" className="th cell-num">倍率</th>
+                      <th scope="col" className="th">判定</th>
                     </tr>
                   </thead>
                   <tbody>

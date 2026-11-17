@@ -95,7 +95,7 @@ function estimateCost(model, promptTokens, completionTokens, opts = {}) {
   if (c) {
     const uncached = Math.max(0, pt - cacheRead);
     // 无缓存读信息时按「全部未缓存」计，这是上界：真实调用含缓存命中，
-    // 未缓存单价是缓存读的 4~15 倍，故结果会高估。
+    // 未缓存单价是缓存读的 4～15 倍，故结果会高估。
     // 实测 2026-09-27：241.5M token 缺 cacheRead 字段，按全未缓存算得 14133 积分，
     // 而官方账单仅 1976.61（高估 7.1 倍）；按 90% 命中率折算则吻合。
     // 调用方（stats.costOf）用 priced 标记区分，界面据此提示估算偏保守。

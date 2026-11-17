@@ -137,7 +137,7 @@ export function WbOauthDialog({ open, onClose, onDone }: {
       open={open}
       onClose={close}
       title="WorkBuddy 无感登录"
-      desc="不退出当前账号：在系统浏览器完成授权后，新账号自动加入凭据池"
+      desc="无需退出当前账号，浏览器授权后新账号自动入池"
       footer={
         <>
           <Button variant="ghost" onClick={close}>
@@ -170,7 +170,7 @@ export function WbOauthDialog({ open, onClose, onDone }: {
 
       {phase === 'idle' && (
         <Note>
-          点击「开始登录」会在系统浏览器打开官方授权页。当前 WorkBuddy 客户端不受影响，
+          点「开始登录」在系统浏览器打开授权页，当前客户端不受影响，
           已登录的账号不会被退出；授权完成后新账号自动入库（默认停用）。
         </Note>
       )}

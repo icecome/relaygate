@@ -233,7 +233,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           </div>
           {batch.emptyList > 0 && (
             <div style={{ color: 'var(--rg-state-warning)' }}>
-              有 {batch.emptyList} 个账号拿到空活动列表。上游在身份头被过滤时不会报错，只回空列表——
+              {batch.emptyList} 个账号拿到空活动列表。上游身份头被过滤时不报错，只回空列表——
               这不等于「今天没有活动」。
             </div>
           )}
@@ -293,18 +293,18 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       ) : (accounts?.length ?? 0) === 0 ? (
         <EmptyState
           label="还没有 Qoder 账号"
-          hint="先在渠道总览里用「读取本机客户端」接入本机 Qoder 桌面端账号（国内版 / 国际版均可），再回来领取每日积分。"
+          hint="先在渠道总览用「读取本机客户端」接入 Qoder 账号，再回来领取每日积分。"
         />
       ) : (
         <table className="data-table">
           <thead>
             <tr>
-              <th className="th">账号</th>
-              <th className="th">区域</th>
-              <th className="th cell-num">额度（基础 + 赠送）</th>
-              <th className="th">上次领取</th>
-              <th className="th">状态</th>
-              <th className="th cell-act">操作</th>
+              <th scope="col" className="th">账号</th>
+              <th scope="col" className="th">区域</th>
+              <th scope="col" className="th cell-num">额度（基础 + 赠送）</th>
+              <th scope="col" className="th">上次领取</th>
+              <th scope="col" className="th">状态</th>
+              <th scope="col" className="th cell-act">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -392,11 +392,11 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                             <table className="data-table text-aux">
                               <thead>
                                 <tr>
-                                  <th className="th">活动</th>
-                                  <th className="th cell-num">积分</th>
-                                  <th className="th">有效期</th>
-                                  <th className="th">状态</th>
-                                  <th className="th cell-act">操作</th>
+                                  <th scope="col" className="th">活动</th>
+                                  <th scope="col" className="th cell-num">积分</th>
+                                  <th scope="col" className="th">有效期</th>
+                                  <th scope="col" className="th">状态</th>
+                                  <th scope="col" className="th cell-act">操作</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -443,10 +443,10 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                             <table className="data-table text-aux">
                               <thead>
                                 <tr>
-                                  <th className="th">额度段</th>
-                                  <th className="th cell-num">剩余</th>
-                                  <th className="th cell-num">总量</th>
-                                  <th className="th">到期</th>
+                                  <th scope="col" className="th">额度段</th>
+                                  <th scope="col" className="th cell-num">剩余</th>
+                                  <th scope="col" className="th cell-num">总量</th>
+                                  <th scope="col" className="th">到期</th>
                                 </tr>
                               </thead>
                               <tbody>

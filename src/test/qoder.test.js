@@ -243,8 +243,8 @@ await t('update 局部更新不产生丢失更新（realm 保留）', () => {
   try {
     store.update(a.id, { priority: 5 });
     const got = store.get(a.id);
-    assert.strictEqual(got.qoderRealm, 'cn', '更新其它字段不应抹掉 realm');
-    assert.strictEqual(got.userId, 'uid-x', '更新其它字段不应抹掉 userId');
+    assert.strictEqual(got.qoderRealm, 'cn', '更新其他字段不应抹掉 realm');
+    assert.strictEqual(got.userId, 'uid-x', '更新其他字段不应抹掉 userId');
     assert.strictEqual(got.priority, 5);
   } finally { store.remove(a.id); }
 });

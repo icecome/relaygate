@@ -115,14 +115,14 @@ function hasTools(request) {
   return Array.isArray(tools) ? tools.length > 0 : Boolean(tools);
 }
 
-/** 引号外能被反斜杠转义的字符；其它位置上的 `\` 是路径分隔符。 */
+/** 引号外能被反斜杠转义的字符；其他位置上的 `\` 是路径分隔符。 */
 const ESCAPABLE = new Set([' ', '\t', '\n', '\r', '\f', '\v', "'", '"']);
 
 /**
  * 把一个命令行切成 shell 词，不执行任何东西。
  *
  * 只建模权限提示里会出现的形状：空白分隔、单双引号（引号被去掉，所以带引号的路径
- * 到手里就是路径）、反斜杠转义。反斜杠**只在空白或引号前**才算转义，在其它字符前
+ * 到手里就是路径）、反斜杠转义。反斜杠**只在空白或引号前**才算转义，在其他字符前
  * 是字面量，于是 Windows 路径（`type C:\notes\todo.md`）能活下来——按 POSIX 读法
  * 会把 `\n` 悄悄吃掉。引号不闭合时按 `shlex.split` 的语义抛错，让调用方走它们那个
  * 「朴素切分」的回退（对 shell 自己也会拒绝的一行，不猜引号）。
@@ -142,7 +142,7 @@ function shellWords(command) {
       if (char === '"') { quote = ''; continue; }
       if (char === '\\') {
         const next = command[index + 1];
-        // 双引号内 shell 只剥掉它赋予了含义的字符前的反斜杠；其它情况原样保留。
+        // 双引号内 shell 只剥掉它赋予了含义的字符前的反斜杠；其他情况原样保留。
         if (next === '"' || next === '\\' || next === '$' || next === '`') {
           word += next;
           index += 1;

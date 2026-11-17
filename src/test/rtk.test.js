@@ -485,7 +485,7 @@ t('过滤器返回非字符串 → 同样 fail-open，并记一条 note', () => 
   assert.strictEqual(stats.saved, 0);
 });
 
-t('坏过滤器只影响它自己那一份 blob，同批其它 blob 照压', () => {
+t('坏过滤器只影响它自己那一份 blob，同批其他 blob 照压', () => {
   const diff = fixtureGitDiff();
   const status = fixtureGitStatus();
   let n = 0;
@@ -535,7 +535,7 @@ t('混合消息：条数、顺序、非 tool 内容、非 text 块全部不变',
   assert.deepStrictEqual(messages[4].content[0], msgs[4].content[0]);
   assert.strictEqual(messages[4].content[1].text, '看到图了吗');
 
-  // 被压缩的 tool 消息是新对象，但其它字段与块类型保留
+  // 被压缩的 tool 消息是新对象，但其他字段与块类型保留
   assert.notStrictEqual(messages[3], msgs[3]);
   assert.strictEqual(messages[3].tool_call_id, 'c1');
   assert.strictEqual(messages[3].content[0].type, 'text');

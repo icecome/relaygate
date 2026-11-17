@@ -89,7 +89,7 @@ label 正确拼成 `RaccoonAnthony-3389`。
 
 两个账号 balance / bills / user_info / daily-usage 全部 200。
 
-## 五、排查中确认的其它事实
+## 五、排查中确认的其他事实
 
 - `/api/iam/v1/account` 是**有效端点**（新信封 `{code:"OK",message,request_id,data}`），
   返回 user 的 `platform_user_id` / `phone`（脱敏）/ `wechat_bound` / `last_login_at`。

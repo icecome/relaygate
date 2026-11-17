@@ -32,7 +32,7 @@ export function ChannelOpsDialog({
       <QoderOps jobs={channel.jobs} onChanged={onChanged} />
     ) : (
       <Note tone="warn">
-        该平台声明了活动领取能力，但面板还没有对应的操作界面。请先用 API 操作（见该平台的接入文档）。
+        该平台有活动领取能力，但面板尚无对应界面，请先用 API 操作。
       </Note>
     );
 

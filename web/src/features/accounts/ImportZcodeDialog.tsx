@@ -176,7 +176,7 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
 
         {!loading && preview?.installed && !account?.hasToken && (
           <Note tone="warn">
-            凭据文件存在，但其中没有可用的登录 JWT——客户端可能尚未完成登录。
+            凭据文件存在但没有可用的登录 JWT，客户端可能尚未完成登录。
             请在客户端里登录一次后重试。
           </Note>
         )}
@@ -185,10 +185,10 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
           <table className="data-table">
             <thead>
               <tr>
-                <th className="th">账号</th>
-                <th className="th">用户 ID</th>
-                <th className="th">凭据模式</th>
-                <th className="th">状态</th>
+                <th scope="col" className="th">账号</th>
+                <th scope="col" className="th">用户 ID</th>
+                <th scope="col" className="th">凭据模式</th>
+                <th scope="col" className="th">状态</th>
               </tr>
             </thead>
             <tbody>
@@ -222,8 +222,8 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
 
         {!imported && (
           <Note>
-            解密只在本机进行：口令派生自「系统平台 + 家目录 + 用户名」，解出的 JWT 直接写入本服务数据库，
-            不会发送到第三方。重复导入是安全的——同一 userId 只会更新，不会产生重复记录。
+            解密只在本机进行：口令派生自「系统平台 + 家目录 + 用户名」，解出的 JWT 直接入库，
+            不会发送到第三方。重复导入安全：同一 userId 只更新，不产生重复记录。
             客户端 JWT 长期有效且无 refreshToken，因此不需要保活。
           </Note>
         )}

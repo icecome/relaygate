@@ -231,7 +231,7 @@ async function fetchOnboardingStatus(acct) {
  * 所以这里回答的是「今天还剩多少 / 什么时候作废 / 历史作废了多少」。
  *
  * 用 `type=income` 与 `type=expense` 两次取数（实测 `type` 只接受这三个枚举值：
- * all/income/expense，其它值回 `100002 params_invalid_error`）。
+ * all/income/expense，其他值回 `100002 params_invalid_error`）。
  * 任一页失败都**不抛错**：账单只是运营视图，拿不到就把对应字段留空，
  * 让面板显示「未知」而不是整块报错。
  */

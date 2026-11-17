@@ -143,7 +143,7 @@ function tokenSource(r) {
  * 避免把「未带回 usage」误读成「消耗 0 token」。
  *
  * 缓存读单列 cacheReadTokens：标定费率对未缓存输入与缓存读分别计价
- * （实测两者单价差 4~8 倍），界面需要它解释为何 20 万 token 只花 0.7 积分。
+ * （实测两者单价差 4～8 倍），界面需要它解释为何 20 万 token 只花 0.7 积分。
  * exact / estimated / none 三个来源分开计数，前端才能标出多少 token 是真值。
  */
 /**

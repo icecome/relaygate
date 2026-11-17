@@ -54,7 +54,7 @@ function readAsarJson(rel) {
     // asar（Chrome pickle）布局：u32@0=4，u32@4=header pickle 总长，
     // 数据区基点 = 8 + u32@4（4 字节对齐）。header JSON 本体在 16..16+jsonLen，
     // 但文件偏移的参照系是**对齐后的基点**——直接用 16+jsonLen 会差出
-    // 1~3 字节填充（实测本机 pkg 前垫了 3 个 \0，JSON.parse 直接炸）。
+    // 1～3 字节填充（实测本机 pkg 前垫了 3 个 \0，JSON.parse 直接炸）。
     const jsonLen = buf.readUInt32LE(12);
     const hdr = JSON.parse(buf.slice(16, 16 + jsonLen).toString('utf8'));
     let node = hdr;

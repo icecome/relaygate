@@ -240,7 +240,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
           <Note>
             当前不在 Windows 上：Qoder 客户端凭据经 Chromium os_crypt v10 + DPAPI 加密，
             解密依赖 Windows 数据保护接口，非 Windows 系统无法从本机客户端导入。
-            可改用「手动粘贴 token」——上游只认纯 Bearer 的 dt- token，凭据本身可移植。
+            可改用「手动粘贴 token」。上游只认纯 Bearer 的 dt- token。
           </Note>
         )}
 
@@ -250,11 +250,11 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
           <table className="data-table">
             <thead>
               <tr>
-                <th className="th">区域</th>
-                <th className="th">客户端</th>
-                <th className="th">登录账号</th>
-                <th className="th">状态</th>
-                <th className="th">操作</th>
+                <th scope="col" className="th">区域</th>
+                <th scope="col" className="th">客户端</th>
+                <th scope="col" className="th">登录账号</th>
+                <th scope="col" className="th">状态</th>
+                <th scope="col" className="th">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -328,9 +328,9 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
               导入时在线验证（用 userinfo 确认 token 有效并取回账号信息）
             </label>
             <Note>
-              区域必须选对：国内版与国际版是两套完全独立的账号体系（uid 不同、域名不同），
+              必须选对区域：国内版与国际版是两套独立账号体系（uid 与域名不同），
               token 不能跨区使用，且域名无法反推区域。
-              {verify ? '验证失败不会入库。' : '已关闭验证——无效 token 会直接入库，直到下次领取积分时才暴露。'}
+              {verify ? '验证失败不会入库。' : '已关闭验证：无效 token 会直接入库，下次领取积分时才暴露。'}
             </Note>
           </>
         )}
@@ -344,7 +344,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
               placeholder="留空则保留默认标签"
             />
             <Note>
-              导入即启用：账号可立即参与每日积分领取；国际版账号同时可参与对话转发
+              导入即启用：可立即参与每日积分领取；国际版账号还可参与对话转发
               （本期仅单账号，国内版转发未开放）。点「启用并完成」会保存备注，
               并确保该账号处于启用状态。
             </Note>
@@ -353,8 +353,8 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
 
         {!importedId && mode === 'local' && (
           <Note>
-            导入过程仅在本机完成：解密后的凭据直接写入本服务数据库，不会发送到第三方。
-            重复导入是安全的——同一区域的同一账号只会更新，不会产生重复记录。
+            导入仅在本机完成：解出的凭据直接写入本服务数据库，不发送第三方。
+            重复导入安全：同一区域同一账号只更新，不产生重复记录。
           </Note>
         )}
       </div>

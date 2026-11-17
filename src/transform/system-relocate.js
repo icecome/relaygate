@@ -153,7 +153,7 @@ function relocateMessages(messages, opts = {}) {
         content: [{ type: 'text', text: prefix.trimEnd() }, ...u.content],
       };
     } else {
-      // 其它形态（null / 未知结构）：前面插一条新 user，不动原消息
+      // 其他形态（null / 未知结构）：前面插一条新 user，不动原消息
       out.splice(firstUser, 0, { role: 'user', content: prefix.trimEnd() });
     }
   }

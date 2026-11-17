@@ -87,27 +87,154 @@
   --rg-state-info: #1f5fd6;
   --rg-state-info-surface: rgba(47, 116, 255, 0.12);
 
+  /*
+   * 停用态的状态点
+   *
+   * 状态点属「非文本 UI 组件」，按 WCAG 1.4.11 需 3:1。原实现直接用
+   * --rg-grey-400 (#a1a1a1)，白底只有 2.58、灰底 2.37，不达标。
+   * #8a8a8a 在白底 3.45、灰底 3.17，达标同时仍在视觉上弱于三种业务状态色。
+   */
+  --rg-dot-off: #8a8a8a;
+
   /* 描边 */
   --rg-border: rgba(115, 115, 115, 0.12);
   --rg-border-strong: rgba(115, 115, 115, 0.18);
   --rg-border-stronger: rgba(115, 115, 115, 0.36);
 
-  /* 图表序列 */
-  --rg-chart-1: var(--rg-brand-600);
-  --rg-chart-2: var(--rg-brand-300);
-  --rg-chart-3: var(--rg-grey-500);
-  --rg-chart-4: var(--rg-brand-200);
-  --rg-chart-5: var(--rg-grey-300);
+  /*
+   * 图表序列（唯一一套，五档）
+   *
+   * 为什么不用 --rg-chart-*：那套序列里 brand-600 与 brand-300 同为蓝紫，
+   * 相邻段明度差不足，堆叠成条后边界不可辨（ShareBar 的原始注释即此结论）。
+   * 这里改为「深品牌 → 浅品牌 → 中性 → 更浅品牌 → 中性」交替，
+   * 保证任意相邻两段都有明度差，同时全部来自既有色阶，不新增色值。
+   *
+   * 绘制顺序约定：第 1 档用于主序列，第 2–5 档用于次要序列与占比分段。
+   */
+  --rg-viz-1: var(--rg-brand-600);
+  --rg-viz-2: var(--rg-brand-300);
+  --rg-viz-3: var(--rg-grey-500);
+  --rg-viz-4: var(--rg-brand-200);
+  --rg-viz-5: var(--rg-grey-400);
 
-  --rg-font-sans: "SF Pro Text", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --rg-font-heading: "SF Pro", "PingFang SC", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  --rg-font-metric: Inter, "SF Pro Text", "PingFang SC", system-ui, sans-serif;
-  --rg-font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  /*
+   * 浮层与遮罩
+   *
+   * 此前 Modal 遮罩写 rgba(23,23,23,0.45)、Menu 阴影写 rgba(23,23,23,0.16)，
+   * 是组件里仅剩的两处硬编码颜色。抽成令牌后暗色主题可以单独覆盖，
+   * 不必再改组件文件。
+   */
+  --rg-scrim: rgba(23, 23, 23, 0.45);
+  --rg-shadow-pop: 0 8px 24px rgba(23, 23, 23, 0.16);
+
+  /*
+   * 焦点环
+   *
+   * 与之配套的描边宽度固定 2px（:focus-visible 与 .field:focus 都用它）。
+   * 用 rgba 而不是 brand-100 实色：焦点环叠在灰底上时不至于两块浅蓝叠成一片。
+   */
+  --rg-ring: rgba(75, 63, 227, 0.28);
+  --rg-ring-width: 2px;
+
+  /*
+   * 控件描边（可交互控件专用）
+   *
+   * --rg-border-stronger 是 rgba(115,115,115,0.36)，落在白底上约 #cdcdcd，
+   * 对比度 1.59:1，低于 WCAG 1.4.11 对「可交互控件视觉边界」要求的 3:1。
+   * 输入框与下拉的描边是识别控件的唯一线索，必须单独取一个达标值：
+   * #929292 在白底 3.11:1、在 --rg-bg-secondary 上 2.86:1（控件边界按 3:1
+   * 判定的底是它自己所在的表面，这里取白底值，输入框均落在白底或卡片白底）。
+   *
+   * 表格分隔线、面板描边仍用 --rg-border*：它们是装饰性分隔，不是控件边界，
+   * 若一并加深，整页会被 1px 深线切碎。
+   */
+  --rg-border-input: #929292;
+
+  /*
+   * 半径阶梯
+   *
+   * 值一如此前散落在 Tailwind 的 rounded-xs/sm/md/lg 里，这里做成令牌是为了
+   * 让「三级表面」的圆角关系可推导：卡片 8 > 卡片内块 6 > 徽标 2。
+   */
+  --rg-radius-xs: 2px;
+  --rg-radius-sm: 4px;
+  --rg-radius-md: 6px;
+  --rg-radius-lg: 8px;
+  --rg-radius-xl: 10px;
+
+  /*
+   * 间距阶梯（4px 基准，与 Cloudscape 的 spacing scale 同构）
+   *
+   * 只用于「组件之间」的布局间距与「组件内部」的固定内边距。
+   * 表格行高这类随密度变化的尺寸走 --rg-row-h-*，不从这里取。
+   */
+  --rg-sp-1: 2px;
+  --rg-sp-2: 4px;
+  --rg-sp-3: 8px;
+  --rg-sp-4: 12px;
+  --rg-sp-5: 16px;
+  --rg-sp-6: 20px;
+  --rg-sp-7: 24px;
+  --rg-sp-8: 32px;
+  --rg-sp-9: 40px;
+  --rg-sp-10: 48px;
+  --rg-sp-11: 64px;
+
+  /*
+   * 密度：表格行高与单元格内边距
+   *
+   * comfortable 是默认值，且**永远是默认值**。compact 只压缩数据密集视图，
+   * 不压缩弹窗正文、表单标签与错误、说明段落（见下方「不参与压缩」注释）。
+   * 切换入口在顶栏，由 html[data-density] 驱动。
+   */
+  --rg-row-h: 40px;
+  --rg-row-h-head: 36px;
+  --rg-cell-py: 10px;
+  --rg-cell-px: 12px;
+  --rg-card-pad: 16px;
+
+  /*
+   * 字体族
+   *
+   * 此前首选 SF Pro Text / PingFang SC / JetBrains Mono —— 这三款在 Windows
+   * 上都不随系统分发，实际渲染回退到 Segoe UI + Consolas，等于首选写了没用。
+   * 改为「确定存在的字体优先」：Windows 有 Segoe UI / Cascadia Mono，
+   * macOS 有 PingFang SC / SF Mono，Linux 落到 Noto / DejaVu。
+   * 保留原字体名作次级候选，装了就用。
+   */
+  --rg-font-sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI",
+    "Hiragino Sans GB", system-ui, -apple-system, Roboto, sans-serif;
+  --rg-font-metric: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", Inter,
+    system-ui, sans-serif;
+  --rg-font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "JetBrains Mono",
+    ui-monospace, Menlo, monospace;
+}
+
+/*
+ * 紧凑密度
+ *
+ * 只改这三组尺寸。刻意**不**动字号：缩小字号会让中文掉出可读区间，
+ * 而密度诉求的本质是「同样一屏看到更多行」，不是「字更小」。
+ */
+html[data-density='compact'] {
+  --rg-row-h: 32px;
+  --rg-row-h-head: 30px;
+  --rg-cell-py: 6px;
+  --rg-cell-px: 8px;
+  --rg-card-pad: 12px;
 }
 
 @layer base {
   html {
     color-scheme: light;
+    /*
+     * 页面本身永不滚动。
+     *
+     * 布局是 h-screen + 内部滚动容器，若 html/body 还有滚动余量，
+     * 那是某处漏出的溢出被浏览器兜住了 —— 表现为整页多一条滚动条。
+     * 这里直接钳死，让溢出问题暴露在真正的容器上，而不是被静默吞掉。
+     */
+    overflow: hidden;
   }
 
   body {
@@ -117,6 +244,7 @@
     font-family: var(--rg-font-sans);
     font-size: 13px;
     line-height: 1.6;
+    overflow: hidden;
   }
 
   button,
@@ -127,7 +255,7 @@
   }
 
   :focus-visible {
-    outline: 2px solid var(--rg-brand-600);
+    outline: var(--rg-ring-width) solid var(--rg-brand-600);
     outline-offset: 2px;
   }
 }
@@ -135,6 +263,49 @@
 /* 组件层 */
 
 @layer components {
+  /*
+   * ==========================================================================
+   * 全局设计禁令：禁止「卡片顶部彩色边条」
+   * ==========================================================================
+   *
+   * 具体指：贴着卡片/面板/分组容器顶边、2~4px 高、横向贯穿、纯装饰的
+   * 彩色横条。此前总览指标卡的展开态用过一条 2px 品牌色横条（inset box-shadow
+   * 实现），作用是提示「这张卡正在展开」。
+   *
+   * 为什么全站禁止，而不是只去掉那一处：
+   *
+   * 1. **它不指向业务状态**。本项目的彩色只允许表达四种真实状态
+   *    （可用/冷却/错误/停用，见 --rg-state-*）。一条品牌色横条既不是
+   *    「可用」也不是「告警」，却占用了最强的颜色资源。同一个屏幕上
+   *    出现两次「蓝色」而含义不同的东西，颜色的语义就被稀释了。
+   * 2. **它把容器伪装成分页签**。顶部横条是 Tab 的视觉语汇。卡片不是页签，
+   *    点击它不会切换页面，只是就地展开 —— 形状暗示了错误的心智模型。
+   * 3. **它与真实状态色竞争**。状态色需要安静才能被读到；装饰色一旦
+   *    比状态色更饱和，用户第一眼看到的是装饰。
+   * 4. **它是纯增量细节**。展开与否已有三重表达：chevron 朝向、面板出现、
+   *    卡头底色。第四条线索没有增加信息，只增加了视觉噪声。
+   *
+   * 允许的展开/选中表达（用这些代替）：
+   *   - 边框加深一档（--rg-border → --rg-border-strong / -stronger）
+   *   - 表面色变化（--rg-bg-base ⇄ --rg-bg-secondary）
+   *   - 文字/图标颜色变化（--rg-text-secondary → --rg-brand-600）
+   *
+   * 例外：左侧的 2px 竖条不在此禁令内。`.rail-item`、`.ent-row` 等处的
+   * 左侧竖线表达的是「已接入 / 未接入」这类真实状态，语义正当；
+   * 且竖条不切断容器轮廓，不会把容器读成页签。
+   */
+  .panel::before,
+  .metric-card::before,
+  .subcard::before { content: none; }
+
+  /*
+   * 上一版遗留的顶部色条实现方式（inset box-shadow）也一并禁掉：
+   * 这里给出显式的无阴影基线，任何组件想加顶部条都必须先删掉这条规则，
+   * 从而在 code review 里被看到。
+   */
+  .no-top-bar {
+    box-shadow: none;
+  }
   /*
    * 字体族
    *
@@ -194,6 +365,57 @@
     flex-direction: column;
   }
 
+  /*
+   * 全站唯一纵向滚动条：内容区
+   *
+   * ## 为什么必须 scrollbar-gutter: stable
+   *
+   * main 是 flex-1 的滚动容器，内容长短不同的页面会让滚动条出现／消失。
+   * 滚动条一出现就吃掉约 15px 宽度，main 的内容宽度随之变化 ——
+   * 表现为「切换页面时整屏内容横向抖一下」。这不是动画，是布局重排。
+   *
+   * scrollbar-gutter: stable 让浏览器**始终**预留滚动条所占的槽位，
+   * 无论当前是否需要滚动。内容宽度于是恒定，切页不再横移。
+   *
+   * ## 为什么必须显式 overflow-x: hidden
+   *
+   * 只写 overflow-y: auto 时，按 CSS 规范另一轴会从 visible 被算成 auto
+   * （实测 getComputedStyle(main).overflowX === 'auto'）。这意味着任何
+   * 1px 的横向溢出都会在右侧多出一条横向滚动条，与纵向条叠成 L 形。
+   * 表格的横向滚动由 .table-wrap / 面板体自己负责，main 不该再兜一层。
+   */
+  .layout-main {
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-gutter: stable;
+    /* 滚动到边界时不把滚动传递给整页（整页本就不滚，双保险） */
+    overscroll-behavior: contain;
+  }
+
+  /*
+   * 侧栏导航：可滚动，但不显示滚动条
+   *
+   * 17 个导航项在 700px 高的窗口里必然溢出。它确实需要一个滚动容器，
+   * 但与内容区同时露出两条纵向滚动条时，用户无法判断「滚轮会滚哪一边」，
+   * 而且靠左的那条紧贴分栏线，看起来像渲染残留。
+   *
+   * 处理：保留滚动能力（滚轮、键盘、拖拽都不受影响），只隐藏视觉滚动条。
+   * 这是 VS Code 侧栏、GitHub 文件树的同款做法 —— 侧栏的滚动条不承载
+   * 「我现在在全文哪个位置」的信息，反而制造噪声。
+   *
+   * ⚠️ 只适用于侧栏。内容区必须保留可见滚动条：那里需要知道长表格还有多远。
+   */
+  .layout-nav {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .layout-nav::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
+
   /* 侧栏导航项：悬停走 CSS，避免内联 style 与 NavLink 的状态回调互相覆盖 */
   .nav-item:hover:not([aria-current='page']) {
     background: var(--rg-bg-tertiary);
@@ -244,7 +466,7 @@
   /* 表单 */
   .field {
     @apply h-8 px-2.5 rounded-md border text-[13px] min-w-0;
-    border-color: var(--rg-border-stronger);
+    border-color: var(--rg-border-input);
     background: var(--rg-bg-base);
     color: var(--rg-text-primary);
   }
@@ -253,12 +475,12 @@
   }
   .field:focus {
     border-color: var(--rg-brand-600);
-    box-shadow: 0 0 0 2px var(--rg-brand-100);
+    box-shadow: 0 0 0 var(--rg-ring-width) var(--rg-ring);
   }
   /* 多行输入：与 .field 同一套描边与焦点处理，只放大内边距 */
   .textarea {
     @apply w-full min-w-0 rounded-md border p-2.5 font-mono text-[12px];
-    border-color: var(--rg-border-stronger);
+    border-color: var(--rg-border-input);
     background: var(--rg-bg-base);
     color: var(--rg-text-primary);
   }
@@ -267,7 +489,28 @@
   }
   .textarea:focus {
     border-color: var(--rg-brand-600);
-    box-shadow: 0 0 0 2px var(--rg-brand-100);
+    box-shadow: 0 0 0 var(--rg-ring-width) var(--rg-ring);
+  }
+  /*
+   * 原生 select 的统一样式
+   *
+   * 此前 5 处 select 各自内联 style 写 borderColor/background/color，值还不一致
+   * （有的用 text-primary、有的用 text-secondary）。收敛成一个类之后，
+   * 控件描边升级只需改这里一处。
+   */
+  .select {
+    @apply h-8 rounded-md border px-2 text-[13px] cursor-pointer;
+    border-color: var(--rg-border-input);
+    background: var(--rg-bg-base);
+    color: var(--rg-text-primary);
+  }
+  .select:focus {
+    border-color: var(--rg-brand-600);
+    box-shadow: 0 0 0 var(--rg-ring-width) var(--rg-ring);
+    outline: none;
+  }
+  .select:disabled {
+    @apply cursor-not-allowed opacity-60;
   }
   /* 等宽输入：调度里大量「令牌扫描分钟」「时分」这类数值字段 */
   .field-mono {
@@ -333,6 +576,43 @@
    * 菜单不受影响 —— MenuButton 走 portal 渲染到 body，不经过任何 overflow 祖先。
    */
   .table-wrap {
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+  /*
+   * 带纵向滚动的表：表头 sticky 才有意义。
+   *
+   * 与 .table-wrap 的区别是这一档同时允许纵向滚动（长日志表），
+   * 因此必须给一个确定高度，否则 sticky 的参照物是整个页面。
+   * 用法：<div class="table-wrap table-wrap-scroll" style="max-height:560px">
+   */
+  .table-wrap-scroll {
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  /*
+   * 兜底：面板体内**只有一张表**时，让面板体自己横向滚动。
+   *
+   * 项目里有 40+ 张表，此前只有 6 处手工包了 .table-wrap，其余在窄窗口下
+   * 要么撑破面板、要么被 .panel 的 overflow:hidden 裁掉操作列。
+   *
+   * 为什么不用 `display:block` 加在 table 上：那会让 table 不再是 table box，
+   * 其 thead/tbody 被包进匿名 table，`table-layout: fixed` 失效，
+   * 全站精心调过的 .col-* 列宽会退回按内容反推 —— 这正是当初引入
+   * .table-fixed 要解决的问题。所以必须滚外层，不能滚 table 本身。
+   *
+   * 为什么限定 `:only-child`：面板体里除表以外还有说明文字时，滚动面板体
+   * 会把说明一起裁掉。只在「表格是唯一子节点」时接管，语义与手工包一层
+   * .table-wrap 完全等价，不会误伤兄弟内容。
+   *
+   * 关键：必须同时声明 overflow-y: hidden。只写 overflow-x: auto 时，
+   * 按 CSS 规范另一轴会从 visible 被算成 auto，面板体于是变成纵向滚动容器，
+   * 与外层 main 的 overflow-y 叠成两条纵向滚动条（本项目踩过的坑，
+   * 见上方 .table-wrap 注释）。显式 hidden 掉纵向，横向才只滚一条。
+   */
+  .panel-body:has(> table:only-child),
+  .panel-body-flush:has(> table:only-child),
+  .subcard:has(> table:only-child) {
     overflow-x: auto;
     overflow-y: hidden;
   }
@@ -421,24 +701,48 @@
   /*
    * 可展开指标卡（总览页）
    *
-   * 与 .metric-cell 的区别：这里每张卡自带展开区，展开区要在卡下方延展，
-   * 而不是像 metric-grid 那样四项等高。所以用独立容器 + grid auto-fit，
-   * 展开时只有那一张卡变高（align-items: start）。
+   * 三张卡固定等高，**展开区不再落在卡内**。原来的实现把明细塞进 1/3 宽的
+   * 卡体，明细是「平台 × 计量 × 数值 × 说明」四列表，在 450px 里只能靠换行
+   * 和不等宽数值列勉强排下，左边界对不齐，无法纵向比较 —— 而那正是这张卡
+   * 唯一的价值。同时 align-items:start 让一张卡变高时另两张留在原地，
+   * 展开/收起带动下方「待处理」面板上下跳约 175px。
+   *
+   * 现在：.metric-cards 只放卡头（固定高度、等比），明细由兄弟节点
+   * .metric-panel 占满整行，采用单开手风琴（同时只开一张）。
    */
   .metric-cards {
     @apply grid gap-4;
     grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    align-items: start;
+    align-items: stretch;
   }
   .metric-card {
-    @apply rounded-lg border min-w-0 overflow-hidden;
+    @apply rounded-lg border min-w-0 overflow-hidden flex flex-col;
     border-color: var(--rg-border);
     background: var(--rg-bg-base);
   }
+  /*
+   * 展开态只改两处，都不引入新的图形：
+   *   - 边框加深一档（--rg-border → --rg-border-strong）；
+   *   - 卡头底色换成 --rg-bg-secondary。
+   *
+   * 为什么不用顶部色条：那条 2px 品牌色横条把卡片切出一个「标签页」的轮廓，
+   * 在只有三种状态的界面上是个纯装饰元素 —— 它不指向任何业务状态，
+   * 却在视觉上比真实的状态色（可用/冷却/错误）更抢眼。
+   * 展开与否已经由 chevron 的朝向、面板的出现、卡头底色三重表达，
+   * 不需要第四条线索，更不需要一条彩色线。
+   */
+  .metric-card[data-open='on'] {
+    border-color: var(--rg-border-strong);
+  }
+  .metric-card[data-open='on'] .metric-card-head {
+    background: var(--rg-bg-secondary);
+  }
   .metric-card-head {
-    @apply flex flex-col px-4 py-3 text-left w-full;
+    @apply flex flex-col text-left w-full flex-1;
+    padding: var(--rg-sp-4) var(--rg-sp-5);
     background: transparent;
     border: 0;
+    border-radius: inherit;
   }
   .metric-card-head.is-clickable {
     @apply cursor-pointer transition-colors;
@@ -449,43 +753,22 @@
   .metric-card-title {
     @apply flex items-center gap-2 min-w-0;
   }
-  /* 展开角标固定在标题行最右，与卡片右边距对齐 */
-  .metric-card-caret {
-    @apply ml-auto shrink-0 text-center text-[14px] select-none w-5;
+  /*
+   * 展开指示符：chevron 放标签左侧（此前是右上角的 +/− 文本字符）。
+   * 放左侧的原因是「+」在卡片右上角会被读成「新增」，而它实际是展开。
+   */
+  .metric-card-chevron {
+    @apply inline-flex items-center justify-center shrink-0 w-4 h-4;
     color: var(--rg-text-tertiary);
+    transition: transform 120ms ease-out;
   }
-  .metric-card-body {
-    @apply px-4 pb-3;
-    border-top: 1px solid var(--rg-border);
-    background: var(--rg-bg-secondary);
+  .metric-card-chevron svg {
+    width: 12px;
+    height: 12px;
   }
-  /* 展开区里的紧凑两列表：名称 + 金额 */
-  .metric-kv {
-    @apply flex flex-col;
-  }
-  .metric-kv-row {
-    @apply grid items-baseline gap-2 py-1.5 text-aux;
-    grid-template-columns: minmax(0, 1fr) auto;
-    border-bottom: 1px solid var(--rg-border);
-  }
-  .metric-kv-row:last-child {
-    border-bottom: 0;
-  }
-  .metric-kv-row > .k {
-    @apply truncate;
-    color: var(--rg-text-secondary);
-  }
-  .metric-kv-row > .v {
-    @apply font-mono tabular-nums text-right whitespace-nowrap;
-    color: var(--rg-text-primary);
-  }
-  .metric-kv-row.is-total {
-    @apply pt-2 font-semibold;
-    border-top: 1px solid var(--rg-border-stronger);
-  }
-  .metric-kv-row.is-muted > .k,
-  .metric-kv-row.is-muted > .v {
-    color: var(--rg-text-tertiary);
+  .metric-card[data-open='on'] .metric-card-chevron {
+    transform: rotate(90deg);
+    color: var(--rg-brand-600);
   }
   .metric-key {
     @apply text-[12px] leading-[18px];
@@ -494,6 +777,100 @@
   .metric-delta {
     @apply text-[12px] leading-4 mt-1;
     color: var(--rg-text-tertiary);
+  }
+
+  /*
+   * 指标明细面板（整行，卡片的兄弟节点）
+   *
+   * 与 .metric-cards 同属一个父级 flex/grid 流，因此外层容器需要有 gap-4；
+   * 面板自身不再加外边距，避免与容器 gap 叠成 24px。
+   */
+  .metric-panel {
+    @apply rounded-lg border overflow-hidden;
+    border-color: var(--rg-border);
+    background: var(--rg-bg-base);
+  }
+  .metric-panel-head {
+    @apply flex items-center gap-3 flex-wrap;
+    padding: var(--rg-sp-3) var(--rg-sp-5);
+    border-bottom: 1px solid var(--rg-border);
+    background: var(--rg-bg-secondary);
+    min-height: 40px;
+  }
+  .metric-panel-title {
+    @apply text-[13px] font-semibold;
+    color: var(--rg-text-primary);
+  }
+  .metric-panel-sub {
+    @apply text-aux;
+    color: var(--rg-text-tertiary);
+  }
+  .metric-panel-body {
+    padding: var(--rg-sp-4) var(--rg-sp-5) var(--rg-sp-5);
+  }
+  /* 面板内的占比条：给足宽度，与表格同宽 */
+  .metric-panel-body .share-bar {
+    height: 8px;
+  }
+
+  /*
+   * 明细表（指标展开区专用）
+   *
+   * 与 .data-table 的区别：这里行数少（≤8）、无交互、以扫读比较为目的，
+   * 因此不画行分隔线，只用组间距分组；数值列定宽右对齐才能比较。
+   */
+  .detail-table {
+    @apply w-full border-collapse text-[13px];
+  }
+  .detail-table th {
+    @apply text-left text-[12px] font-medium;
+    padding: var(--rg-sp-2) var(--rg-sp-3);
+    color: var(--rg-text-tertiary);
+    border-bottom: 1px solid var(--rg-border);
+    white-space: nowrap;
+  }
+  .detail-table td {
+    padding: var(--rg-sp-2) var(--rg-sp-3);
+    color: var(--rg-text-primary);
+    vertical-align: baseline;
+  }
+  .detail-table .col-num {
+    @apply text-right whitespace-nowrap;
+    font-family: var(--rg-font-mono);
+    font-variant-numeric: tabular-nums;
+    width: 140px;
+  }
+  .detail-table .col-unit {
+    width: 72px;
+    white-space: nowrap;
+    color: var(--rg-text-secondary);
+  }
+  .detail-table .col-name {
+    width: 168px;
+    white-space: nowrap;
+  }
+  .detail-table .col-note {
+    @apply text-aux;
+    color: var(--rg-text-tertiary);
+  }
+  .detail-table tr.is-muted td {
+    color: var(--rg-text-tertiary);
+  }
+  /* 分组表头：把「不计入合计」这类事实写成一行，替代原来每行重复一次 */
+  .detail-group th {
+    @apply text-[12px] font-medium;
+    padding-top: var(--rg-sp-4);
+    color: var(--rg-text-tertiary);
+    border-bottom: 0;
+  }
+  /* 合计行：上边线加粗一档，与明细分开 */
+  .detail-total td {
+    @apply font-semibold;
+    padding-top: var(--rg-sp-3);
+    border-top: 1px solid var(--rg-border-stronger);
+  }
+  .detail-total .col-num {
+    @apply text-right;
   }
   /* 区块小标题（面板内分组标题、接入说明标题等） */
   .text-label {
@@ -539,7 +916,12 @@
     background: var(--rg-state-warning);
   }
   .dot-off {
-    background: var(--rg-grey-400);
+    /*
+     * 状态点属「非文本 UI 组件」，按 WCAG 1.4.11 需 3:1。
+     * 原值 --rg-grey-400 (#a1a1a1) 在白底只有 2.58、灰底 2.37，不达标；
+     * 改用 #8a8a8a（白底 3.45 / 灰底 3.17），仍在视觉上弱于三种业务状态色。
+     */
+    background: var(--rg-dot-off);
   }
   .dot-error {
     background: var(--rg-state-error);
@@ -591,7 +973,12 @@
 
   /* 列宽：仅用于 .table-fixed 表格，数值取自各表最长内容 + 换行余量 */
   .col-toggle {
-    width: 52px;
+    /*
+     * 状态列：由「启用/停用」按钮改为「● 已启用」状态开关后变宽。
+     * 88px = 状态点 6 + 间隙 6 + 三字 39 + 内边距 20 + 余量。
+     * 原来 52px 装不下三字，会把账号列挤到 must-truncate。
+     */
+    width: 88px;
   }
   .col-account {
     width: 176px;
@@ -649,10 +1036,19 @@
   }
 
   .th {
-    @apply text-left text-[12px] font-semibold px-3 py-2 border-b whitespace-nowrap;
+    @apply text-left text-[12px] font-semibold border-b whitespace-nowrap;
+    padding: var(--rg-cell-py) var(--rg-cell-px);
     color: var(--rg-text-secondary);
     background: var(--rg-bg-secondary);
     border-color: var(--rg-border);
+    /*
+     * 表头粘顶：表体在 .table-wrap 里滚动时表头不跟着走。
+     * 只在有滚动容器的表上生效（无滚动的表 sticky 等于静态定位，无副作用）。
+     */
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    height: var(--rg-row-h-head);
   }
   /*
    * 表格骨架：只负责铺满与合并边框，字号与描边由 .th/.td 提供。
@@ -663,9 +1059,15 @@
     @apply w-full border-collapse;
   }
   .td {
-    @apply px-3 py-2.5 border-b align-middle text-[13px];
-    border-color: var(--rg-border);
+    @apply align-middle text-[13px];
+    padding: var(--rg-cell-py) var(--rg-cell-px);
+    border-bottom: 1px solid var(--rg-border);
     color: var(--rg-text-primary);
+    /*
+     * 行高由密度令牌给出下界：comfortable 40 / compact 32。
+     * 用 min-height 而非 height 是为了让两行内容的行（账号名 + 次行）不被裁切。
+     */
+    height: var(--rg-row-h);
   }
   /* fixed 布局下长内容不再撑列，必须显式截断，否则会溢出到相邻列 */
   .table-fixed .td {

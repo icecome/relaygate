@@ -23,6 +23,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import { NAV_GROUPS, navItemOf } from './nav';
 import { useSummaryStore } from '../shared/api/SummaryProvider';
 import { CommandMenu } from './CommandMenu';
+import { toggleDensity, useDensity } from '../shared/lib/density';
 
 /** 快捷键提示随平台变化：macOS 用 ⌘，其余用 Ctrl。 */
 function shortcutLabel(): string {
@@ -62,6 +63,7 @@ export default function AppLayout() {
   const enabled = data?.enabled ?? 0;
   const total = data?.total ?? 0;
   const shortcut = shortcutLabel();
+  const { density } = useDensity();
 
   /**
    * 全局快捷键：Ctrl/⌘ + K 打开命令面板。
@@ -90,7 +92,7 @@ export default function AppLayout() {
           <span className="font-mono text-[13px] font-semibold tracking-wide">RELAYGATE</span>
         </div>
 
-        <nav className="flex-1 overflow-y-auto py-2" aria-label="主导航">
+        <nav className="layout-nav flex-1 py-2" aria-label="主导航">
           {NAV_GROUPS.map((group) => (
             <div key={group.id} className="px-2 pb-1">
               {group.items.length > 1 && (
@@ -152,16 +154,43 @@ export default function AppLayout() {
           className="flex items-center justify-between gap-4 h-14 px-6 shrink-0 bg-[var(--rg-bg-base)]"
           style={{ borderBottom: '1px solid var(--rg-border)' }}
         >
-          {/* 面包屑：分组 → 当前页。分组名从 nav.ts 派生，不另维护一份 */}
+          {/* 面包屑：分组 › 当前页。两层同名时只显示一层（如「总览 › 总览」） */}
           <div className="flex items-center gap-2 min-w-0 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-            <span className="shrink-0">{groupLabelOf(location.pathname)}</span>
-            <span aria-hidden="true">›</span>
+            {groupLabelOf(location.pathname) !== current.label && (
+              <>
+                <span className="shrink-0">{groupLabelOf(location.pathname)}</span>
+                <span aria-hidden="true">›</span>
+              </>
+            )}
             <strong className="text-[13px] font-semibold truncate" style={{ color: 'var(--rg-text-primary)' }}>
               {current.label}
             </strong>
           </div>
 
           <div className="flex items-center gap-3 shrink-0">
+            {/*
+              密度开关：comfortable ⇄ compact。
+              放在顶栏而不是设置页，是因为它的使用时机是「这张表太长，
+              我想一屏多看几行」—— 那一刻用户不会去点开配置。
+            */}
+            <button
+              type="button"
+              className="btn btn-sm btn-ghost"
+              onClick={toggleDensity}
+              aria-pressed={density === 'compact'}
+              title={
+                density === 'compact'
+                  ? '当前：紧凑密度，点击切换为舒适密度'
+                  : '当前：舒适密度，点击切换为紧凑密度'
+              }
+              aria-label={
+                density === 'compact'
+                  ? '当前紧凑密度，切换到舒适密度'
+                  : '当前舒适密度，切换到紧凑密度'
+              }
+            >
+              {density === 'compact' ? '紧凑' : '舒适'}
+            </button>
             <button
               type="button"
               className="flex items-center gap-2 h-8 px-2.5 rounded-md border text-aux cursor-pointer"
@@ -181,7 +210,13 @@ export default function AppLayout() {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto bg-[var(--rg-bg-base)]">
+        {/*
+          layout-main：全站唯一纵向滚动容器。
+          显式 overflow-x: hidden + scrollbar-gutter: stable，
+          前者防止单轴 auto 让另一轴自动变成 auto（多出横向条），
+          后者让滚动条槽位常驻，切页时内容不再横移。见 global.css 注释。
+        */}
+        <main className="layout-main flex-1 bg-[var(--rg-bg-base)]">
           <div className="max-w-[1400px] mx-auto p-6 pb-14">
             <Outlet />
           </div>

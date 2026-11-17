@@ -36,7 +36,7 @@ function authenticate(req, res, next) {
   if (!rec) {
     return res.status(401).json({
       error: {
-        message: 'Invalid access key. 请使用管理面创建的访问密钥（trae|workbuddy|all）。',
+        message: 'Invalid access key。请使用管理面创建的访问密钥（trae|workbuddy|all）。',
         type: 'auth_error',
       },
     });
@@ -133,7 +133,7 @@ function requireKeyScope(scope) {
     if (scopes.includes(scope)) return next();
     return res.status(403).json({
       error: {
-        message: `access denied: scope_missing:${scope}. 请让管理员为该访问密钥补充 scope。`,
+        message: `access denied: scope_missing:${scope}。请让管理员为该访问密钥补充 scope。`,
         type: 'insufficient_scope',
         code: 'SCOPE_MISSING',
       },

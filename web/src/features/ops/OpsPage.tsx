@@ -40,6 +40,7 @@ import {
   formatNumber,
   formatTime,
   formatUptime,
+  poolStrategyLabel,
 } from '../../shared/lib/format';
 import {
   Button,
@@ -58,6 +59,7 @@ import {
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
 import { usePrompt } from '../../shared/ui/Prompt';
+import { NO_REASON_HINT } from '../../shared/api/action';
 import { ClientAccessPanel } from './ClientAccessPanel';
 import { NotifyBackupPanel } from './NotifyBackupPanel';
 
@@ -324,7 +326,7 @@ const rotateRows = useMemo(() => {
     setBusy(`switch-${uid}`);
     try {
       const r = await switchRotate(uid, key);
-      if (!r.ok) toast(`切换未成功：${r.msg ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
+      if (!r.ok) toast(`切换未成功：${r.msg ?? NO_REASON_HINT}`, 'err');
       else toast(`已切换到 ${label}`, 'ok');
       rotateStatus.reload();
     } catch (e) {
@@ -483,13 +485,17 @@ const rotateRows = useMemo(() => {
                   cols={3}
                   rows={[
                     { k: '节点', v: <span className="font-mono">{runtime.data?.status?.node || '—'}</span> },
-                    {
-                      k: '运行时长',
-                      v: <span className="font-mono">{formatUptime(runtime.data?.status?.uptimeSec)}</span>,
-                    },
+                    /*
+                      池化策略是机器标识（least_balance），直接渲染等于把内部实现
+                      暴露给使用者。走统一映射，命中则中文，未命中回退原值。
+                      不再用 font-mono：中文策略名不是等宽值类型。
+
+                      运行时长**不在这一组里重复**：它已经是指标条的第一项，
+                      同一屏出现两次会让人怀疑两个数是不是不同口径的。
+                    */
                     {
                       k: '池化策略',
-                      v: <span className="font-mono">{runtime.data?.pool?.strategy || runtime.data?.status?.pool?.strategy || '—'}</span>,
+                      v: <span>{poolStrategyLabel(runtime.data?.pool?.strategy || runtime.data?.status?.pool?.strategy)}</span>,
                     },
                     {
                       k: '单账号在途上限',
@@ -535,7 +541,7 @@ const rotateRows = useMemo(() => {
                 <KeyCards
                   cols={3}
                   rows={[
-                    { k: '当前策略', v: <span className="font-mono">{routeCheck.data.strategy || '—'}</span> },
+                    { k: '当前策略', v: <span>{poolStrategyLabel(routeCheck.data.strategy)}</span> },
                     {
                       k: '可用候选',
                       v: <span className="font-mono">{formatNumber(routeCheck.data.usableCount)}</span>,
@@ -585,14 +591,14 @@ const rotateRows = useMemo(() => {
                       style={{ background: 'var(--rg-bg-secondary)' }}
                     >
                       <tr>
-                        <th className="th">账号</th>
-                        <th className="th">可用</th>
-                        <th className="th cell-num">在途</th>
-                        <th className="th cell-num">余额</th>
-                        <th className="th cell-num">优先级</th>
-                        <th className="th">最近到期</th>
-                        <th className="th cell-num">模型冷却</th>
-                        <th className="th cell-num">错误数</th>
+                        <th scope="col" className="th">账号</th>
+                        <th scope="col" className="th">可用</th>
+                        <th scope="col" className="th cell-num">在途</th>
+                        <th scope="col" className="th cell-num">余额</th>
+                        <th scope="col" className="th cell-num">优先级</th>
+                        <th scope="col" className="th">最近到期</th>
+                        <th scope="col" className="th cell-num">模型冷却</th>
+                        <th scope="col" className="th cell-num">错误数</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -650,15 +656,15 @@ const rotateRows = useMemo(() => {
               {stickyRows.length === 0 ? (
                 <EmptyState
                   label="当前没有粘性会话"
-                  hint="会话在客户端第一次带 session 标识的请求之后才会绑定。"
+                  hint="客户端首次携带 session 标识的请求之后才绑定。"
                 />
               ) : (
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th className="th">会话键</th>
-                      <th className="th">绑定账号</th>
-                      <th className="th">过期时间</th>
+                      <th scope="col" className="th">会话键</th>
+                      <th scope="col" className="th">绑定账号</th>
+                      <th scope="col" className="th">过期时间</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1012,7 +1018,7 @@ const rotateRows = useMemo(() => {
                   </div>
 
                   <Note>
-                    错峰窗口按（日期，账号）哈希把批量任务分散到窗口内，避免固定时刻集中请求上游；填 0 表示关闭错峰。
+                    按（日期，账号）哈希把批量任务分散到窗口内，避免集中请求上游。填 0 关闭错峰。
                   </Note>
 
                   {/* 余额自动刷新：独立于签到链的定时器，开关与间隔都在这里 */}
@@ -1098,7 +1104,7 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="任务日志"
-              description={`按时间倒序，显示最近 ${taskRows.length} 条（最多拉取 ${LOG_LIMIT} 条）`}
+              description={`按时间倒序，最近 ${taskRows.length} 条`}
               actions={
                 <>
                   <select
@@ -1149,7 +1155,7 @@ const rotateRows = useMemo(() => {
               ) : taskRows.length === 0 ? (
                 <EmptyState
                   label="暂无任务记录"
-                  hint="定时任务执行过一次之后，这里会按时间倒序显示每次运行的结果。"
+                  hint="定时任务执行一次后，按时间倒序显示结果。"
                 />
               ) : (
                 <>
@@ -1161,12 +1167,12 @@ const rotateRows = useMemo(() => {
                         style={{ background: 'var(--rg-bg-base)' }}
                       >
                         <tr>
-                          <th className="th">时间</th>
-                          <th className="th">任务</th>
-                          <th className="th">触发</th>
-                          <th className="th cell-num">成功</th>
-                          <th className="th cell-num">失败</th>
-                          <th className="th">详情</th>
+                          <th scope="col" className="th">时间</th>
+                          <th scope="col" className="th">任务</th>
+                          <th scope="col" className="th">触发</th>
+                          <th scope="col" className="th cell-num">成功</th>
+                          <th scope="col" className="th cell-num">失败</th>
+                          <th scope="col" className="th">详情</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1325,7 +1331,7 @@ const rotateRows = useMemo(() => {
 
             <Panel
               title="轮换设置"
-              description="自动轮换的开关与参数都在这里；执行时刻在「定时任务 · 执行时刻」中设置"
+              description="开关与参数在此设置，执行时刻见「定时任务 · 执行时刻」"
               actions={
                 <Button
                   size="sm"
@@ -1446,7 +1452,7 @@ const rotateRows = useMemo(() => {
                   </div>
 
                   <Note>
-                    自动轮换按「定时任务」里的账号轮换时刻触发；关闭后仍可随时手动执行轮换。
+                    按「定时任务」里的账号轮换时刻触发；关闭后仍可手动执行。
                   </Note>
                 </div>
               )}
@@ -1486,27 +1492,27 @@ const rotateRows = useMemo(() => {
               ) : rotateRows.length === 0 ? (
                 <EmptyState
                   label="本机凭据目录里没有可用账号备份"
-                  hint="点上方「生成种子」写入账号备份后，这里会列出可切换的账号。"
+                  hint="点上方「生成种子」写入账号备份后，可在此切换账号。"
                 />
               ) : (
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th className="th">账号</th>
-                      <th className="th">uid</th>
-                      <th className="th">状态</th>
-                      <th className="th cell-num">当日活跃</th>
+                      <th scope="col" className="th">账号</th>
+                      <th scope="col" className="th">uid</th>
+                      <th scope="col" className="th">状态</th>
+                      <th scope="col" className="th cell-num">当日活跃</th>
                       {/*
                         连登列紧跟「当日活跃」，因为两者是同一轮检查里取的同一套上游数据：
                         当日活跃 = 今天有没有动过（heatmap.today.is_active）
                         连登     = 连续多少天动过（growth/streak 的 days）
                         分开看才能回答「今天动了但连登断了没」这类问题。
                       */}
-                      <th className="th cell-num" title="连续活跃天数（成长中心 /activity/growth/streak）">
+                      <th scope="col" className="th cell-num" title="连续活跃天数（成长中心 /activity/growth/streak）">
                         连登
                       </th>
-                      <th className="th">说明</th>
-                      <th className="th cell-act">操作</th>
+                      <th scope="col" className="th">说明</th>
+                      <th scope="col" className="th cell-act">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1639,13 +1645,13 @@ const rotateRows = useMemo(() => {
           <>
             <Panel
               title="网关配置"
-              description="当前生效的网关配置；修改配置文件后需重载才会应用"
+              description="当前生效的网关配置，修改配置文件后需重载"
               actions={
                 <Button size="sm" variant="primary" onClick={doReload} disabled={busy === 'reload'}>
                   {busy === 'reload' ? '重载中…' : '重载配置'}
                 </Button>
               }
-              footer="重载会按当前配置文件重建模型池与路由，并返回重载前后的对比。"
+              footer="按当前配置文件重建模型池与路由，返回前后对比。"
             >
               {config.loading && !config.data ? (
                 <LoadingBlock />
@@ -1787,7 +1793,7 @@ const rotateRows = useMemo(() => {
         )}
 
         <Note>
-          运维操作直接影响网关可用性：分批任务请避开在途请求高峰，重载配置会短暂重建模型池与路由。
+          运维操作影响可用性：分批任务避开请求高峰，重载会短暂重建模型池与路由。
         </Note>
       </Stack>
     </PageShell>

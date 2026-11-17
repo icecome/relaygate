@@ -91,7 +91,7 @@ const merged = [...list, 'models:read'];      // ['models:read']
 - `ensureModelsReadScope()`：NULL/空 → **按平台默认物化**（含 `models:invoke`）；
   显式配过 → 只补 `models:read`。
 - 新增 `ensureInvokeScope()`：修「一个 invoke 能力都没有」的坏行（上一版迁移写出的
-  `["models:read"]`），按平台默认补齐 invoke，不动用户已有的其它 scope。幂等。
+  `["models:read"]`），按平台默认补齐 invoke，不动用户已有的其他 scope。幂等。
 - `src/index.js` 启动时依次执行两者，并打印修复明细。
 
 ### 3.2 R2：平台归属事实源（新增 `src/models/platform-ownership.js`）

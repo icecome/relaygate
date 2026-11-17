@@ -43,7 +43,7 @@ function readRowsMatching(dir, suffix) {
  * @param {string} [accountId] 可选：只看某一个账号（缓存文件名 <accountId>-<date>.json）
  * @returns {{byDay: {date:string, traeCredit:number, traeTokens:number, traeSessions:number, wbCredit:number, wbRequests:number, totalCredit:number, covered:boolean}[], traeCreditTotal:number, wbCreditTotal:number}}
  *   covered=true 表示该日两路账单缓存都存在（不代表有消耗，只代表「查过且入账」）；
- *   Trae 账单按会话入账有 1~2 天滞后，最近一两天 traeCredit=0 多半是未入账，不是没消耗。
+ *   Trae 账单按会话入账有 1～2 天滞后，最近一两天 traeCredit=0 多半是未入账，不是没消耗。
  */
 function dailyCredits(days, accountId) {
   const byDay = new Map();
@@ -117,7 +117,7 @@ function dailyCredits(days, accountId) {
     traeCreditTotal += d.traeCredit;
     wbCreditTotal += d.wbCredit;
     // covered：该日已有账单缓存文件（读取成功）。不代表当日一定有消耗——
-    // Trae 按会话入账有 1~2 天滞后，最近一两日 traeCredit=0 多半是「尚未入账」，
+    // Trae 按会话入账有 1～2 天滞后，最近一两日 traeCredit=0 多半是「尚未入账」，
     // 调用方须结合该事实解读，不可读作「当天没花积分」。
     d.covered = traeDays.has(d.date) || wbDays.has(d.date);
   }

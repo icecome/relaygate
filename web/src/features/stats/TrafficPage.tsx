@@ -32,6 +32,7 @@ import {
 } from '../../shared/ui';
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
+import { NO_REASON_HINT } from '../../shared/api/action';
 
 type Range = '1' | '24' | '168';
 
@@ -183,7 +184,7 @@ export default function TrafficPage() {
         message: r.message,
         content: r.content,
       });
-      toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, r.ok ? 'ok' : 'err');
+      toast(r.ok ? '测试请求完成' : `测试未成功：${r.message ?? NO_REASON_HINT}`, r.ok ? 'ok' : 'err');
     } catch (e) {
       toast(e instanceof ApiError ? e.message : '测试请求发送失败，可重试', 'err');
     } finally {
@@ -258,22 +259,22 @@ export default function TrafficPage() {
             ) : (
               <EmptyState
                 label="所选区间内没有转发请求记录"
-                hint="把时间范围切到「近 24 小时」或「近 7 日」再看；客户端发起请求后即会出现。"
+                hint="切换到「近 24 小时」或「近 7 日」，或等客户端发起请求。"
               />
             )
           ) : (
             <table className="data-table">
               <thead>
                 <tr>
-                  <th className="th cell-num">#</th>
-                  <th className="th">时间</th>
-                  <th className="th">接口</th>
-                  <th className="th">模型</th>
-                  <th className="th">上游模型</th>
-                  <th className="th">账号</th>
-                  <th className="th">状态</th>
-                  <th className="th cell-num">耗时</th>
-                  <th className="th cell-num">Token</th>
+                  <th scope="col" className="th cell-num">#</th>
+                  <th scope="col" className="th">时间</th>
+                  <th scope="col" className="th">接口</th>
+                  <th scope="col" className="th">模型</th>
+                  <th scope="col" className="th">上游模型</th>
+                  <th scope="col" className="th">账号</th>
+                  <th scope="col" className="th">状态</th>
+                  <th scope="col" className="th cell-num">耗时</th>
+                  <th scope="col" className="th cell-num">Token</th>
                 </tr>
               </thead>
               <tbody>
@@ -362,7 +363,7 @@ export default function TrafficPage() {
         <Panel
           title="SSE 调试记录"
           description="读取已写入文件的调试日志"
-          footer="该接口读取已写入文件的 JSONL 记录，不是实时推送；最新记录可能滞后于线上请求。"
+          footer="读取已落盘的 JSONL 记录，非实时推送，最新记录可能滞后。"
           flush
         >
           {sse.error ? (
@@ -379,11 +380,11 @@ export default function TrafficPage() {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th className="th">时间</th>
-                    <th className="th">Request ID</th>
-                    <th className="th">账号</th>
-                    <th className="th">模型</th>
-                    <th className="th">事件</th>
+                    <th scope="col" className="th">时间</th>
+                    <th scope="col" className="th">Request ID</th>
+                    <th scope="col" className="th">账号</th>
+                    <th scope="col" className="th">模型</th>
+                    <th scope="col" className="th">事件</th>
                   </tr>
                 </thead>
                 <tbody>

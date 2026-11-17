@@ -207,7 +207,7 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
 
       {phase === 'idle' && (
         <Note>
-          点击「开始登录」后会打开上游授权页。授权完成后本面板会自动感知，无需手动提交。
+          点「开始登录」打开授权页。完成后面板自动感知，无需手动提交。
         </Note>
       )}
 

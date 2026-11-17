@@ -42,7 +42,7 @@ require('dotenv').config({ override: true })  // ← 错：.env 反过来压掉�
 | `output/.trae-api/task-log.jsonl` | ~25 行虚构任务记录（`backup`/`restore`/`keepalive`/`checkin`，`trigger: manual`，05:06–05:07Z） | **保留**（见 §5） |
 | `backups/relay-backup-2026-10-14T05-0*.json` | 5 个测试创建的备份（含 73 个假账号） | **已隔离**至 `backups/_test-artifacts-20261014/` |
 | `output/.trae-api/backup-state.json` | 被测试改写，`lastBackupFile` 指向一个测试备份 | **已隔离**（同上目录） |
-| 其它状态文件 | `model-router.json`（4 个真实虚拟模型）、`model-status.json`、`notify-settings.json`、`scheduler-settings.json`、`balance-refresh-settings.json`、`growth-last-run.json` | **内容经逐项核对为真实值，未被测试值覆盖** |
+| 其他状态文件 | `model-router.json`（4 个真实虚拟模型）、`model-status.json`、`notify-settings.json`、`scheduler-settings.json`、`balance-refresh-settings.json`、`growth-last-run.json` | **内容经逐项核对为真实值，未被测试值覆盖** |
 
 **真实账号零损失**：17 行真实账号全部可用真实密钥 `encrypt.key` 正常解密
 （`encrypt.key` mtime 仍为 2026-09-10，从未被改写）。

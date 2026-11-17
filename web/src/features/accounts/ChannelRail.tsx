@@ -54,7 +54,7 @@ export function ChannelRail({
     return (
       <EmptyState
         label="没有读到任何平台"
-        hint="平台清单由服务端下发；为空说明该接口异常，请查看服务端日志后重试。"
+        hint="平台清单由服务端下发。为空表示接口异常，查看服务端日志后重试。"
         action={{ label: '重新读取', onClick: channels.reload }}
       />
     );

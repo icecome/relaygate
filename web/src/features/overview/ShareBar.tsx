@@ -19,16 +19,23 @@ import type { CreditShareRow } from '../../shared/lib/overview-detail';
 import { formatCompact, formatNumber } from '../../shared/lib/format';
 
 /**
- * 段色。刻意不用 `--rg-chart-*`：那套序列色相邻两项色相接近（brand-600 与
- * brand-300 同为蓝紫），堆叠后边界不可辨。这里按「深品牌 → 浅品牌 → 灰阶」
- * 交替，保证任意相邻两段都有明度差。
+ * 段色。取自全局图表序列 --rg-viz-1..5。
+ *
+ * 为什么不在这里自己排一套：原先本项目有三处图表各写一套取色
+ * （DailyTrendChart 用 chart-*、TokenHeatmap 用 brand 五档、这里自排），
+ * 做暗色主题时要改三处、且极易只改一处。现在统一定义在 global.css，
+ * 这里只引用序列名。
+ *
+ * 序列的设计约束：相邻两段必须有明度差（深品牌 → 浅品牌 → 中性 → 更浅 → 中性），
+ * 否则堆叠成条后边界不可辨 —— 这是此前拒绝沿用 --rg-chart-* 的原因，
+ * 现在的 --rg-viz-* 已按该约束重排。
  */
 const SEGMENT_COLORS = [
-  'var(--rg-brand-600)',
-  'var(--rg-brand-300)',
-  'var(--rg-grey-500)',
-  'var(--rg-brand-200)',
-  'var(--rg-grey-300)',
+  'var(--rg-viz-1)',
+  'var(--rg-viz-2)',
+  'var(--rg-viz-3)',
+  'var(--rg-viz-4)',
+  'var(--rg-viz-5)',
 ];
 
 export function ShareBar({
@@ -36,17 +43,25 @@ export function ShareBar({
   total,
   unknownPlatforms,
   unit = '积分',
+  showTotal = true,
 }: {
   parts: CreditShareRow[];
   total: number;
   /** 有账号但一次都没查过余额的平台名；会单独提示，不参与分母 */
   unknownPlatforms: string[];
   unit?: string;
+  /**
+   * 是否在条下显示「合计 N 积分」。
+   *
+   * 默认 true（单独使用时有意义）；紧跟明细表时应传 false ——
+   * 表里已有合计行，同一数字出现两次会让人以为口径不同。
+   */
+  showTotal?: boolean;
 }) {
   if (!parts.length) {
     return (
       <div className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
-        还没有查过任何账号的余额。先点右上角「刷新」，或到凭据池逐个「查余额」。
+        还没有查过余额。点右上角「刷新」，或到凭据池逐个「查余额」。
       </div>
     );
   }
@@ -81,10 +96,20 @@ export function ShareBar({
         ))}
       </div>
 
-      <div className="mt-1.5 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-        合计 {formatNumber(total)} {unit}
-        {unknownPlatforms.length > 0 && ` · ${unknownPlatforms.join(' / ')} 尚未查询，未计入占比`}
-      </div>
+      {/*
+        合计行只在**没有外部合计行**时显示。
+        总览页的占比条下方紧跟明细表，表里已有「合计」行；
+        这里再写一遍「合计 46,844.87」等于同一屏同一数字出现两次，
+        读者会开始怀疑两个数是不是不同口径。
+      */}
+      {(unknownPlatforms.length > 0 || showTotal) && (
+        <div className="mt-1.5 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          {showTotal && `合计 ${formatNumber(total)} ${unit}`}
+          {showTotal && unknownPlatforms.length > 0 && ' · '}
+          {unknownPlatforms.length > 0 &&
+            `${unknownPlatforms.join(' / ')} 尚未查询，未计入占比`}
+        </div>
+      )}
     </div>
   );
 }

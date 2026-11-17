@@ -153,7 +153,7 @@ function importAccount(tokenData, accData, region) {
 
   /*
    * 去重必须限定在 WorkBuddy 账号内：不同平台的 userId 空间可能碰撞
-   * （uid 为手机号时尤其容易与其它渠道重合），无 edition 过滤会把别的平台
+   * （uid 为手机号时尤其容易与其他渠道重合），无 edition 过滤会把别的平台
    * 账号静默改写成 WB 账号并覆盖其 token。
    */
   const existing = store.list().find((a) => a.edition === 'workbuddy' && String(a.userId) === uid);

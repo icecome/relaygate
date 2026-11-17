@@ -123,7 +123,7 @@ t('version 随每次成功写入递增，且不出现在对外返回值里', () 
   assert.strictEqual(returned.version, undefined, 'version 是内部乐观锁字段，不应外泄给调用方');
 });
 
-t('未知字段被忽略，不会写坏其它列', () => {
+t('未知字段被忽略，不会写坏其他列', () => {
   const store = require('../credentials/store');
   const before = store.get('acct_conc_1');
   store.update('acct_conc_1', { somethingUnknown: 'x', label: '只改这个' });

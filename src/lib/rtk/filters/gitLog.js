@@ -77,7 +77,7 @@ function gitLog(text, maxLines = GIT_LOG_MAX_LINES) {
         pushLine('  ... diff body omitted');
         continue;
       }
-      // commit 正文里其它一切 —— 丢掉
+      // commit 正文里其他一切 —— 丢掉
       continue;
     }
 

@@ -64,6 +64,30 @@ export function formatNumber(n: number | null | undefined): string {
 }
 
 /**
+ * 定点格式：同一组数字统一小数位。
+ *
+ * 为什么需要它：后端返回的额度是浮点（积分被按比例拆分过），同一个页面上
+ * 会出现 46,844.87 / 30,395 / 0 / 2,993 四种形态。混排时读者无法判断
+ * 「30,395 到底有没有小数」，也就无法做加法核对。
+ *
+ * 使用约定（三档制，不要混用）：
+ *   - 卡面主读数、明细表数值列 → formatFixed(n, 2)，同组内小数位一致
+ *   - 表格里的计数（账号数、请求数、Token）→ formatNumber，整数本就没有小数
+ *   - 图表图例、轴标签 → formatCompact，空间受限才压缩
+ *
+ * 0 值特殊处理：`0.00` 比 `0` 更像「精确测量过而且是零」，但也更长；
+ * 额度为 0 是常见状态（新号、已用尽），保留两位小数会让整列宽度一致，
+ * 因此不做特例。
+ */
+export function formatFixed(n: number | null | undefined, digits = 2): string {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return '—';
+  return n.toLocaleString('zh-CN', {
+    minimumFractionDigits: digits,
+    maximumFractionDigits: digits,
+  });
+}
+
+/**
  * 量级压缩：566,700,000 → 566.7M。
  *
  * 只给**指标卡主读数与图表轴**用（卡面可用宽度约 240px，7 位数会撑爆）。
@@ -211,4 +235,73 @@ export function formatBoolean(v: boolean | null | undefined): string {
 export function percent(part: number, total: number): number {
   if (!total) return 0;
   return (part / total) * 100;
+}
+
+/* ---------------------------------------------------------------------------
+ * 机器可读值 → 界面文案
+ * ---------------------------------------------------------------------------
+ *
+ * 原则：任何 snake_case / 英文枚举进界面之前都要过一层白名单映射，
+ * 未命中则回退原值 —— 回退而不是显示空白，是为了让新增枚举在界面上
+ * 至少可见（空白会被误读成「没有这项」）。
+ *
+ * 依据：docs/04-reviews/ui-review-2026-11-09-model-pages.md §2.5 已确立
+ * 同一规则，但当时只落在模型池页。这里是全站统一出口，
+ * 新增展示位应 import 这里的映射，不要再各写一份内联三元。
+ *
+ * 报错原文（如 PlanLimit 的错误码）刻意不映射：错误码是排查依据，
+ * 中文化之后用户拿 1005 去搜反而搜不到。
+ */
+
+/**
+ * 账号池调度策略。
+ *
+ * `least_balance` 这类值此前直出到运维页「池化策略」，见 2026-11-17 审查。
+ */
+export const POOL_STRATEGY_LABEL: Record<string, string> = {
+  least_balance: '余额与到期优先',
+  round_robin: '轮询',
+  fefo: '先到期先用',
+  priority: '优先级优先',
+};
+
+export function poolStrategyLabel(strategy: string | null | undefined): string {
+  if (!strategy) return '—';
+  return POOL_STRATEGY_LABEL[strategy] ?? strategy;
+}
+
+/** 上游调用方式（模型池「上游方式」列）。 */
+export const UPSTREAM_FUNCTION_LABEL: Record<string, string> = {
+  chat_v3: '对话（chat_v3）',
+  inline_chat: '内联对话（inline_chat）',
+  solo_work_lite: 'TraeWork（solo_work_lite）',
+};
+
+export function upstreamFunctionLabel(fn: string | null | undefined): string {
+  if (!fn) return '—';
+  return UPSTREAM_FUNCTION_LABEL[fn] ?? fn;
+}
+
+/** 模型目录来源。 */
+export const SOURCE_LABEL: Record<string, string> = {
+  upstream: '上游目录',
+  'model-router': '虚拟模型',
+  manual: '手动添加',
+};
+
+export function sourceLabel(source: string | null | undefined): string {
+  if (!source) return '—';
+  return SOURCE_LABEL[source] ?? source;
+}
+
+/** 缓存/计费来源（用量页「来源」列）。 */
+export const BILLING_SOURCE_LABEL: Record<string, string> = {
+  credit_history: '余额快照差分',
+  usage_log: '请求日志聚合',
+  manual: '手动录入',
+};
+
+export function billingSourceLabel(source: string | null | undefined): string {
+  if (!source) return '—';
+  return BILLING_SOURCE_LABEL[source] ?? source;
 }

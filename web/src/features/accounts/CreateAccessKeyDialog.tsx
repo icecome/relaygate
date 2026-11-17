@@ -117,7 +117,7 @@ export function CreateAccessKeyDialog({ open, onClose, onCreated }: {
       open={open}
       onClose={onClose}
       title="创建访问密钥"
-      desc="选择这把密钥能碰哪些平台的模型。明文仅在创建成功时返回一次。"
+      desc="选择这把密钥可访问的平台。明文仅在创建时返回一次。"
       footer={
         <>
           <Button variant="ghost" onClick={onClose} disabled={busy}>

@@ -133,7 +133,7 @@ export function ImportTraeDialog({ open, onClose, onImported }: {
           placeholder="仅有 refreshToken 时可直接填这里"
         />
         <Note>
-          凭据内容仅提交到本机后端，不会发送到第三方。批量导入会解析为单个对象或对象数组，按条处理。
+          凭据只提交到本机后端。批量导入按对象或数组逐条处理。
         </Note>
       </div>
     </Modal>

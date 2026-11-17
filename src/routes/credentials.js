@@ -50,7 +50,7 @@ function withExpiry(account) {
     expiring7d: exp.d7,
     packs: exp.packs,
     // ZCode 的额度是 token 计量（非积分），单独透出，不与 packs/balance 混算。
-    // 其它平台无此键，前端按 undefined 忽略。
+    // 其他平台无此键，前端按 undefined 忽略。
     tokenRemaining: typeof snap.tokenRemaining === 'number' ? snap.tokenRemaining : undefined,
     tokenBuckets: Array.isArray(snap.tokenBuckets) && snap.tokenBuckets.length ? snap.tokenBuckets : undefined,
     // Qoder 的两段额度（基础 userQuota + 赠送 addOnQuota）同为隔离口径，
@@ -199,7 +199,7 @@ router.post('/checkin', admin, async (req, res) => {
  * 按钮名承诺「全部」但只覆盖一个平台且失败无感知。
  *
  * 本端点以 capability.checkin 为准枚举平台，逐平台调用各自实现，返回分平台明细。
- * 单平台整体失败不影响其它平台。
+ * 单平台整体失败不影响其他平台。
  */
 router.post('/checkin-all', admin, async (req, res) => {
   try {
@@ -247,7 +247,7 @@ router.post('/:id/checkin', admin, async (req, res) => {
   // 通知说成功，同一操作两个互相矛盾的结论。现在按 result 三分：
   //   claimed  → checkin_ok   真领到了
   //   already  → checkin_ok   「今日已签」也是成功履约，标题区分
-  //   其它     → checkin_warn 请求通了但没拿到分，原因写进正文
+  //   其他     → checkin_warn 请求通了但没拿到分，原因写进正文
   try {
     const { notify } = require('../notify');
     const label = r.label || req.params.id;

@@ -54,7 +54,7 @@ toolTokens   = toolCount === 0 ? 0 : ceil(toolChars/4) + toolCount*8
 - 设计要点：**图片固定 1024**（base64 无尺寸信息可定价）、**工具帧 8 token/条**、**BASE 16 保证空 body 不为 0**（"客户端拿它做除数，读到 0 会炸"，`:54-56` 注释）。
 
 **B 的现状**：**无此端点**。但估算基础设施比 A 更精确：
-- `src/lib/token-estimate.js`：启发式 `CJK 0.7 token/字 + 其它 4 字符/token + 每消息 8 + 图片 1000`，且 `estimateRequestTokens` **计入 tools schema**（`:116-127`，有实测依据：27 个工具声明使上游报 100001 tokens 超限）。
+- `src/lib/token-estimate.js`：启发式 `CJK 0.7 token/字 + 其他 4 字符/token + 每消息 8 + 图片 1000`，且 `estimateRequestTokens` **计入 tools schema**（`:116-127`，有实测依据：27 个工具声明使上游报 100001 tokens 超限）。
 - `src/lib/token-precise.js` + `token-estimate.js:60-71`：**js-tiktoken `cl100k_base` 真实分词**，超 60K 字符自动回退启发式（避免同步 BPE 阻塞事件循环，`:24-28` 注释）。
 
 **择优结论**：**用 B 的分词器 + A 的结构完整性**。B 的 tiktoken 比 A 的 `chars/4` 准得多（尤其中文，A 的 4 字符/token 对中文低估约 40%），但 A 的分项口径（图片固定值、工具帧开销、BASE 防 0）是 B 缺的。两者互补。
@@ -500,7 +500,7 @@ message_delta → message_stop`，沿用本文件既有的 data-only 风格）�
 
 **先量化收益基础**：近 30 天输入 **24.5 亿** token / 输出 **690 万**（**337:1**），
 单请求输入 p50 **149,254** token、89.9% 的请求 ≥50K、缓存读占输入 67%；
-工具调用结束的行平均输入 99.6K（其它行 38.4K）。输入侧确实是成本绝对主体。
+工具调用结束的行平均输入 99.6K（其他行 38.4K）。输入侧确实是成本绝对主体。
 
 **移植**（`src/lib/rtk/`，19 个文件）：源目录里其实是 **12** 个过滤器（不是 13），已全部到位。
 三处刻意差异：

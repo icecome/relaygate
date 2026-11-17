@@ -38,6 +38,7 @@ import {
 } from '../../shared/ui';
 import { usePrompt } from '../../shared/ui/Prompt';
 import { useToast } from '../../shared/ui/Toast';
+import { NO_REASON_HINT } from '../../shared/api/action';
 
 /** 渠道字段定义。id 与后端 notify/settings.js 的 FIELDS 一致。 */
 const CHANNELS: {
@@ -294,7 +295,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
       } else if (r.running) {
         toast('备份正在执行中', 'warn');
       } else {
-        toast(`备份未成功：${r.error ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
+        toast(`备份未成功：${r.error ?? NO_REASON_HINT}`, 'err');
       }
       backup.reload();
     } catch (e) {
@@ -326,7 +327,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
     try {
       const r = await verifyBackup(path, apiKey);
       if (r.ok) toast(`校验通过：${file}`, 'ok');
-      else toast(`校验未通过：${r.reason ?? '网关未返回失败原因；若持续出现，请到「运维 → 定时任务」查看任务日志'}`, 'err');
+      else toast(`校验未通过：${r.reason ?? NO_REASON_HINT}`, 'err');
     } catch (e) {
       toast(apiErrorText(e, '校验失败'), 'err');
     } finally {
@@ -392,7 +393,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             </Button>
           </>
         }
-        footer="凭据保存在服务端本机配置文件。密钥类字段不会明文回显，已配置时输入框显示掩码提示。"
+        footer="凭据保存在服务端本机配置。密钥字段不明文回显，已配置时显示掩码。"
       >
         {notify.loading && !notify.data ? (
           <LoadingBlock />
@@ -510,7 +511,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             {busy === 'backup-run' ? '执行中…' : '立即备份'}
           </Button>
         }
-        footer="备份内容经 AES-256-GCM 加密，密钥来自服务端环境变量或本机密钥文件；换机器恢复需要同一把密钥。"
+        footer="备份经 AES-256-GCM 加密，密钥取服务端环境变量或本机密钥文件；换机恢复需同一把密钥。"
       >
         {backup.loading && !backup.data ? (
           <LoadingBlock />
@@ -634,10 +635,10 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               <table className="data-table">
                 <thead>
                   <tr>
-                    <th className="th">文件</th>
-                    <th className="th cell-num">大小</th>
-                    <th className="th">创建时间</th>
-                    <th className="th cell-act">操作</th>
+                    <th scope="col" className="th">文件</th>
+                    <th scope="col" className="th cell-num">大小</th>
+                    <th scope="col" className="th">创建时间</th>
+                    <th scope="col" className="th cell-act">操作</th>
                   </tr>
                 </thead>
                 <tbody>

@@ -40,6 +40,14 @@ const scheduler = require('./jobs/scheduler');
 const apiKeyStore = require('./credentials/api-keys');
 
 const app = express();
+/*
+ * 关掉 X-Powered-By。
+ *
+ * Express 默认在每个响应上打 `X-Powered-By: Express`。对自托管面板来说
+ * 这只是免费情报：攻击者据此直接锁定 Express 已知漏洞清单，而正常用户
+ * 一个字节都用不到。Express 官方提供了关闭开关，没有理由留着。
+ */
+app.disable('x-powered-by');
 app.use(express.json({ limit: '10mb' }));
 
 /**
@@ -95,11 +103,37 @@ const CSP = [
 // 转发面与运维快照不是 HTML 文档，加 CSP 只会干扰客户端处理响应体
 const isDocumentRoute = (p) => !p.startsWith('/v1/') && p !== '/status' && p !== '/health';
 
+/**
+ * 静态资源（文件名带内容哈希）与 HTML 文档要区别对待。
+ *
+ * /assets/* 的文件名由内容决定，内容一变文件名就变，因此可以 immutable 长缓存；
+ * 而 index.html 是入口，必须每次回源。两者如果都走 no-store，
+ * 每次进面板都要重新下载 200KB 的 JS —— 明明什么都没变。
+ */
+const isAssetRoute = (p) => p.startsWith('/assets/');
+
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');
-  if (isDocumentRoute(req.path)) res.setHeader('Content-Security-Policy', CSP);
+  if (isDocumentRoute(req.path)) {
+    res.setHeader('Content-Security-Policy', CSP);
+    /*
+     * 管理面板文档必须禁缓存。
+     *
+     * 原值 Cache-Control: public, max-age=0 允许共享缓存（公司代理、运营商
+     * 缓存层）保存面板 HTML —— 虽然 max-age=0 要求每次都回源验证，
+     * 但 `public` 这个指令本身就授权了中间人存储。面板骨架会暴露
+     * 「这里跑着一个 RelayGate、版本号是 v3.1.0」这类指纹。
+     *
+     * no-store 同时禁止存储与回源验证，语义最直接。
+     *
+     * ⚠️ 必须排除 /assets/*：它们是带内容哈希的构建产物，
+     * 若一并 no-store，每次进面板都要重下 200KB JS，而内容其实没变。
+     * 长缓存由下方 express.static 的 immutable + maxAge 提供。
+     */
+    if (!isAssetRoute(req.path)) res.setHeader('Cache-Control', 'no-store');
+  }
   next();
 });
 
@@ -147,6 +181,22 @@ app.use(dashboard);
 // React 管理面板（web/dist，vite build 产物）；SPA fallback 到 index.html
 const webDist = path.join(__dirname, '..', 'web', 'dist');
 if (fs.existsSync(webDist)) {
+  /*
+   * 静态资源长缓存，文档不缓存。
+   *
+   * /assets/* 的文件名带内容哈希（index-BYHWXIwD.js），内容变了文件名就变，
+   * 因此可以 immutable + 一年。这不会命中上面那条 no-store ——
+   * express.static 在路由链里更早返回，这里设置的 Cache-Control 覆盖中间件。
+   *
+   * index.html 不设长缓存：它是入口，必须每次回源，见上面的 no-store。
+   */
+  app.use(
+    '/assets',
+    express.static(path.join(webDist, 'assets'), {
+      immutable: true,
+      maxAge: '1y',
+    }),
+  );
   app.use(express.static(webDist));
   app.get(/^\/(?!v1\/|health$|dashboard$|status$).*/, (req, res, next) => {
     if (req.method !== 'GET') return next();

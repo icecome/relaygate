@@ -2,7 +2,7 @@
  * 登录密钥输入弹窗。
  * 用于「已配置但手头没有密钥」的场景：粘贴已有登录密钥即可进入面板，无需先重置
  * （重置会使旧密钥立即失效，且需要重新分发）。
- * 校验方式：用该密钥请求一个轻量只读接口；401 说明密钥无效或已被删除，其它错误另行提示。
+ * 校验方式：用该密钥请求一个轻量只读接口；401 说明密钥无效或已被删除，其他错误另行提示。
  */
 import { useEffect, useRef, useState } from 'react';
 import { listLoginKeys } from '../../shared/api/apiKeys';
@@ -82,7 +82,7 @@ export function LoginKeyDialog({ open, onClose, onVerified }: {
       />
       <div className="mt-3">
         <Note>
-          密钥仅保存在当前浏览器标签页，关闭标签页后失效。校验失败请确认密钥是否已被重置。
+          密钥仅存于当前标签页，关闭即失效。失败时确认密钥是否已被重置。
         </Note>
       </div>
     </Modal>

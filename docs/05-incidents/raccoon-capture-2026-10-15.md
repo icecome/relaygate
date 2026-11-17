@@ -132,7 +132,7 @@ biz_type=daily_expire  -300   （2026-10-14 未用尽的部分整额清零）
   与扫码两条入口产出同形状账号（label / userId / 幂等判据一致），
   且导入前校验凭据未过期。
 
-## 4. 其它被实测修正的旧口径
+## 4. 其他被实测修正的旧口径
 
 | 项 | 旧文档 | 2026-10-15 实测 |
 |---|---|---|
@@ -140,7 +140,7 @@ biz_type=daily_expire  -300   （2026-10-14 未用尽的部分整额清零）
 | 登录奖励判定 | 查最近 50 条 `bills` | 必须带 **`type=income`**；默认时间倒序的 50 条几乎全是对话消耗，早期奖励账单被挤出，会恒判 `claimed:false`（已修，按 income 翻页） |
 | `X-Client-Platform/Version` | grant 必需 | 实测 platform/version 任意取值（含缺失）grant 都 200；不是必需，但保留无害且更像官方客户端 |
 | 模型目录 | 6 模型（兜底表） | 远端实测 **chat 类 9 个**（含 3 个 `visible:false` 的内部 raccoon-* 模型，解析器正确过滤），6 个兜底仍全部命中 |
-| 账单 `type` 参数 | 文档写 `type=all` | 实测枚举只有 `all / income / expense`，其它值 `100002 params_invalid_error`；不带 type 等同 all |
+| 账单 `type` 参数 | 文档写 `type=all` | 实测枚举只有 `all / income / expense`，其他值 `100002 params_invalid_error`；不带 type 等同 all |
 | 设备标识 | 「不生成，该头实践中不出现」 | 客户端确有 `desktop-device-identity.json`（randomUUID），但仅用于 mobile-relay/配对/skill 投稿，业务面不发；故本地导入仍**不**把它带进业务头 |
 
 ## 5. 验证

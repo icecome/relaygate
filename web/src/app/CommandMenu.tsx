@@ -142,6 +142,12 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
         return;
       }
       if (e.key === 'Enter') {
+        /*
+         * 中文输入法上屏时也会发出 Enter（keyCode 229 / isComposing）。
+         * 不判这两个标志的话，用拼音打出「凭据」再回车选中候选词，
+         * 会被这里当成「执行当前项」直接跳页 —— 中文用户的高频误触。
+         */
+        if (e.isComposing || e.keyCode === 229) return;
         e.preventDefault();
         exec(matched[active]);
       }
@@ -161,7 +167,8 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] px-4 bg-[rgba(23,23,23,0.35)]"
+      className="fixed inset-0 z-50 flex items-start justify-center pt-[12vh] px-4"
+      style={{ background: 'var(--rg-scrim)' }}
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}

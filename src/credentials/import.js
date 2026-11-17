@@ -151,7 +151,7 @@ function toAccount(auth, extra = {}) {
  * 实测：本机 Trae SOLO 线账号的 refreshToken 属于 en1oxy7wnw8j9n
  * （variant.js 的 identity.oauthClientId），用 ono9krqynydwx5 换必失败。
  *
- * 只补 Trae 系账号：其它平台各有自己的续期端点与身份（WorkBuddy 走
+ * 只补 Trae 系账号：其他平台各有自己的续期端点与身份（WorkBuddy 走
  * codebuddy.cn 的 Keycloak，Raccoon 走扫码 refresh），填 Trae 的 ClientID
  * 反而会被误用。已显式携带 authClientId 的（OAuth 来源）保持原值不覆盖。
  */

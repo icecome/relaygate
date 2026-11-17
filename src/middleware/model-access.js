@@ -228,14 +228,14 @@ function canUseModel(keyPlatform, model, authKey = null) {
   if (raw.startsWith('wb/')) {
     return {
       ok: false,
-      message: `model "${raw}" is WorkBuddy-only. 请使用 workbuddy 访问密钥或通用密钥（platform=all）。`,
+      message: `model "${raw}" is WorkBuddy-only。请使用 workbuddy 访问密钥或通用密钥（platform=all）。`,
       reason: 'platform_mismatch',
     };
   }
   if (isWorkBuddyOnlyModel(raw)) {
     return {
       ok: false,
-      message: `model "${raw}" is a WorkBuddy-only model. 请使用 workbuddy 访问密钥或通用密钥（platform=all）。`,
+      message: `model "${raw}" is a WorkBuddy-only model。请使用 workbuddy 访问密钥或通用密钥（platform=all）。`,
       reason: 'platform_mismatch',
     };
   }

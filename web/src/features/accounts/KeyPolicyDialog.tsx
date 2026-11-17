@@ -180,7 +180,7 @@ export function KeyPolicyDialog({
       open={row !== null}
       onClose={onClose}
       title={`权限与配额：${row?.label || row?.hint || row?.id || ''}`}
-      desc="改完立即生效。platform 不在可改字段里——换平台请新建一把密钥，改平台等于悄悄扩大已分发密钥的适用范围"
+      desc="改完立即生效。平台不可改：换平台请新建密钥，改动会扩大已分发密钥的适用范围。"
       size="lg"
       footer={
         <>

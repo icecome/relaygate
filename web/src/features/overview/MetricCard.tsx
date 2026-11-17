@@ -1,90 +1,140 @@
 /**
- * 可展开的指标卡。
+ * 可展开的指标卡（受控触发器）。
  *
- * 总览页的「可用额度 / 今日消耗 / 即将到期」都需要「数字 → 点开看构成」，
- * 三处的交互完全一致，所以抽成一个组件，而不是在页面里写三套。
+ * ## 为什么展开区不在这里渲染
  *
- * 交互约定（三处必须一致，否则用户每次都要重新学）：
+ * 上一版把明细渲染成卡片的子节点，于是明细被限制在 1/3 行的卡体宽度内。
+ * 明细的实际内容是「平台 × 计量 × 数值 × 说明」四列表，在约 450px 里只能
+ * 靠换行与不等宽数值列勉强排下：左边界对不齐、无法纵向比较、单位混进
+ * 数值列 —— 而「比较谁占大头」正是这张卡唯一的价值。
+ *
+ * 同时 .metric-cards 是 grid + align-items:start，一张卡变高时另外两张
+ * 原地不动，展开/收起会带动下方「待处理」面板上下跳约 175px。
+ *
+ * 现在的分工：
+ *   - 本组件只渲染**卡头**（触发器），固定高度，三张卡永远等高
+ *   - 明细由页面在卡片之后渲染成整行 `.metric-panel`，占满内容宽度
+ *   - 单开手风琴：同时只展开一张，由页面持有 `openKey`
+ *
+ * ## 交互约定（三处必须一致，否则用户每次都要重新学）
  *   - 整块卡头可点，`aria-expanded` + `aria-controls` 表达展开态
- *   - 展开区在卡内、卡下方，不跳页、不弹窗（这是「就地看构成」的诉求）
- *   - 角标始终显示，告诉用户这里可以展开（`＋ / －`）
- *   - 展开区加载中 / 出错 / 空态都有明确文案，不留白
+ *   - chevron 在标签**左侧**并随展开旋转 90°：右上角的「+」会被读成「新增」
+ *   - 可访问名里显式带上「展开/收起」动作，读屏才知道这是开关
  */
-import { useEffect, useId, useState, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { LoadingBlock } from '../../shared/ui';
+
+/** 展开指示符。集中在这里，三张卡的旋转与尺寸才不会漂。 */
+function Chevron() {
+  return (
+    <span className="metric-card-chevron" aria-hidden="true">
+      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6">
+        <path d="M4.5 2.5 L8 6 L4.5 9.5" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    </span>
+  );
+}
 
 export function MetricCard({
   label,
   value,
   unit,
   hint,
-  /** 角标（如「仅计 Trae / WorkBuddy」），显示在标题右侧 */
   badge,
-  /** 点击展开后才挂载的明细；为 undefined 表示该卡不可展开 */
-  detail,
-  /** 展开时触发的加载（例如去拉完整 packs）；可重复触发，需幂等 */
-  onExpand,
-  defaultOpen = false,
+  /** 展开区的 DOM id；与页面上 `.metric-panel` 的 id 对应 */
+  panelId,
+  /** 当前是否展开 */
+  open,
+  /** 点击卡头；不可展开时传 undefined */
+  onToggle,
 }: {
   label: string;
   value: ReactNode;
   unit?: string;
   hint?: ReactNode;
   badge?: ReactNode;
-  detail?: ReactNode;
-  onExpand?: () => void;
-  defaultOpen?: boolean;
+  panelId?: string;
+  open?: boolean;
+  onToggle?: () => void;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
-  const bodyId = useId();
-
-  // 首次展开时拉一次；后续展开不重复打上游（数据由父级刷新驱动）
-  useEffect(() => {
-    if (open) onExpand?.();
-    // onExpand 由父级用 useCallback 固定；刻意不放进依赖避免每次渲染都重跑
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open]);
-
-  const expandable = detail !== undefined;
-  const Head = expandable ? 'button' : 'div';
+  const expandable = !!onToggle;
+  const expanded = expandable && !!open;
 
   return (
-    <div className="metric-card" data-open={open ? 'on' : 'off'}>
-      <Head
-        type={expandable ? 'button' : undefined}
+    <div className="metric-card" data-open={expanded ? 'on' : 'off'}>
+      <button
+        type="button"
         className={expandable ? 'metric-card-head is-clickable' : 'metric-card-head'}
-        aria-expanded={expandable ? open : undefined}
-        aria-controls={expandable ? bodyId : undefined}
-        onClick={expandable ? () => setOpen((v) => !v) : undefined}
+        aria-expanded={expandable ? expanded : undefined}
+        aria-controls={expandable ? panelId : undefined}
+        onClick={onToggle}
+        disabled={!expandable}
       >
-        <div className="metric-card-title">
-          <span className="text-[12px] leading-[18px]" style={{ color: 'var(--rg-text-secondary)' }}>
-            {label}
-          </span>
+        <span className="metric-card-title">
+          {expandable && <Chevron />}
+          <span className="metric-key">{label}</span>
           {badge}
+          {/*
+           * 动作词进可访问名，视觉上不可见：
+           * 「可用额度 46,844.87 积分」读不出这里可以展开。
+           */}
           {expandable && (
-            <span className="metric-card-caret" aria-hidden="true">
-              {open ? '−' : '+'}
-            </span>
+            <span className="sr-only">{expanded ? '收起明细' : '展开明细'}</span>
           )}
-        </div>
-        <div className="mt-1.5 flex items-baseline gap-1.5 min-w-0">
-          <span className="text-read truncate">{value}</span>
+        </span>
+        <span className="mt-1.5 flex items-baseline gap-1.5 min-w-0">
+          {/*
+           * 这里不加 truncate：主读数是本页最重要的数字，位数多时宁可用
+           * formatCompact 缩短，也不能静默截断成「46,864.…」。
+           */}
+          <span className="text-read">{value}</span>
           {unit && <span className="text-unit shrink-0">{unit}</span>}
-        </div>
+        </span>
         {hint && (
-          <div className="mt-1 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="mt-1 text-aux block" style={{ color: 'var(--rg-text-tertiary)' }}>
             {hint}
-          </div>
+          </span>
         )}
-      </Head>
-
-      {expandable && open && (
-        <div id={bodyId} className="metric-card-body">
-          {detail}
-        </div>
-      )}
+      </button>
     </div>
+  );
+}
+
+/**
+ * 整行展开面板。
+ *
+ * 与 MetricCard 是兄弟节点，占满内容宽度。头部的「收起」按钮与卡头
+ * 形成双入口 —— 展开后视线已经在下方，不该逼用户滚回去点卡头。
+ */
+export function MetricPanel({
+  id,
+  title,
+  sub,
+  onClose,
+  children,
+}: {
+  id: string;
+  title: string;
+  sub?: ReactNode;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="metric-panel" id={id} aria-label={title}>
+      <header className="metric-panel-head">
+        <span className="metric-panel-title">{title}</span>
+        {sub && <span className="metric-panel-sub">{sub}</span>}
+        <button
+          type="button"
+          className="btn btn-sm btn-ghost ml-auto"
+          onClick={onClose}
+          aria-label={`收起${title}`}
+        >
+          收起
+        </button>
+      </header>
+      <div className="metric-panel-body">{children}</div>
+    </section>
   );
 }
 

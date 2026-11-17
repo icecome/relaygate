@@ -402,7 +402,7 @@ const INVOKE_SCOPES = ['models:invoke', 'router:invoke'];
  * （scopes 恰好被写成 `["models:read"]`）与「用户显式只要 models:read」区分不开，
  * 但两者的**实际后果完全一样**：密钥调不动任何模型。既然 models:read 单独存在
  * 没有任何可用场景（列得出模型却一个都调不了），这里按「坏行」修，并按平台
- * 默认值补齐 invoke（不动用户已有的其它 scope）。
+ * 默认值补齐 invoke（不动用户已有的其他 scope）。
  *
  * 幂等：已有任一 invoke scope 的行不动。
  * @returns {{id:string, platform:string, before:string[], after:string[]}[]}

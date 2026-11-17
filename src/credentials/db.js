@@ -112,7 +112,7 @@ function ensureSchema(db) {
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');
-  // ZCode 运营面（仅 zcode 账号使用，其它平台为 NULL，零影响）：
+  // ZCode 运营面（仅 zcode 账号使用，其他平台为 NULL，零影响）：
   //   api_key_enc   — 回退通道凭据（api.z.ai / open.bigmodel 的 key）
   //   fingerprint   — 成套桌面设备档案 JSON（zcode/fingerprint.js）
   //   mode          — 账号类型：jwt（Coding/Start Plan）| apiKey

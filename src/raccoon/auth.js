@@ -212,7 +212,7 @@ async function pollLoginSession(sessionId) {
       sessions.delete(sessionId);
       return { status: 'expired' };
     }
-    // 其它非 0（数字业务码或 HTTP 兜底码）与畸形响应一律降级为 pending：
+    // 其他非 0（数字业务码或 HTTP 兜底码）与畸形响应一律降级为 pending：
     // 轮询是 2 秒循环，偶发抖动不该中断；但误判 success 会拿到空 token 卡死。
     if (envelope && envelope.code !== 0) {
       return { status: product.QR_STATUS.PENDING };
@@ -492,7 +492,7 @@ async function fetchModelCatalog(acct) {
  * ## 协议细节（实测）
  *
  * - 端点：`POST /api/web/auth/v1/login_with_password`
- * - 头：**只有** `Content-Type`（无 Authorization、无业务头），与其它登录端点一致
+ * - 头：**只有** `Content-Type`（无 Authorization、无业务头），与其他登录端点一致
  * - body：`{ nation_code, phone, password }`，**phone 与 password 都要加密**
  *   （AES-128-CFB，`product.encryptSecret`）
  * - 错误码：`100003 params_encryted_error` = 没加密；

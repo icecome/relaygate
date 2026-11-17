@@ -404,7 +404,7 @@ async function runKeepalive() {
   } catch (e) {
     state.lastError = `keepalive: ${e.message}`;
     console.error('[scheduler] keepalive error', e.message);
-    // catch 中无法取得账号总数（accounts 在 try 内声明），total 用 0 表示未知，与其它任务 catch 约定一致
+    // catch 中无法取得账号总数（accounts 在 try 内声明），total 用 0 表示未知，与其他任务 catch 约定一致
     appendTaskLog({ task: 'keepalive', trigger: 'scheduler', ok: 0, failed: failed || 1, total: 0, error: e.message });
     return { total: 0, failed: failed || 1, error: e.message };
   }
@@ -545,7 +545,7 @@ async function runRotateHeatmapCheck({ rotate, manual }) {
       total: status.length,
       inactive: inactive.length,
       accounts: labels,
-      message: `轮换已跑完，今日活跃度仍为 0 的账号（${inactive.length}/${status.length}）：${list}。活跃度需真实使用客户端产生，建议抽空用这些号聊一句。`,
+      message: `轮换已跑完，${inactive.length}/${status.length} 个账号今日活跃度为 0：${list}。用这些账号发起一次对话即可计入活跃。`,
     }, `轮换后 ${inactive.length} 个账号活跃度为 0`, { dedupe: false });
     appendTaskLog({ task: 'rotate-heatmap', trigger: manual ? 'manual' : 'scheduler', ok: status.length - inactive.length, failed: inactive.length, total: status.length });
   } else if (status.length) {
@@ -699,7 +699,7 @@ async function runModelProbe() {
           console.log(`[scheduler] probe unavailable ${t.id}: ${e.message}`);
         } else if (isPlanLimitError(e)) {
           // 套餐额度不足（1005）是**账号/套餐级**结论，不是模型级结论：
-          // 同池其它账号、或该账号升级套餐后就能用。此前按默认 7 天 TTL 写成
+          // 同池其他账号、或该账号升级套餐后就能用。此前按默认 7 天 TTL 写成
           // 不可用并隐藏该模型（2026-11-08 现场：Trae 的 kimi-k3.1-pro 因为一次
           // PlanLimit 被隐藏了一周）。这里给短 TTL，且 reason 前缀标明是「套餐」，
           // 让面板能区分「模型下线」与「当前套餐不含该模型」。
@@ -992,7 +992,7 @@ function stop() {
     clearInterval(t);
   }
   timers = [];
-  // 释放跨进程锁：让其它实例可以接管调度
+  // 释放跨进程锁：让其他实例可以接管调度
   try {
     schedulerLock.release();
   } catch (e) {

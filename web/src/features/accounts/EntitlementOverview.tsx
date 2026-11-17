@@ -21,7 +21,7 @@
  *   Raccoon          → raccoonPoints（积分，分池，日清）
  * 此前面板只有「权益包」和「权益到期」两列且都只读 packs，于是实测
  * 7 / 23 个账号在权益包列显示「—」、23 / 23 个账号在到期列显示「—」
- * （worstExpiry 只在 ≤7 天返回非空，而实际最近到期是 8~22 天）。
+ * （worstExpiry 只在 ≤7 天返回非空，而实际最近到期是 8～22 天）。
  *
  * 这一块**不做跨平台加总**。积分 + Token + 配额相加是没有意义的数，
  * 而且这正是 ZCode 那一亿 token 曾被算进积分、把今日消耗抬高 4 个数量级
@@ -71,7 +71,7 @@ export function EntitlementOverview({
     return (
       <EmptyState
         label="还没有可统计的账号"
-        hint="接入账号并完成一次余额查询后，这里会按平台列出各自的额度。"
+        hint="接入账号后执行一次余额查询，即可在此按平台查看额度。"
       />
     );
   }
@@ -276,10 +276,10 @@ function CreditDetail({ members }: { members: Account[] }) {
         <table className="data-table">
           <thead>
             <tr>
-              <th className="th">账号</th>
-              <th className="th cell-num">可用包</th>
-              <th className="th cell-num">剩余积分</th>
-              <th className="th">最近到期</th>
+              <th scope="col" className="th">账号</th>
+              <th scope="col" className="th cell-num">可用包</th>
+              <th scope="col" className="th cell-num">剩余积分</th>
+              <th scope="col" className="th">最近到期</th>
             </tr>
           </thead>
           <tbody>
@@ -332,7 +332,7 @@ function CreditDetail({ members }: { members: Account[] }) {
     return (
       <EmptyState
         label="该平台没有可用的权益包"
-        hint="包可能已用尽或已过期；点行内「查余额」可重新查询一次。"
+        hint="包可能已用尽或过期，点行内「查余额」重新查询。"
       />
     );
   }
@@ -341,10 +341,10 @@ function CreditDetail({ members }: { members: Account[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th className="th">账号</th>
-          <th className="th cell-num">可用包</th>
-          <th className="th cell-num">剩余</th>
-          <th className="th">最近到期</th>
+          <th scope="col" className="th">账号</th>
+          <th scope="col" className="th cell-num">可用包</th>
+          <th scope="col" className="th cell-num">剩余</th>
+          <th scope="col" className="th">最近到期</th>
         </tr>
       </thead>
       <tbody>
@@ -405,11 +405,11 @@ function TokenDetail({ members }: { members: Account[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th className="th">账号</th>
-          <th className="th">额度桶</th>
-          <th className="th cell-num">剩余 Token</th>
-          <th className="th cell-num">总量</th>
-          <th className="th">到期</th>
+          <th scope="col" className="th">账号</th>
+          <th scope="col" className="th">额度桶</th>
+          <th scope="col" className="th cell-num">剩余 Token</th>
+          <th scope="col" className="th cell-num">总量</th>
+          <th scope="col" className="th">到期</th>
         </tr>
       </thead>
       <tbody>
@@ -439,11 +439,11 @@ function QuotaDetail({ members }: { members: Account[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th className="th">账号</th>
-          <th className="th cell-num">基础额度</th>
-          <th className="th cell-num">赠送额度</th>
-          <th className="th cell-num">合计</th>
-          <th className="th">到期</th>
+          <th scope="col" className="th">账号</th>
+          <th scope="col" className="th cell-num">基础额度</th>
+          <th scope="col" className="th cell-num">赠送额度</th>
+          <th scope="col" className="th cell-num">合计</th>
+          <th scope="col" className="th">到期</th>
         </tr>
       </thead>
       <tbody>
@@ -475,10 +475,10 @@ function RaccoonDetail({ members }: { members: Account[] }) {
     <table className="data-table">
       <thead>
         <tr>
-          <th className="th">账号</th>
-          <th className="th cell-num">合计</th>
-          <th className="th">分池</th>
-          <th className="th">快照</th>
+          <th scope="col" className="th">账号</th>
+          <th scope="col" className="th cell-num">合计</th>
+          <th scope="col" className="th">分池</th>
+          <th scope="col" className="th">快照</th>
         </tr>
       </thead>
       <tbody>

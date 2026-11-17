@@ -36,7 +36,7 @@ const CODE_PLAN_LIMIT = TRAE_ERR.planLimit;
  *
  * 语义是「请求形状不像官方客户端」——与账号权益、模型可用性、限流都无关。
  * 因此：不冷却账号（账号本身健康），不在同平台内换候选（换模型同样是同一个
- * 渠道校验），但**允许 failover 到其它平台**（Trae 链路有自己的身份体系）。
+ * 渠道校验），但**允许 failover 到其他平台**（Trae 链路有自己的身份体系）。
  */
 const CODE_CHANNEL_BLOCKED = WB_ERR.channelBlocked;
 /**
@@ -87,7 +87,7 @@ function classifyError(err) {
   // 账号受限（11140）先于泛化 403：判成 'auth' 会触发续期 + 短冷却后反复撞墙，
   // 但受限账号续不了期也等不好——正确动作是长冷却 + 尽快换号。
   if (isAccountRestrictedError(err)) return 'account';
-  // 上下文超限先于其它分类：窗口问题与账号/模型健康度无关，
+  // 上下文超限先于其他分类：窗口问题与账号/模型健康度无关，
   // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
   if (isContextLengthError(err)) return 'context_length';
   // 套餐额度耗尽（账号级额度问题）：应换号；额度与扣费口径对比见

@@ -25,7 +25,7 @@ import { getCreditHistory } from '../../shared/api/stats';
 import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
-import { accountState, formatNumber } from '../../shared/lib/format';
+import { accountState, formatFixed, formatNumber } from '../../shared/lib/format';
 import {
   amountByPlatform,
   creditShare,
@@ -37,13 +37,28 @@ import {
 } from '../../shared/lib/overview-detail';
 import { Button, Chip, EmptyState, ErrorState, LoadingBlock, Panel, Segmented } from '../../shared/ui';
 import { PageShell, Stack } from '../../shared/ui/PageShell';
-import { DetailState, MetricCard } from './MetricCard';
+import { DetailState, MetricCard, MetricPanel } from './MetricCard';
 import { ShareBar } from './ShareBar';
+
+/** 手风琴的展开键。同时只开一个，null 表示全部收起。 */
+type MetricKey = 'credit' | 'usage' | 'expiry';
 
 export default function OverviewPage() {
   const { key } = useAuth();
   const navigate = useNavigate();
   const { data: summary, loading, error, reload } = useSummaryStore();
+  /**
+   * 单开手风琴。
+   *
+   * 为什么是手风琴而不是三张卡各自独立开合：三张卡的明细都是整行面板，
+   * 允许同时展开会让页面变成三段互不相干的长内容，「当前在看哪一项」
+   * 需要靠滚动位置猜。手风琴强制一次只回答一个问题。
+   */
+  const [openMetric, setOpenMetric] = useState<MetricKey | null>(null);
+  const toggleMetric = useCallback(
+    (k: MetricKey) => setOpenMetric((cur) => (cur === k ? null : k)),
+    [],
+  );
 
   const credits = useAsyncData(
     (signal) => getCreditHistory(1, key, signal),
@@ -55,10 +70,13 @@ export default function OverviewPage() {
    * 到期明细所需的完整 packs：按账号懒加载。
    *
    * 只在用户展开「即将到期」时才开始拉（`expiryEnabled`），且只拉当前账号清单。
-   * 详情端点单账号 4.7~10.3 KB（实测），23 个账号约 150 KB —— 一次性打开
+   * 详情端点单账号 4.7～10.3 KB（实测），23 个账号约 150 KB —— 一次性打开
    * 总览页不该付这个成本，所以必须按需。
+   *
+   * expiryEnabled 由 openMetric 派生（手风琴唯一事实源），
+   * 不再另设一份独立的展开态。
    */
-  const [expiryEnabled, setExpiryEnabled] = useState(false);
+  const expiryEnabled = openMetric === 'expiry';
   const expiryDetails = useAsyncData(
     async (signal) => {
       const ids = (summary?.accounts ?? []).map((a) => a.id);
@@ -181,12 +199,6 @@ export default function OverviewPage() {
     return { needLogin, cooling, disabled, total: needLogin + cooling + disabled };
   }, [accounts]);
 
-  const refreshHint = (
-    <Chip tone="brand" dot="dot-ok">
-      每 60 秒自动刷新
-    </Chip>
-  );
-
   return (
     <PageShell
       title="总览"
@@ -201,242 +213,169 @@ export default function OverviewPage() {
             <LoadingBlock />
           </Panel>
         ) : (
-          <div className="metric-cards">
-            {/* ① 可用额度：点开 = 各平台各自的总额度 */}
-            <MetricCard
-              label="可用额度"
-              value={formatNumber(creditTotal)}
-              unit="积分"
-              badge={refreshHint}
-              hint={`仅 Trae 与 WorkBuddy 可相加；其余三类计量见展开项`}
-              defaultOpen={false}
-              detail={
-                <DetailState
-                  loading={false}
-                  empty={amountRows.length === 0}
-                  emptyHint="还没有接入账号"
+          <>
+            {/*
+              三张卡固定等高，只做触发器；明细在下方以整行面板呈现（单开）。
+              gap-4 由外部 Stack 提供，这里只负责卡与面板之间的 12px 间隔。
+            */}
+            <div className="flex flex-col gap-3">
+              <div className="metric-cards">
+                {/* ① 可用额度 */}
+                <MetricCard
+                  label="可用额度"
+                  value={formatFixed(creditTotal, 2)}
+                  unit="积分"
+                  hint="仅含可相加的 2 类计量"
+                  panelId="overview-panel-credit"
+                  open={openMetric === 'credit'}
+                  onToggle={() => toggleMetric('credit')}
+                />
+
+                {/* ② 今日消耗 */}
+                <MetricCard
+                  label="今日消耗"
+                  value={credits.loading && !credits.data ? '—' : formatFixed(usageTotal, 2)}
+                  unit="积分"
+                  hint="余额刷新时写入的快照差分"
+                  panelId="overview-panel-usage"
+                  open={openMetric === 'usage'}
+                  onToggle={() => toggleMetric('usage')}
+                />
+
+                {/* ③ 即将到期 */}
+                <MetricCard
+                  label={`${expiryWindow} 日内到期`}
+                  value={expiringHeadValue}
+                  unit="积分"
+                  hint={expiringHint}
+                  panelId="overview-panel-expiry"
+                  open={openMetric === 'expiry'}
+                  onToggle={() => toggleMetric('expiry')}
+                />
+              </div>
+
+              {/* ① 可用额度明细 */}
+              {openMetric === 'credit' && (
+                <MetricPanel
+                  id="overview-panel-credit"
+                  title="可用额度 · 构成明细"
+                  sub="四种计量不可相加，按计量分组"
+                  onClose={() => setOpenMetric(null)}
                 >
-                  {/*
-                    占比条放在明细最前：先给「谁占大头」，再给逐平台绝对值。
-                    顺序反过来就成了「先读 5 行数字、自己心算比例」——那正是
-                    用户说「缺乏直观参考性」的字面含义。
-                  */}
+                  <DetailState empty={amountRows.length === 0} emptyHint="还没有接入账号">
+                    {/*
+                      占比条在最前：先回答「谁占大头」，再给逐平台绝对值。
+                      顺序反过来就变成「先读 5 行数字、自己心算比例」。
+                    */}
+                    <div className="mb-4">
+                      <ShareBar
+                        parts={share.parts}
+                        total={share.total}
+                        unknownPlatforms={share.unknownPlatforms}
+                        showTotal={false}
+                      />
+                    </div>
+                    <CreditTable rows={amountRows} creditTotal={creditTotal} />
+                  </DetailState>
+                </MetricPanel>
+              )}
+
+              {/* ② 今日消耗明细 */}
+              {openMetric === 'usage' && (
+                <MetricPanel
+                  id="overview-panel-usage"
+                  title="今日消耗 · 构成明细"
+                  sub="只覆盖积分口径（credit_history）"
+                  onClose={() => setOpenMetric(null)}
+                >
+                  <DetailState
+                    loading={credits.loading && !credits.data}
+                    error={credits.error}
+                    empty={usageRows.length === 0}
+                    emptyHint="还没有账号"
+                  >
+                    <UsageTable rows={usageRows} total={usageTotal} />
+                    {usageRows.some((r) => r.members.length > 0) && (
+                      <details className="mt-4">
+                        <summary
+                          className="text-aux cursor-pointer"
+                          style={{ color: 'var(--rg-brand-600)' }}
+                        >
+                          按账号查看
+                        </summary>
+                        <div className="mt-2 flex flex-col gap-3">
+                          {usageRows
+                            .filter((r) => r.members.length > 0)
+                            .map((r) => (
+                              <div key={r.platform}>
+                                <div
+                                  className="text-aux font-medium mb-1"
+                                  style={{ color: 'var(--rg-text-secondary)' }}
+                                >
+                                  {r.label}
+                                </div>
+                                <table className="detail-table">
+                                  <tbody>
+                                    {r.members.map((m) => (
+                                      <tr key={m.accountId}>
+                                        <td className="col-name" title={m.accountId}>
+                                          {m.label}
+                                        </td>
+                                        <td className="col-unit">积分</td>
+                                        <td className="col-num">{formatFixed(m.amount, 2)}</td>
+                                        <td className="col-note">
+                                          {!m.covered && '本轮无快照'}
+                                        </td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            ))}
+                        </div>
+                      </details>
+                    )}
+                  </DetailState>
+                </MetricPanel>
+              )}
+
+              {/* ③ 即将到期明细 */}
+              {openMetric === 'expiry' && (
+                <MetricPanel
+                  id="overview-panel-expiry"
+                  title="即将到期 · 按账号"
+                  onClose={() => setOpenMetric(null)}
+                >
                   <div className="mb-3">
-                    <ShareBar
-                      parts={share.parts}
-                      total={share.total}
-                      unknownPlatforms={share.unknownPlatforms}
+                    <Segmented
+                      ariaLabel="到期窗口"
+                      value={String(expiryWindow) as '3' | '7' | '30'}
+                      onChange={(v) => setExpiryWindow(Number(v) as ExpiryWindow)}
+                      options={EXPIRY_WINDOWS.map((d) => ({
+                        value: String(d) as '3' | '7' | '30',
+                        label: `${d} 天`,
+                      }))}
                     />
                   </div>
-                  <div className="metric-kv">
-                    {amountRows.map((r) => {
-                      const isCredit = r.unit === '积分' && r.platform !== 'raccoon';
-                      return (
-                        <div
-                          key={r.platform}
-                          className={`metric-kv-row${r.known === 0 ? ' is-muted' : ''}`}
-                        >
-                          <span className="k">
-                            {r.label}
-                            <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                              {r.known}/{r.accounts} 个账号
-                            </span>
-                            {r.detail && (
-                              <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                · {r.detail}
-                              </span>
-                            )}
-                          </span>
-                          <span className="v">
-                            {r.amount == null ? '未查询' : formatNumber(r.amount)}{' '}
-                            <span className="text-unit">{r.unit}</span>
-                            {!isCredit && r.amount != null && (
-                              <span className="ml-1 text-unit">不计入上方合计</span>
-                            )}
-                          </span>
-                        </div>
-                      );
-                    })}
-                    <div className="metric-kv-row is-total">
-                      <span className="k">积分口径合计（Trae + WorkBuddy）</span>
-                      <span className="v">
-                        {formatNumber(creditTotal)} <span className="text-unit">积分</span>
-                      </span>
-                    </div>
-                  </div>
-                  <p className="mt-2 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
-                    Token、配额、分池积分是另外三种计量，不能与积分相加，因此分行展示。
-                  </p>
-                </DetailState>
-              }
-            />
-
-            {/* ② 今日消耗：点开 = 各平台消耗，再点账号级明细在下一层 */}
-            <MetricCard
-              label="今日消耗"
-              value={credits.loading && !credits.data ? '—' : formatNumber(usageTotal)}
-              unit="积分"
-              badge={refreshHint}
-              hint="按各账号余额刷新时写入的快照差分（credit_history）"
-              detail={
-                <DetailState
-                  loading={credits.loading && !credits.data}
-                  error={credits.error}
-                  empty={usageRows.length === 0}
-                  emptyHint="还没有账号"
-                >
-                  <div className="metric-kv">
-                    {usageRows.map((r) => (
-                      <div key={r.platform} className="metric-kv-row">
-                        <span className="k">
-                          {r.label}
-                          <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                            {r.notTracked
-                              ? '未纳入统计'
-                              : `${r.covered}/${r.accounts} 个账号有快照`}
-                          </span>
-                        </span>
-                        <span className="v">
-                          {r.notTracked ? (
-                            <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
-                          ) : (
-                            <>
-                              {formatNumber(r.amount)} <span className="text-unit">积分</span>
-                            </>
-                          )}
-                        </span>
-                      </div>
-                    ))}
-                    <div className="metric-kv-row is-total">
-                      <span className="k">积分口径合计</span>
-                      <span className="v">
-                        {formatNumber(usageTotal)} <span className="text-unit">积分</span>
-                      </span>
-                    </div>
-                  </div>
-
-                  {usageRows.some((r) => r.members.length > 0) && (
-                    <details className="mt-2">
-                      <summary className="text-aux cursor-pointer" style={{ color: 'var(--rg-brand-600)' }}>
-                        按账号查看
-                      </summary>
-                      <div className="mt-1.5 flex flex-col gap-2">
-                        {usageRows
-                          .filter((r) => r.members.length > 0)
-                          .map((r) => (
-                            <div key={r.platform}>
-                              <div className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
-                                {r.label}
-                              </div>
-                              <div className="metric-kv">
-                                {r.members.map((m) => (
-                                  <div key={m.accountId} className="metric-kv-row">
-                                    <span className="k" title={m.accountId}>
-                                      {m.label}
-                                      {!m.covered && (
-                                        <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                          本轮无快照
-                                        </span>
-                                      )}
-                                    </span>
-                                    <span className="v">
-                                      {formatNumber(m.amount)} <span className="text-unit">积分</span>
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          ))}
-                      </div>
-                    </details>
-                  )}
-
-                  <p className="mt-2 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
-                    ZCode 的 Token、Qoder 的配额、Raccoon 的分池积分不写入消耗表
-                    （口径隔离），因此不在此统计，也不会被算成 0。
-                  </p>
-                </DetailState>
-              }
-            />
-
-            {/* ③ 即将到期：点开 = 哪些账号、到期多少 */}
-            <MetricCard
-              label={`${expiryWindow} 日内到期`}
-              value={expiringHeadValue}
-              unit="积分"
-              badge={refreshHint}
-              hint={expiringHint}
-              onExpand={() => setExpiryEnabled(true)}
-              detail={
-                <div>
-                  <Segmented
-                    ariaLabel="到期窗口"
-                    value={String(expiryWindow) as '3' | '7' | '30'}
-                    onChange={(v) => setExpiryWindow(Number(v) as ExpiryWindow)}
-                    options={EXPIRY_WINDOWS.map((d) => ({ value: String(d) as '3' | '7' | '30', label: `${d} 天` }))}
-                  />
-                  <div className="mt-2">
-                    <DetailState
-                      loading={expiryDetails.loading && !expiryDetails.data}
-                      error={expiryDetails.error}
-                      empty={expiryRows.length === 0}
-                      emptyHint={`${expiryWindow} 日内没有到期的额度`}
-                    >
-                      <div className="metric-kv">
-                        {expiryRows.map((r) => (
-                          <div key={r.accountId} className="metric-kv-row">
-                            <span
-                              className="k"
-                              title={`${r.accountId}\n${r.items} 项到期，共 ${formatNumber(r.amount)} ${r.unit}\n${r.names.join('、')}${r.nameVariants > 1 ? ` 等 ${r.nameVariants} 种` : ''}`}
-                            >
-                              <span
-                                style={{
-                                  color:
-                                    r.days <= 3
-                                      ? 'var(--rg-state-error)'
-                                      : r.days <= 7
-                                        ? 'var(--rg-state-warning)'
-                                        : 'var(--rg-text-secondary)',
-                                }}
-                              >
-                                {r.days <= 0 ? '今天' : `${r.days} 天后`}
-                              </span>
-                              <span className="ml-1.5">{r.label}</span>
-                              <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
-                                {r.platformLabel} · {r.items} 项
-                              </span>
-                            </span>
-                            <span className="v">
-                              {formatNumber(r.amount)} <span className="text-unit">{r.unit}</span>
-                            </span>
-                          </div>
-                        ))}
-                        {expiryTotalsByUnit.map((t) => (
-                          <div key={t.unit} className="metric-kv-row is-total">
-                            <span className="k">合计（{t.unit}）</span>
-                            <span className="v">
-                              {formatNumber(t.amount)} <span className="text-unit">{t.unit}</span>
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                      <p className="mt-2 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
-                        只统计仍未用尽的额度；已用尽的包到期不造成损失，不计入。
-                        Raccoon 的每日积分次日清零，没有「N 天后到期」。
-                      </p>
-                    </DetailState>
-                  </div>
-                </div>
-              }
-            />
-          </div>
+                  <DetailState
+                    loading={expiryDetails.loading && !expiryDetails.data}
+                    error={expiryDetails.error}
+                    empty={expiryRows.length === 0}
+                    emptyHint={`${expiryWindow} 日内没有到期的额度`}
+                  >
+                    <ExpiryTable rows={expiryRows} totals={expiryTotalsByUnit} />
+                  </DetailState>
+                </MetricPanel>
+              )}
+            </div>
+          </>
         )}
 
         {accounts.length === 0 ? (
           <Panel title="待处理">
             <EmptyState
               label="还没有接入任何账号"
-              hint="接入至少一个上游账号后，这里会显示需要处理的事项。"
+              hint="接入上游账号后，这里显示待处理事项。"
               action={{ label: '接入第一个账号', onClick: () => navigate('/credentials') }}
             />
           </Panel>
@@ -511,5 +450,221 @@ export default function OverviewPage() {
         </div>
       </Stack>
     </PageShell>
+  );
+}
+
+/* ---------------------------------------------------------------------------
+ * 明细表
+ * ---------------------------------------------------------------------------
+ *
+ * 三张展开区共用同一套骨架：名称 / 计量 / 数值 / 说明。
+ * 之所以抽成表格而不是继续用原来的两栏 flex：
+ *   1. 数值列定宽右对齐 + tabular-nums，五行数字才能纵向比较；
+ *   2. 计量单独成列，「积分 / Token / 配额 / points」不再混在数值列里；
+ *   3. 分组表头只写一次「不可相加」，替代原来每行重复的「不计入合计」。
+ */
+
+/** ① 可用额度：可相加的积分在上，其余计量归入分组表头之下。 */
+function CreditTable({
+  rows,
+  creditTotal,
+}: {
+  rows: ReturnType<typeof amountByPlatform>;
+  creditTotal: number;
+}) {
+  // 「积分」且非 raccoon 才参与合计，与 creditTotal 的算法同源
+  const isCredit = (r: (typeof rows)[number]) =>
+    r.unit === '积分' && r.platform !== 'raccoon';
+  const creditRows = rows.filter(isCredit);
+  const otherRows = rows.filter((r) => !isCredit(r));
+
+  return (
+    <table className="detail-table">
+      <thead>
+        <tr>
+          <th scope="col" className="col-name">
+            平台
+          </th>
+          <th scope="col" className="col-unit">
+            计量
+          </th>
+          <th scope="col" className="col-num">
+            数值
+          </th>
+          <th scope="col" className="col-note">
+            说明
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {creditRows.map((r) => (
+          <tr key={r.platform} className={r.known === 0 ? 'is-muted' : undefined}>
+            <td className="col-name">{r.label}</td>
+            <td className="col-unit">{r.unit}</td>
+            <td className="col-num">{r.amount == null ? '未查询' : formatFixed(r.amount, 2)}</td>
+            <td className="col-note">
+              {r.known}/{r.accounts} 个账号{r.detail ? ` · ${r.detail}` : ''}
+            </td>
+          </tr>
+        ))}
+        <tr className="detail-total">
+          <td className="col-name">合计</td>
+          <td className="col-unit">积分</td>
+          <td className="col-num">{formatFixed(creditTotal, 2)}</td>
+          <td className="col-note">Trae + WorkBuddy 可相加</td>
+        </tr>
+
+        {otherRows.length > 0 && (
+          <tr className="detail-group">
+            <th colSpan={4} scope="colgroup">
+              以下为不可相加的计量，单列展示
+            </th>
+          </tr>
+        )}
+        {otherRows.map((r) => (
+          <tr key={r.platform} className={r.known === 0 ? 'is-muted' : undefined}>
+            <td className="col-name">{r.label}</td>
+            <td className="col-unit">{r.unit}</td>
+            <td className="col-num">{r.amount == null ? '未查询' : formatFixed(r.amount, 2)}</td>
+            <td className="col-note">
+              {r.known}/{r.accounts} 个账号{r.detail ? ` · ${r.detail}` : ''}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+/** ② 今日消耗：按平台，未纳入统计的平台显式标出而非补 0。 */
+function UsageTable({
+  rows,
+  total,
+}: {
+  rows: ReturnType<typeof usageByPlatform>;
+  total: number;
+}) {
+  return (
+    <table className="detail-table">
+      <thead>
+        <tr>
+          <th scope="col" className="col-name">
+            平台
+          </th>
+          <th scope="col" className="col-unit">
+            计量
+          </th>
+          <th scope="col" className="col-num">
+            今日消耗
+          </th>
+          <th scope="col" className="col-note">
+            说明
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.platform} className={r.notTracked ? 'is-muted' : undefined}>
+            <td className="col-name">{r.label}</td>
+            <td className="col-unit">积分</td>
+            <td className="col-num">
+              {r.notTracked ? '—' : formatFixed(r.amount, 2)}
+            </td>
+            <td className="col-note">
+              {r.notTracked
+                ? '不写入消耗表，不按 0 计'
+                : `${r.covered}/${r.accounts} 个账号有快照`}
+            </td>
+          </tr>
+        ))}
+        <tr className="detail-total">
+          <td className="col-name">合计</td>
+          <td className="col-unit">积分</td>
+          <td className="col-num">{formatFixed(total, 2)}</td>
+          <td className="col-note">只含已纳入统计的平台</td>
+        </tr>
+      </tbody>
+    </table>
+  );
+}
+
+/** ③ 即将到期：紧迫度用文字色表达，天数是排序键也是扫读键。 */
+function ExpiryTable({
+  rows,
+  totals,
+}: {
+  rows: ReturnType<typeof expiringAccounts>;
+  totals: ReturnType<typeof expiringTotals>;
+}) {
+  return (
+    <table className="detail-table">
+      <thead>
+        <tr>
+          <th scope="col" className="col-name">
+            账号
+          </th>
+          <th scope="col" style={{ width: 96 }}>
+            到期
+          </th>
+          <th scope="col" style={{ width: 120 }}>
+            平台
+          </th>
+          <th scope="col" className="col-unit">
+            计量
+          </th>
+          <th scope="col" className="col-num">
+            金额
+          </th>
+          <th scope="col" className="col-note">
+            说明
+          </th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((r) => (
+          <tr key={r.accountId}>
+            <td className="col-name" title={r.accountId}>
+              {r.label}
+            </td>
+            <td
+              style={{
+                color:
+                  r.days <= 3
+                    ? 'var(--rg-state-error)'
+                    : r.days <= 7
+                      ? 'var(--rg-state-warning)'
+                      : 'var(--rg-text-secondary)',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              {r.days <= 0 ? '今天' : `${r.days} 天后`}
+            </td>
+            <td className="col-note">{r.platformLabel}</td>
+            <td className="col-unit">{r.unit}</td>
+            <td className="col-num">{formatFixed(r.amount, 2)}</td>
+            <td
+              className="col-note"
+              title={`${r.items} 项到期，共 ${formatFixed(r.amount, 2)} ${r.unit}\n${r.names.join('、')}${
+                r.nameVariants > 1 ? ` 等 ${r.nameVariants} 种` : ''
+              }`}
+            >
+              {r.items} 项
+              {r.nameVariants > 1 ? ` · ${r.nameVariants} 种` : ''}
+            </td>
+          </tr>
+        ))}
+        {totals.map((t) => (
+          <tr key={t.unit} className="detail-total">
+            <td className="col-name">合计</td>
+            <td colSpan={2} className="col-note">
+              只计仍未用尽的额度
+            </td>
+            <td className="col-unit">{t.unit}</td>
+            <td className="col-num">{formatFixed(t.amount, 2)}</td>
+            <td className="col-note" />
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 }

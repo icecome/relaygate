@@ -322,7 +322,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           </Button>
         </div>
         <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-          默认 00:30 与 21:30：00:30 抓上游日切后的新批次，21:30 补晚间二次投放。保存后立即重排定时器。
+          默认 00:30 与 21:30：前者抓日切后新批次，后者补晚间二次投放。保存后重排定时器。
         </div>
       </div>
 
@@ -331,17 +331,17 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       ) : (accounts?.length ?? 0) === 0 ? (
         <EmptyState
           label="还没有 ZCode 账号"
-          hint="先在渠道总览里用「读取本机客户端」接入本机 ZCode 桌面端账号，再回来领取限时套餐。"
+          hint="先在渠道总览用「读取本机客户端」接入 ZCode 账号，再回来领取限时套餐。"
         />
       ) : (
         <table className="data-table">
           <thead>
             <tr>
-              <th className="th">账号</th>
-              <th className="th cell-num">剩余额度</th>
-              <th className="th">上次领取</th>
-              <th className="th">状态</th>
-              <th className="th cell-act">操作</th>
+              <th scope="col" className="th">账号</th>
+              <th scope="col" className="th cell-num">剩余额度</th>
+              <th scope="col" className="th">上次领取</th>
+              <th scope="col" className="th">状态</th>
+              <th scope="col" className="th cell-act">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -431,10 +431,10 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                             <table className="data-table text-aux">
                               <thead>
                                 <tr>
-                                  <th className="th">套餐</th>
-                                  <th className="th">赠送额度</th>
-                                  <th className="th">周期</th>
-                                  <th className="th cell-act">操作</th>
+                                  <th scope="col" className="th">套餐</th>
+                                  <th scope="col" className="th">赠送额度</th>
+                                  <th scope="col" className="th">周期</th>
+                                  <th scope="col" className="th cell-act">操作</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -470,10 +470,10 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                             <table className="data-table text-aux">
                               <thead>
                                 <tr>
-                                  <th className="th">额度桶</th>
-                                  <th className="th cell-num">剩余</th>
-                                  <th className="th cell-num">已用</th>
-                                  <th className="th">到期</th>
+                                  <th scope="col" className="th">额度桶</th>
+                                  <th scope="col" className="th cell-num">剩余</th>
+                                  <th scope="col" className="th cell-num">已用</th>
+                                  <th scope="col" className="th">到期</th>
                                 </tr>
                               </thead>
                               <tbody>

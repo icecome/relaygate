@@ -150,7 +150,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
           <dt>备注名</dt>
           <dd>{imported.label || '—'}</dd>
           <dt>调度状态</dt>
-          <dd>停用（启用后才参与转发调度）</dd>
+          <dd>停用（启用后参与转发）</dd>
         </dl>
         {imported.needVerify && (
           <div className="mt-3 flex items-start gap-2">
@@ -244,7 +244,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
             </dl>
           )}
           <div className="mt-3">
-            <Note>本机抓取会由后端在线验证凭据，无效凭据不会入库。</Note>
+            <Note>本机抓取会在后端在线验证，无效凭据不入库。</Note>
           </div>
         </div>
       ) : (
@@ -274,7 +274,7 @@ export function ImportWbDialog({ open, onClose, onImported }: {
       </div>
 
       <div className="mt-3">
-        <Note>导入后不会自动启用；下一步可直接在本弹窗内启用，或稍后在凭据池处理。</Note>
+        <Note>导入后不会自动启用，可在本弹窗直接启用，或稍后在凭据池处理。</Note>
       </div>
     </Modal>
   );

@@ -140,7 +140,7 @@ export function DailyTrendChart({ rows }: Props) {
                 y={y + 3}
                 textAnchor="end"
                 fontSize="10"
-                fill="var(--rg-chart-1)"
+                fill="var(--rg-viz-1)"
                 fontFamily="var(--rg-font-mono, monospace)"
               >
                 {axisLabel(maxReq * f)}
@@ -150,7 +150,7 @@ export function DailyTrendChart({ rows }: Props) {
                 y={y + 3}
                 textAnchor="start"
                 fontSize="10"
-                fill="var(--rg-chart-3)"
+                fill="var(--rg-viz-3)"
                 fontFamily="var(--rg-font-mono, monospace)"
               >
                 {axisLabel(maxTokens * f)}
@@ -161,13 +161,13 @@ export function DailyTrendChart({ rows }: Props) {
 
         {/* 请求量面积 + 折线 */}
         <path d={areaPath} fill={`url(#${gradientId})`} />
-        <path d={reqPath} fill="none" stroke="var(--rg-chart-1)" strokeWidth="1.75" />
+        <path d={reqPath} fill="none" stroke="var(--rg-viz-1)" strokeWidth="1.75" />
 
         {/* Token 折线（次序列，虚线区分） */}
         <path
           d={tokensPath}
           fill="none"
-          stroke="var(--rg-chart-3)"
+          stroke="var(--rg-viz-3)"
           strokeWidth="1.5"
           strokeDasharray="3 3"
         />
@@ -221,11 +221,11 @@ export function DailyTrendChart({ rows }: Props) {
 
       <div className="legend">
         <span>
-          <i style={{ background: 'var(--rg-chart-1)' }} />
+          <i style={{ background: 'var(--rg-viz-1)' }} />
           请求量{single ? `（${model}）` : ''}
         </span>
         <span>
-          <i style={{ background: 'var(--rg-chart-3)' }} />
+          <i style={{ background: 'var(--rg-viz-3)' }} />
           Token{single ? `（${model}）` : ''}
         </span>
         <span>

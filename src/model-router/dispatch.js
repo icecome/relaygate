@@ -357,7 +357,7 @@ async function dispatchNonStream(provider, remoteModel, body, opts = {}) {
  */
 function dispatchStream(provider, remoteModel, body, res, opts = {}) {
   // 出口 sink：handleChat 传入的是「答案提交闸门」（只扣住未成行的残片，
-  // 从而允许在尚未交付答案时继续降级）；其它调用方（测试、内部工具）没有闸门，
+  // 从而允许在尚未交付答案时继续降级）；其他调用方（测试、内部工具）没有闸门，
   // 直接写真实 res，行为与改动前完全一致。
   const out = opts.gate || res;
   if (provider.type === 'openai') {
@@ -414,7 +414,7 @@ async function dispatchRaccoonNonStream(provider, remoteModel, body, opts = {}) 
 /**
  * Raccoon 虚拟模型候选：流式。
  *
- * 出口形状必须与其它候选**一致**（OpenAI SSE + `[DONE]`），但实现方式是
+ * 出口形状必须与其他候选**一致**（OpenAI SSE + `[DONE]`），但实现方式是
  * **原样透传**：上游本来就是标准 OpenAI SSE，重新序列化只会引入风险。
  *
  * 与 `dispatchWorkBuddyStream` 的差异：那边要改写 model 字段（WB 返回的是
@@ -518,7 +518,7 @@ function rewriteSseModelLine(line, shownModel) {
  * 流式路径的 usage 窥探：保留官方三字段给客户端，同时抽出
  * 缓存读 token（prompt_tokens_details.cached_tokens 等）供计费日志使用。
  * 原实现 sanitizeUsage 把细节字段整段丢弃，标定费率只能按全量输入计价，
- * 系统性高估积分消耗（缓存读单价约为未缓存输入的 1/4~1/8）。
+ * 系统性高估积分消耗（缓存读单价约为未缓存输入的 1/4～1/8）。
  */
 function peekUsageDetail(u) {
   if (!u || typeof u !== 'object') return null;

@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const config = require('../config');
 
-/** 锁文件路径（与其它运行态文件同目录，便于整体备份/清理）。 */
+/** 锁文件路径（与其他运行态文件同目录，便于整体备份/清理）。 */
 function lockFile() {
   return path.join(config.workspaceDir, '.trae-api', 'scheduler.lock');
 }
@@ -78,7 +78,7 @@ function acquire() {
   }
 }
 
-/** 释放锁（仅当锁属于本进程时删除，避免误删其它进程刚拿到的锁）。 */
+/** 释放锁（仅当锁属于本进程时删除，避免误删其他进程刚拿到的锁）。 */
 function release() {
   const existing = readLock();
   if (existing && Number(existing.pid) !== process.pid) return false;

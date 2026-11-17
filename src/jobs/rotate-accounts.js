@@ -528,7 +528,7 @@ async function rotateAllInner() {
     // observation.json 的 identity 落到目标 uid（最多 stayMs）。但**不能**以
     // 「登录成功」作为停留结束——stayMs 的语义是「让该账号在客户端待够多久」，
     // 用于让客户端把启动期的 API 调用发完、把活跃记上。此前直接把 waitForIdentity
-    // 当停留，登录一成功（约 15~25s）就切下一个，配置的 90s 形同虚设
+    // 当停留，登录一成功（约 15～25s）就切下一个，配置的 90s 形同虚设
     // （2026-10-27 实测反馈：每个号登录后立刻切走）。
     const dwellStart = Date.now();
     const identified = await waitForIdentity(acct.uid, Math.max(stayMs, 30000));

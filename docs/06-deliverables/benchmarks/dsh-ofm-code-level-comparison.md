@@ -147,7 +147,7 @@ return { text: extractFilepathsFromCommand(command, output), usage: { input: 100
 | 状态 | 规则 | 行号 |
 |---|---|---|
 | 单引号内 | 除 `'` 外**全部字面**，`\` 无特殊含义 | `:128-132` |
-| 双引号内 | `"` 结束；`\` **仅**对 `"` `\` `$` `` ` `` 转义（吞掉反斜杠），其它情况保留 `\` 字面 | `:133-147` |
+| 双引号内 | `"` 结束；`\` **仅**对 `"` `\` `$` `` ` `` 转义（吞掉反斜杠），其他情况保留 `\` 字面 | `:133-147` |
 | 引号外 `\` | 仅当后一字符 ∈ `ESCAPABLE`（空格/`\t`/`\n`/`\r`/`\f`/`\v`/`'`/`"`，`:108`）时转义；否则**保留 `\` 字面** → `type C:\notes\todo.md` 不被 `\n` 吃掉 | `:153-158` |
 | 空白 | `' '` `\t` `\n` `\r` `\f` `\v` 分隔并 push 当前 word | `:159-162` |
 | 收尾 | 未闭合引号 → `throw new Error('no closing quotation')`；有残留 word → push | `:166-167` |
@@ -185,7 +185,7 @@ if (base !== 'grep') return EMPTY_FILEPATHS                                     
 - **先取 basename**：`/usr/bin/grep`、`C:\tools\cat.exe` 都能识别为 grep/cat。
 - `LISTING_COMMANDS` 直接返回空块（列目录不读内容）。
 - `READING_COMMANDS` 的**非 `-` 开头**参数即路径。
-- 非 grep 的其它命令 → 空块。
+- 非 grep 的其他命令 → 空块。
 - grep 分支（`:267-282`）：
 
 ```js
@@ -266,7 +266,7 @@ if (optimize !== null && optimize !== undefined && optimize.enabled === true) { 
 - `:124` 注入：反引号与 `$(`。
 - `:136-164` title：`noBranch`（无 title）、`noTitle`。
 - `:185-205` suggestion 与缺方括号反例。
-- `:215-260` filepath：`cat src/local-optimize.js` → `<filepaths>\nsrc/local-optimize.js\n</filepaths>`；`git diff` → 空块；其它反例。
+- `:215-260` filepath：`cat src/local-optimize.js` → `<filepaths>\nsrc/local-optimize.js\n</filepaths>`；`git diff` → 空块；其他反例。
 - `:278-287` **重叠请求**：一个请求同时满足 quota 与 prefix → 默认 quota，`{enabled:{quota:false}}` 后落到 prefix（验证顺序与开关都生效）。
 - `:295-301` 每个 kind 的「开则中、关则不中」。
 - `:309-316` 多轮/工具轮不误命中。

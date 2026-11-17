@@ -214,7 +214,7 @@ export function MenuButton({
           maxHeight: pos.maxHeight,
           borderColor: 'var(--rg-border-stronger)',
           background: 'var(--rg-bg-base)',
-          boxShadow: '0 8px 24px rgba(23, 23, 23, 0.16)',
+          boxShadow: 'var(--rg-shadow-pop)',
         }}
         onKeyDown={onKeyDown}
       >
