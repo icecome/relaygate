@@ -8,6 +8,9 @@
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "check:tokens": "node scripts/check-css-tokens.mjs",
+    "check:ui": "node scripts/check-ui-consistency.mjs",
+    "check": "npm run check:tokens && npm run check:ui && tsc -b && eslint .",
+    "codemod:styles": "node scripts/codemod-inline-colors.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

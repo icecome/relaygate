@@ -197,7 +197,7 @@ export function OauthTraeDialog({ open, onClose, onDone, presetLabel }: {
             <option key={String(g.name)} value={String(g.name)} />
           ))}
         </datalist>
-        <p className="mt-1.5 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <p className="mt-1.5 text-aux leading-relaxed fg-3">
           分组只是账号的标签，与「调度属性」里的分组是同一个字段。
           真正决定账号进哪个转发池的是<strong>平台本身</strong>：Trae 账号只进 Trae 池，
           {platformIdLabel('workbuddy')} 账号只进它自己的池，切换分组不会改变平台归属。

@@ -202,10 +202,10 @@ export function KeyPolicyDialog({
             onChange={(e) => setDraft((d) => ({ ...d, label: e.target.value }))}
           />
           <div className="flex flex-col gap-1 min-w-0">
-            <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <span className="text-aux fg-2">
               平台（只读）
             </span>
-            <div className="field flex items-center" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <div className="field flex items-center fg-3">
               {PLATFORM_LABEL[row?.platform ?? 'all'] ?? row?.platform ?? '—'}
             </div>
           </div>
@@ -225,11 +225,11 @@ export function KeyPolicyDialog({
                 <span className="flex flex-col gap-0.5 min-w-0">
                   <span style={{ color: 'var(--rg-text-primary)' }}>
                     {s.label}
-                    <code className="font-mono text-aux ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <code className="font-mono text-aux ml-1.5 fg-3">
                       {s.value}
                     </code>
                   </span>
-                  <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux fg-3">
                     {s.hint}
                   </span>
                 </span>
@@ -255,7 +255,7 @@ export function KeyPolicyDialog({
               onChange={(e) => setDraft((d) => ({ ...d, resources: e.target.value }))}
               placeholder={'*\nmodel:trae/*\nmodel:virtual:vm/unified-chat'}
             />
-            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux fg-3">
               当前 {resourceList.length} 条。scope 放行 + 资源不匹配仍然是 403，
               两个维度是 AND 关系。
             </span>
@@ -284,7 +284,7 @@ export function KeyPolicyDialog({
                 value={draft.expiresAt}
                 onChange={(e) => setDraft((d) => ({ ...d, expiresAt: e.target.value }))}
               />
-              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux fg-3">
                 {daysLeft == null
                   ? '当前：永不过期'
                   : daysLeft >= 0

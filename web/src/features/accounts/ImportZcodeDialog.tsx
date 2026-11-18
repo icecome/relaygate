@@ -157,7 +157,7 @@ export function ImportZcodeDialog({ open, onClose, onImported }: {
               {loading ? '探测中…' : '重新探测'}
             </Button>
             {preview?.path && (
-              <span className="text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux break-all fg-3">
                 {preview.path}
               </span>
             )}

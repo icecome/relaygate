@@ -88,7 +88,7 @@ export function EntitlementDialog({
       desc={`${platformLabel(full)} · ${amountUnitOf(e)}计量`}
       size="lg"
       footer={
-        <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <span className="text-aux fg-3">
           {e.snapshotAt
             ? `快照更新于 ${formatTime(e.snapshotAt)}`
             : '尚未查询过上游额度'}
@@ -100,11 +100,11 @@ export function EntitlementDialog({
         <Chip tone="neutral" dot={STATE_DOT_CLASS[st]}>
           {STATE_LABEL[st]}
         </Chip>
-        <span className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <span className="font-mono text-aux fg-3">
           {account.id}
         </span>
         {SOURCE_LABEL[full.source ?? ''] && (
-          <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+          <span className="text-aux fg-2">
             来源：{SOURCE_LABEL[full.source ?? '']}
           </span>
         )}
@@ -203,7 +203,7 @@ function PackTable({ account }: { account: Account }) {
           ))}
         </tbody>
       </table>
-      <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <p className="mt-2 text-aux fg-3">
         共 {packs.length} 个包，其中 {usable.length} 个可用（{formatNumber(usable.reduce((s, p) => s + (p.remaining ?? 0), 0))} 积分）。
         失效项置底显示；「N 日内」标记表示距到期时间，不代表消耗顺序。
       </p>
@@ -350,12 +350,12 @@ function QuotaTable({ account }: { account: Account }) {
             </tr>
           ))}
           <tr>
-            <td className="td" style={{ color: 'var(--rg-text-secondary)' }}>
+            <td className="td fg-2">
               两段合计（仅供参考）
             </td>
             <td className="td cell-num" colSpan={4}>
               {formatNumber(q.totalRemaining)} <span className="text-unit">积分</span>
-              <span className="ml-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="ml-2 text-aux fg-3">
                 不并入其他平台的积分汇总
               </span>
             </td>
@@ -405,7 +405,7 @@ function RaccoonPoolTable({ account }: { account: Account }) {
               </tr>
             ))}
             <tr>
-              <td className="td" style={{ color: 'var(--rg-text-secondary)' }}>
+              <td className="td fg-2">
                 合计
               </td>
               <td className="td cell-num">

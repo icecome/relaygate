@@ -394,7 +394,7 @@ export default function ModelPoolPage() {
                 { value: '7', label: '近 7 日' },
               ]}
             />
-            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux fg-3">
               共 {rows.length} 个模型
             </span>
           </div>
@@ -488,19 +488,25 @@ export default function ModelPoolPage() {
             />
           ) : (
             <div className="scroll-y overflow-x-auto" style={{ maxHeight: 560 }}>
-              <table className="data-table">
+              {/*
+                table-fixed：状态筛选（全部 / 可用 / 不可用 / 未探测 / 媒体）会大幅
+                改变行数与内容（媒体模型没有延迟列的值），auto 布局每次都重算列宽。
+                固定列合计 88 + 76 + 88 + 96 + 128 + 88 + 88 + 128 + 168 = 948px，
+                「模型」列吃剩余宽度（1366 窗口下约 148px，足够显示 26 字符模型名）。
+              */}
+              <table className="data-table table-fixed">
                 <thead>
                   <tr>
                     <th scope="col" className="th">模型</th>
-                    <th scope="col" className="th">来源</th>
-                    <th scope="col" className="th">状态</th>
-                    <th scope="col" className="th cell-num">倍率</th>
-                    <th scope="col" className="th">能力</th>
-                    <th scope="col" className="th cell-num">上下文窗口</th>
-                    <th scope="col" className="th cell-num">请求</th>
-                    <th scope="col" className="th cell-num">错误</th>
-                    <th scope="col" className="th cell-num">平均延迟</th>
-                    <th scope="col" className="th cell-act">操作</th>
+                    <th scope="col" className="th w-[88px]">来源</th>
+                    <th scope="col" className="th w-[76px]">状态</th>
+                    <th scope="col" className="th cell-num w-[88px]">倍率</th>
+                    <th scope="col" className="th w-[96px]">能力</th>
+                    <th scope="col" className="th cell-num w-[128px]">上下文窗口</th>
+                    <th scope="col" className="th cell-num w-[88px]">请求</th>
+                    <th scope="col" className="th cell-num w-[88px]">错误</th>
+                    <th scope="col" className="th cell-num w-[128px]">平均延迟</th>
+                    <th scope="col" className="th cell-act w-[168px]">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -592,7 +598,7 @@ export default function ModelPoolPage() {
                         </td>
                         <td className="td cell-act">
                           {isMedia ? (
-                            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            <span className="text-aux fg-3">
                               无 chat 端点
                             </span>
                           ) : (
@@ -640,7 +646,7 @@ export default function ModelPoolPage() {
                   {probeResult.ok ? '通过' : '失败'}
                 </Chip>
               </div>
-              <p className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <p className="text-aux fg-2">
                 {probeResult.message}
               </p>
               <div className="mt-3">

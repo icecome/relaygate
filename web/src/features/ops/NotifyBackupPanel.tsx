@@ -440,10 +440,10 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                     style={{ borderColor: 'var(--rg-border)' }}
                   >
                     <div className="mb-2.5 flex items-center gap-2">
-                      <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                      <span className="text-aux font-medium fg-2">
                         {ch.label}
                       </span>
-                      <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                      <span className="rule-line flex-1" />
                       <Chip tone={ch.active ? 'ok' : 'neutral'} dot={ch.active ? 'dot-ok' : 'dot-off'}>
                         {ch.active ? '生效中' : '未生效'}
                       </Chip>
@@ -475,7 +475,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             </div>
 
             <div>
-              <div className="text-aux font-medium mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux font-medium mb-2 fg-2">
                 事件开关
               </div>
               <div className="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
@@ -525,10 +525,10 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                 style={{ borderColor: 'var(--rg-border)' }}
               >
                 <div className="mb-2 flex items-center gap-2">
-                  <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <span className="text-aux font-medium fg-2">
                     定时备份
                   </span>
-                  <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                  <span className="rule-line flex-1" />
                   <Chip
                     tone={backup.data?.enabled ? 'ok' : 'neutral'}
                     dot={backup.data?.enabled ? 'dot-ok' : 'dot-off'}
@@ -538,7 +538,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                 </div>
                 <div className="flex flex-col gap-2.5">
                   <label className="flex items-center justify-between gap-3">
-                    <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                    <span className="text-aux fg-2">
                       启用定时备份
                     </span>
                     <input
@@ -577,7 +577,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                   >
                     {busy === 'backup-settings' ? '保存中…' : '保存定时设置'}
                   </Button>
-                  <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <div className="text-aux fg-3">
                     {backup.data?.timer?.nextRunAt
                       ? `下次运行：${formatTime(backup.data.timer.nextRunAt)}`
                       : '定时任务未启动'}
@@ -590,10 +590,10 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                 style={{ borderColor: 'var(--rg-border)' }}
               >
                 <div className="mb-2 flex items-center gap-2">
-                  <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <span className="text-aux font-medium fg-2">
                     最近一次
                   </span>
-                  <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                  <span className="rule-line flex-1" />
                 </div>
                 <dl className="flex flex-col text-[13px]">
                   {[
@@ -617,7 +617,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                       className="grid gap-2 py-[5px] items-baseline"
                       style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                     >
-                      <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <dt className="text-aux fg-3">
                         {row.k}
                       </dt>
                       <dd
@@ -631,14 +631,14 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
               </div>
             </div>
 
-            <div className="rounded-lg border overflow-x-auto" style={{ borderColor: 'var(--rg-border)' }}>
-              <table className="data-table">
+            <div className="table-frame table-wrap">
+              <table className="data-table table-fixed">
                 <thead>
                   <tr>
                     <th scope="col" className="th">文件</th>
-                    <th scope="col" className="th cell-num">大小</th>
-                    <th scope="col" className="th">创建时间</th>
-                    <th scope="col" className="th cell-act">操作</th>
+                    <th scope="col" className="th cell-num col-w-num">大小</th>
+                    <th scope="col" className="th w-[148px]">创建时间</th>
+                    <th scope="col" className="th cell-act w-[212px]">操作</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -693,17 +693,17 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
             {inspect && (
               <div className="subcard">
                 <div className="mb-2 flex items-center gap-2">
-                  <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <span className="text-aux font-medium fg-2">
                     {inspect.file} 内容
                   </span>
-                  <span className="h-px flex-1" style={{ background: 'var(--rg-border)' }} />
+                  <span className="rule-line flex-1" />
                   <Button size="sm" variant="ghost" onClick={() => setInspect(null)}>
                     关闭
                   </Button>
                 </div>
                 <dl className="flex flex-col text-[13px]">
                   <div className="grid gap-2 py-[5px] items-baseline" style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}>
-                    <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>校验</dt>
+                    <dt className="text-aux fg-3">校验</dt>
                     <dd className="m-0">
                       <Chip tone={inspect.checksumOk ? 'ok' : 'danger'} dot={inspect.checksumOk ? 'dot-ok' : 'dot-error'}>
                         {inspect.checksumReason ?? (inspect.checksumOk ? '校验和一致' : '校验未通过')}
@@ -723,7 +723,7 @@ export function NotifyBackupPanel({ apiKey }: { apiKey: string }) {
                       className="grid gap-2 py-[5px] items-baseline"
                       style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                     >
-                      <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>{row.k}</dt>
+                      <dt className="text-aux fg-3">{row.k}</dt>
                       <dd className="m-0 font-mono text-aux">{row.v}</dd>
                     </div>
                   ))}

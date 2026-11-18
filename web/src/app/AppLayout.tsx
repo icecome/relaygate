@@ -142,7 +142,7 @@ export default function AppLayout() {
             <span>v{__APP_VERSION__}</span>
           </div>
           {total > 0 && (
-            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux fg-3">
               共 {total} 个账号
             </span>
           )}
@@ -155,14 +155,14 @@ export default function AppLayout() {
           style={{ borderBottom: '1px solid var(--rg-border)' }}
         >
           {/* 面包屑：分组 › 当前页。两层同名时只显示一层（如「总览 › 总览」） */}
-          <div className="flex items-center gap-2 min-w-0 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <div className="flex items-center gap-2 min-w-0 text-aux fg-3">
             {groupLabelOf(location.pathname) !== current.label && (
               <>
                 <span className="shrink-0">{groupLabelOf(location.pathname)}</span>
                 <span aria-hidden="true">›</span>
               </>
             )}
-            <strong className="text-[13px] font-semibold truncate" style={{ color: 'var(--rg-text-primary)' }}>
+            <strong className="text-[13px] font-semibold truncate fg-1">
               {current.label}
             </strong>
           </div>

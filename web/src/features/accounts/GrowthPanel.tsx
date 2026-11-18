@@ -250,12 +250,12 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
           {lastRun.data && (lastRun.data.okCount != null || (lastRun.data.actions?.length ?? 0) > 0) && (
             <div className="mt-3">
               <div className="text-label mb-1">上一轮结果</div>
-              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux fg-2">
                 {formatNumber(lastRun.data.okCount ?? 0)} 个账号处理成功
                 {lastRun.data.failCount ? `，${lastRun.data.failCount} 个失败` : ''}
               </div>
               {(lastRun.data.actions?.length ?? 0) > 0 && (
-                <ul className="mt-1.5 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <ul className="mt-1.5 text-aux fg-3">
                   {lastRun.data.actions!.slice(0, 5).map((a, i) => (
                     <li key={i}>· {a}</li>
                   ))}
@@ -319,7 +319,7 @@ function GrowthTable({
                 </td>
                 <td className="td" colSpan={7}>
                   <Chip tone="danger" dot="dot-error">查询失败</Chip>
-                  <span className="ml-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="ml-2 text-aux fg-3">
                     {r.reason || '上游未返回原因'}
                   </span>
                 </td>
@@ -397,7 +397,7 @@ function FragmentRow({
             '—'
           )}
           {row.manualTasks && row.manualTasks.length > 0 && (
-            <div className="text-aux mt-0.5" style={{ color: 'var(--rg-state-warning)' }} title={row.manualTasks.join('、')}>
+            <div className="text-aux mt-0.5 fg-warn" title={row.manualTasks.join('、')}>
               {row.manualTasks.length} 项需真实操作
             </div>
           )}
@@ -405,7 +405,7 @@ function FragmentRow({
         <td className="td cell-num">
           {rewards ? `${rewards.claimed}/${rewards.total}` : '—'}
           {rewards && rewards.pending > 0 && (
-            <span className="ml-1 text-aux" style={{ color: 'var(--rg-state-warning)' }}>
+            <span className="ml-1 text-aux fg-warn">
               待领 {rewards.pending}
             </span>
           )}
@@ -447,8 +447,8 @@ function FragmentRow({
 
       {open && (
         <tr>
-          <td className="td" colSpan={8} style={{ background: 'var(--rg-bg-secondary)' }}>
-            <div className="flex flex-wrap gap-x-8 gap-y-2 text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+          <td className="td td-spanned" colSpan={8}>
+            <div className="flex flex-wrap gap-x-8 gap-y-2 text-aux fg-2">
               <span>Buddy：{ov?.buddyName || '未解锁'}{ov?.rarity ? `（${ov.rarity}）` : ''}</span>
               <span>能量：{ov?.energy == null ? '—' : formatNumber(ov.energy)}{ov?.affordable ? ' · 可开箱' : ''}</span>
               <span>补登卡：{formatNumber(ov?.makeupCards)}</span>
@@ -467,7 +467,7 @@ function FragmentRow({
               )}
             </div>
             {g && g.tasks.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-aux fg-3">
                 {g.tasks.map((t) => (
                   <span key={t.taskCode} title={t.guide}>
                     {t.title} {t.current}/{t.target}

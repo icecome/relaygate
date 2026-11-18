@@ -122,7 +122,7 @@ export function ImportTraeDialog({ open, onClose, onImported }: {
             value={jsonText}
             onChange={(e) => setJsonText(e.target.value)}
           />
-          <p className="text-aux mt-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <p className="text-aux mt-1 fg-3">
             「导入」只处理其中的第一条；「批量导入全部」要求粘贴 JSON 数组，逐条导入并回报成功 / 更新 / 失败数。
           </p>
         </div>

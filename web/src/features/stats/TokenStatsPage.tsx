@@ -71,11 +71,10 @@ function CaliberCard({
         : 'var(--rg-text-tertiary)';
   return (
     <div
-      className="rounded-lg border p-4 min-w-0"
-      style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-base)' }}
+      className="subcard p-4 min-w-0"
     >
       <div className="flex items-center gap-1.5">
-        <span className="text-aux leading-[18px]" style={{ color: 'var(--rg-text-secondary)' }}>
+        <span className="text-aux leading-[18px] fg-2">
           {label}
         </span>
         <span
@@ -89,7 +88,7 @@ function CaliberCard({
           {loading ? '—' : value}
         </span>
         {unit && !loading && (
-          <span className="text-aux shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux shrink-0 fg-3">
             {unit}
           </span>
         )}
@@ -107,7 +106,7 @@ function CaliberRow({ k, v, tone }: { k: string; v: string; tone?: 'warn' | 'mut
         : 'var(--rg-text-secondary)';
   return (
     <div className="flex items-baseline justify-between gap-3 mt-1.5 first:mt-3">
-      <span className="text-aux leading-4 shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <span className="text-aux leading-4 shrink-0 fg-3">
         {k}
       </span>
       <span className="font-mono text-aux leading-4 tabular-nums" style={{ color }}>
@@ -500,13 +499,19 @@ export default function TokenStatsPage() {
               hint="产生转发请求后出现；官方账单另有 1 至 2 天入账滞后。"
             />
           ) : (
-            <table className="data-table">
+            /*
+             * 本页 7 张表全部 table-fixed：时间范围（今日 / 7 日 / 30 日）与
+             * 账号筛选都会改变行数和内容，auto 布局每切一次就重算一次列宽。
+             * 固定列合计控制在 640px 内，剩余宽度给「日期 / 账号 / 模型」这类
+             * 需要吃空间的列 —— 它们在 1366 窗口下有 400px 以上。
+             */
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">日期</th>
-                  <th scope="col" className="th cell-num">官方账单积分</th>
-                  <th scope="col" className="th cell-num">网关估算积分</th>
-                  <th scope="col" className="th cell-num">差异</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">官方账单积分</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">网关估算积分</th>
+                  <th scope="col" className="th cell-num col-w-num">差异</th>
                 </tr>
               </thead>
               <tbody>
@@ -536,20 +541,20 @@ export default function TokenStatsPage() {
                         {est > 0 ? (
                           <span title={upper ? '该日部分请求缺缓存读信息，按全未缓存计价，估算偏高' : undefined}>
                             {formatCost(est)}
-                            {upper && <span className="ml-0.5 text-unit" style={{ color: 'var(--rg-text-tertiary)' }}>↑</span>}
+                            {upper && <span className="ml-0.5 text-unit fg-3">↑</span>}
                           </span>
                         ) : unpriced ? (
-                          <span style={{ color: 'var(--rg-text-tertiary)' }} title="该日 Token 数据缺失，无法估算">数据缺失</span>
+                          <span className="fg-3" title="该日 Token 数据缺失，无法估算">数据缺失</span>
                         ) : (
-                          <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
+                          <span className="fg-3">0</span>
                         )}
                       </td>
                       <td className="td cell-num">
                         {diff == null ? (
                           !settled && hasBill ? (
-                            <span style={{ color: 'var(--rg-text-tertiary)' }} title="Trae 账单按会话入账有 1 至 2 天滞后，该日账单尚未完整">入账中</span>
+                            <span className="fg-3" title="Trae 账单按会话入账有 1 至 2 天滞后，该日账单尚未完整">入账中</span>
                           ) : (
-                            <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
+                            <span className="fg-3">—</span>
                           )
                         ) : (
                           <span style={{ color: Math.abs(diff) > 50 ? 'var(--rg-state-warning)' : 'var(--rg-text-secondary)' }}>
@@ -631,15 +636,15 @@ export default function TokenStatsPage() {
               hint="官方账单按 Trae 会话 / WorkBuddy 请求从上游同步，通常在请求后 1 至 2 天出现。"
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">账号</th>
-                  <th scope="col" className="th">平台 / 粒度</th>
-                  <th scope="col" className="th">状态</th>
-                  <th scope="col" className="th cell-num">明细行</th>
-                  <th scope="col" className="th cell-num">Token</th>
-                  <th scope="col" className="th cell-num">积分</th>
+                  <th scope="col" className="th col-w-text-wide">平台 / 粒度</th>
+                  <th scope="col" className="th w-[88px]">状态</th>
+                  <th scope="col" className="th cell-num col-w-num">明细行</th>
+                  <th scope="col" className="th cell-num col-w-num">Token</th>
+                  <th scope="col" className="th cell-num col-w-num">积分</th>
                 </tr>
               </thead>
               <tbody>
@@ -664,7 +669,7 @@ export default function TokenStatsPage() {
                             <span className="text-[13px] truncate">{a.label || a.accountId}</span>
                           </div>
                           {!a.available && a.error && (
-                            <div className="text-aux mt-0.5 break-all" style={{ color: 'var(--rg-state-error)' }}>
+                            <div className="text-aux mt-0.5 break-all fg-danger">
                               {a.error}
                             </div>
                           )}
@@ -675,7 +680,7 @@ export default function TokenStatsPage() {
                               {a.platform === 'trae' ? 'Trae' : 'WorkBuddy'}
                             </Chip>
                           </div>
-                          <div className="text-aux mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <div className="text-aux mt-0.5 fg-3">
                             {a.granularity === 'session' ? '逐会话' : '逐请求'}
                           </div>
                         </td>
@@ -696,16 +701,16 @@ export default function TokenStatsPage() {
                       </tr>
                       {open && (
                         <tr>
-                          <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }}>
+                          <td className="td td-spanned" colSpan={6}>
                             <div className="grid gap-x-8 gap-y-1" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(260px, 1fr))' }}>
                               {breakdown.map((m) => (
                                 <div key={m.model} className="flex items-baseline justify-between gap-3 py-1">
-                                  <span className="font-mono text-aux truncate" style={{ color: 'var(--rg-text-secondary)' }}>
+                                  <span className="font-mono text-aux truncate fg-2">
                                     {m.model}
                                   </span>
                                   <span className="font-mono text-aux tabular-nums shrink-0">
                                     {formatNumber(m.credits)}
-                                    <span className="ml-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+                                    <span className="ml-1 fg-3">
                                       积分 / {formatNumber(m.requests)} 次
                                     </span>
                                   </span>
@@ -733,16 +738,16 @@ export default function TokenStatsPage() {
               hint="产生转发请求后出现。"
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">模型</th>
-                  <th scope="col" className="th cell-num">请求</th>
-                  <th scope="col" className="th cell-num">错误</th>
-                  <th scope="col" className="th cell-num">Token</th>
-                  <th scope="col" className="th cell-num">计量 / 未计量</th>
-                  <th scope="col" className="th cell-num">平均延迟</th>
-                  <th scope="col" className="th cell-num">估算成本*</th>
+                  <th scope="col" className="th cell-num col-w-num">请求</th>
+                  <th scope="col" className="th cell-num col-w-num">错误</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">Token</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">计量 / 未计量</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">平均延迟</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">估算成本*</th>
                 </tr>
               </thead>
               <tbody>
@@ -756,17 +761,16 @@ export default function TokenStatsPage() {
                     <td className="td cell-num font-medium">{formatNumber(m.tokens)}</td>
                     <td className="td cell-num">
                       {formatNumber(m.metered)}
-                      <span style={{ color: 'var(--rg-text-tertiary)' }}> / </span>
+                      <span className="fg-3"> / </span>
                       {m.unmetered > 0 ? (
                         <span style={{ color: 'var(--rg-state-warning)' }}>{formatNumber(m.unmetered)}</span>
                       ) : (
-                        <span style={{ color: 'var(--rg-text-tertiary)' }}>0</span>
+                        <span className="fg-3">0</span>
                       )}
                       {(m.estimated ?? 0) > 0 && (
                         <span
-                          className="ml-1 text-aux"
+                          className="ml-1 text-aux fg-3"
                           title="其中 tiktoken 补算的请求数"
-                          style={{ color: 'var(--rg-text-tertiary)' }}
                         >
                           ({m.estimated} 估)
                         </span>
@@ -775,7 +779,7 @@ export default function TokenStatsPage() {
                     <td className="td cell-num">
                       {m.avgDurationMs == null ? '—' : `${Math.round(m.avgDurationMs)}ms`}
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num fg-3">
                       {formatCost(m.estimatedCost)}
                     </td>
                   </tr>
@@ -794,14 +798,14 @@ export default function TokenStatsPage() {
               hint="产生转发请求后出现。"
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">账号</th>
-                  <th scope="col" className="th cell-num">请求</th>
-                  <th scope="col" className="th cell-num">错误率</th>
-                  <th scope="col" className="th cell-num">Token 占比</th>
-                  <th scope="col" className="th cell-num">估算成本*</th>
+                  <th scope="col" className="th cell-num col-w-num">请求</th>
+                  <th scope="col" className="th cell-num col-w-num">错误率</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">Token 占比</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">估算成本*</th>
                 </tr>
               </thead>
               <tbody>
@@ -817,7 +821,7 @@ export default function TokenStatsPage() {
                             tone={a.errorRate > 5 ? 'danger' : a.errorRate > 0 ? 'warn' : 'brand'}
                           />
                         </div>
-                        <span className="font-mono text-aux tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="font-mono text-aux tabular-nums w-[52px] text-right fg-2">
                           {a.errorRate.toFixed(2)}%
                         </span>
                       </div>
@@ -827,12 +831,12 @@ export default function TokenStatsPage() {
                         <div className="flex-1 min-w-[64px]">
                           <ProgressBar ratio={a.tokenShare / 100} tone="soft" />
                         </div>
-                        <span className="font-mono text-aux tabular-nums w-[52px] text-right" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="font-mono text-aux tabular-nums w-[52px] text-right fg-2">
                           {a.tokenShare.toFixed(1)}%
                         </span>
                       </div>
                     </td>
-                    <td className="td cell-num" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num fg-3">
                       {formatCost(a.estimatedCost)}
                     </td>
                   </tr>
@@ -856,7 +860,7 @@ export default function TokenStatsPage() {
                 本机统计不可用：{client.data?.reason || '网关未返回原因'}。网关转发数据不受影响。
               </Note>
             ) : (
-              <table className="data-table">
+              <table className="data-table table-fixed">
                 {/* 无表头的两列小表：补 <thead> 让读屏能播报列名 */}
                 <thead>
                   <tr>
@@ -876,7 +880,7 @@ export default function TokenStatsPage() {
                     ] as [string, ReactNode][]
                   ).map(([k, v]) => (
                     <tr key={k}>
-                      <td className="td text-aux w-[110px]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <td className="td text-aux w-[110px] fg-3">
                         {k}
                       </td>
                       <td className="td td-mono">{v}</td>
@@ -896,12 +900,12 @@ export default function TokenStatsPage() {
                 hint="余额自动刷新运行两轮后，显示按账号的消耗估计。"
               />
             ) : (
-              <table className="data-table">
+              <table className="data-table table-fixed">
                 <thead>
                   <tr>
                     <th scope="col" className="th">账号</th>
                     {/* usedTotal 取的是所选区间的 consumed_amount 增量，不是「今日」 */}
-                    <th scope="col" className="th cell-num">{range === '1' ? '今日消耗' : `近 ${range} 日消耗`}</th>
+                    <th scope="col" className="th cell-num col-w-num-wide">{range === '1' ? '今日消耗' : `近 ${range} 日消耗`}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -936,16 +940,16 @@ export default function TokenStatsPage() {
               hint="官方账单同步后自动生成；之前用内置费率表估算。"
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
-                  <th scope="col" className="th">平台</th>
-                  <th scope="col" className="th">模型</th>
-                  <th scope="col" className="th cell-num">样本</th>
-                  <th scope="col" className="th cell-num">R²</th>
-                  <th scope="col" className="th cell-num">未缓存输入（积分 / 千 Token）</th>
-                  <th scope="col" className="th cell-num">输出（积分 / 千 Token）</th>
-                  <th scope="col" className="th cell-num">缓存读（积分 / 千 Token）</th>
+                  <th scope="col" className="th w-[88px]">平台</th>
+                  <th scope="col" className="th col-w-text-wide">模型</th>
+                  <th scope="col" className="th cell-num col-w-num">样本</th>
+                  <th scope="col" className="th cell-num col-w-num">R²</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">未缓存输入（积分 / 千 Token）</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">输出（积分 / 千 Token）</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">缓存读（积分 / 千 Token）</th>
                 </tr>
               </thead>
               <tbody>
@@ -966,7 +970,7 @@ export default function TokenStatsPage() {
                     </td>
                     <td className="td cell-num font-mono">{(c.uncached * 1000).toFixed(6)}</td>
                     <td className="td cell-num font-mono">{(c.output * 1000).toFixed(6)}</td>
-                    <td className="td cell-num font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <td className="td cell-num font-mono fg-3">
                       {(c.cacheRead * 1000).toFixed(6)}
                     </td>
                   </tr>

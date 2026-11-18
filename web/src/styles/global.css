@@ -201,13 +201,16 @@
    * 改为「确定存在的字体优先」：Windows 有 Segoe UI / Cascadia Mono，
    * macOS 有 PingFang SC / SF Mono，Linux 落到 Noto / DejaVu。
    * 保留原字体名作次级候选，装了就用。
+   *
+   * ⚠️ mono 栈必须与 tailwind.config.ts 的 fontFamily.mono 逐字一致：
+   * className 的 font-mono 在 utilities 层（排在 components 之后），
+   * 两处不一致时这里的写法永远不生效，且从 CSS 侧看不出原因。
    */
   --rg-font-sans: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", "Microsoft YaHei UI",
     "Hiragino Sans GB", system-ui, -apple-system, Roboto, sans-serif;
   --rg-font-metric: "Segoe UI Variable Text", "Segoe UI", "PingFang SC", Inter,
     system-ui, sans-serif;
-  --rg-font-mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", "JetBrains Mono",
-    ui-monospace, Menlo, monospace;
+  --rg-font-mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
 }
 
 /*
@@ -350,6 +353,65 @@ html[data-density='compact'] {
   .text-unit {
     @apply text-[11px] leading-none;
     color: var(--rg-text-tertiary);
+  }
+
+  /*
+   * 文字色语义类
+   *
+   * 存在的唯一理由：「只有一个 color 的内联 style」有 298 处，占全部内联的
+   * 72%。那意味着改一次辅助文字的颜色要动 40 个文件，且改不完全 —— grep
+   * 不到内联里的 var()，只能靠人肉找。
+   *
+   * 命名用 fg-<level> 而不是 text-*：.text-aux 等已经是「字号 + 行高」的类，
+   * 同名族会让「text-aux 到底带不带颜色」永远说不清。两组类正交：
+   * 字号管大小，fg 管颜色。
+   *
+   * 组合约定：.text-aux 不带颜色，必须配 .fg-N 之一。单独使用 .text-aux
+   * 视为漏写 —— 由 check-ui-consistency 的 textAuxWithoutFg 规则逐步收紧。
+   *
+   * fg-1..3 对应三级文字（primary / secondary / tertiary），fg-disabled 是
+   * placeholder 与真禁用态；后四个是业务状态，只允许表达真实状态。
+   */
+  .fg-1 {
+    color: var(--rg-text-primary);
+  }
+  .fg-2 {
+    color: var(--rg-text-secondary);
+  }
+  .fg-3 {
+    color: var(--rg-text-tertiary);
+  }
+  .fg-disabled {
+    color: var(--rg-text-disabled);
+  }
+  .fg-brand {
+    color: var(--rg-brand-600);
+  }
+  .fg-ok {
+    color: var(--rg-state-success);
+  }
+  .fg-warn {
+    color: var(--rg-state-warning);
+  }
+  .fg-danger {
+    color: var(--rg-state-error);
+  }
+
+  /*
+   * 表面色语义类：与 .fg-* 对称，收掉「只有一个 background」的内联。
+   *
+   * 只有三档：base（白）/ secondary（灰）/ tertiary（更深的灰）。
+   * 三档之外没有第四种「卡片底色」—— 需要一层新底色时，说明容器的层级
+   * 划分出了问题，应该合并容器而不是新增颜色。
+   */
+  .surface-base {
+    background: var(--rg-bg-base);
+  }
+  .surface-2 {
+    background: var(--rg-bg-secondary);
+  }
+  .surface-3 {
+    background: var(--rg-bg-tertiary);
   }
 
   /*
@@ -556,8 +618,15 @@ html[data-density='compact'] {
   .panel-head .right {
     @apply ml-auto flex items-center gap-2;
   }
+  /*
+   * 面板体
+   *
+   * 内边距走 --rg-card-pad 而不是写死 p-4：这个令牌在紧凑密度下是 12px，
+   * 而此前 .panel-body 硬编码 16px，导致切到紧凑模式时「表格变紧了、卡片
+   * 没变」—— 密度开关只对半边生效，比没有这个开关更奇怪。
+   */
   .panel-body {
-    @apply p-4;
+    padding: var(--rg-card-pad);
   }
   .panel-body-flush {
     @apply p-0;
@@ -591,6 +660,21 @@ html[data-density='compact'] {
     overscroll-behavior: contain;
   }
   /*
+   * 表格外框：给表一个圆角描边容器。
+   *
+   * 与 .table-wrap 的分工：.table-wrap 只管滚动（它不含边框与圆角），
+   * .table-frame 只管外观（边框 + 圆角裁切）。两者常一起用，
+   * 但也可以单独用（例如表格已经在 .panel 里，只需滚动不要第二层框）。
+   *
+   * 抽出前的形态是 `className="rounded-lg border overflow-x-auto"
+   * style={{ borderColor: 'var(--rg-border)' }}`，在 NotifyBackupPanel:634
+   * 出现一次 —— 那是「手写 .table-wrap + 手写 .subcard 边框」的双重绕开。
+   */
+  .table-frame {
+    @apply rounded-lg border;
+    border-color: var(--rg-border);
+  }
+  /*
    * 兜底：面板体内**只有一张表**时，让面板体自己横向滚动。
    *
    * 项目里有 40+ 张表，此前只有 6 处手工包了 .table-wrap，其余在窄窗口下
@@ -622,17 +706,12 @@ html[data-density='compact'] {
     background: var(--rg-bg-secondary);
     color: var(--rg-text-secondary);
   }
-  .panel-foot {
-    @apply px-4 py-2.5 border-t text-aux;
-    border-color: var(--rg-border);
-    background: var(--rg-bg-secondary);
-    color: var(--rg-text-secondary);
-  }
 
   /*
    * 通用容器。此前同一套骨架在 features 下逐字重复了十几遍：
    *   .subcard  一级卡片容器（13 处手写）
-   *   .subcard-flat  同上但保持白底，用于嵌套在灰底容器里的卡片
+   *   .subcard-soft  同上但灰底，用于置于灰底容器之上的卡片
+   *   .subcard-flush  同上但内边距更紧，用于承载表格/代码块
    *   .code-block  等宽原文块（6 处手写）
    *   .rule-top  顶部内分隔线（4 处手写）
    */
@@ -656,6 +735,20 @@ html[data-density='compact'] {
   }
   .card-head-line {
     @apply h-px flex-1;
+    background: var(--rg-border);
+  }
+  /*
+   * 1px 分隔线（横向）
+   *
+   * 与 .card-head-line 的区别：那个是「标题 + 占满剩余宽度的细线」的组合件，
+   * 自带 flex-1；这个是独立的分隔线，宽度由父级决定。菜单分组线、
+   * 面板内小节之间都用它。
+   *
+   * 抽出前的形态是 `className="h-px flex-1" style={{ background: 'var(--rg-border)' }}`，
+   * 全库 5 处逐字重复（NotifyBackupPanel 4 处 + Menu 1 处）。
+   */
+  .rule-line {
+    @apply h-px;
     background: var(--rg-border);
   }
   .rule-top {
@@ -695,7 +788,8 @@ html[data-density='compact'] {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .metric-cell {
-    @apply p-4;
+    /* 与 .panel-body 同一档内边距，密度切换时同步收放，见 --rg-card-pad */
+    padding: var(--rg-card-pad);
     background: var(--rg-bg-base);
   }
   /*
@@ -905,6 +999,20 @@ html[data-density='compact'] {
     background: var(--rg-state-error-surface);
     color: var(--rg-state-error);
   }
+  /*
+   * info 档：进行中 / 排队中 / 同步中。
+   *
+   * 与 brand 的区别是语义归属：brand 表达「这是品牌强调」（来源标记、层级
+   * 标识），info 表达「这件事正在发生」。此前三种状态全借 brand —— 于是
+   * 「进行中」和「来源：手动导入」长得一模一样，用户无法区分。
+   *
+   * 令牌 --rg-state-info 此前定义了但零引用，这一档是它的语义出口。
+   */
+  .pill-info {
+    border-color: transparent;
+    background: var(--rg-state-info-surface);
+    color: var(--rg-state-info);
+  }
 
   .dot {
     @apply inline-block w-1.5 h-1.5 rounded-xs shrink-0;
@@ -933,7 +1041,15 @@ html[data-density='compact'] {
     border-color: var(--rg-border-strong);
   }
   .seg-item {
-    @apply inline-flex items-center h-[30px] px-3 text-[12px] cursor-pointer whitespace-nowrap
+    /*
+     * 高度与 .btn / .field / .select 对齐（32px）。
+     *
+     * 此前是 30px。两者同排的位置有 6 处 —— CredentialsPage 状态筛选、
+     * TokenStatsPage 时间范围、TrafficPage 工具栏、ModelPoolPage 分档、
+     * TransferDialog 模式切换、DailyTrendChart 趋势视图 —— 30 vs 32 的
+     * 2px 差在基线上肉眼可见，看起来像「其中一个没加载完」。
+     */
+    @apply inline-flex items-center h-8 px-3 text-[12px] cursor-pointer whitespace-nowrap
       transition-colors border-r;
     border-color: var(--rg-border-strong);
     background: var(--rg-bg-base);
@@ -942,10 +1058,18 @@ html[data-density='compact'] {
   .seg-item:last-child {
     border-right: 0;
   }
-  .seg-item:hover:not([aria-selected='true']) {
+  /*
+   * 选中态同时支持两种语义：
+   *   aria-selected=true  → role=tab，切换内容面板
+   *   aria-pressed=true   → role=group 内的切换按钮，过滤当前列表
+   * 两条都写，是因为 Segmented 的 variant 有 'tabs' | 'filter' 两档，
+   * 视觉必须完全一致（同一个控件在不同语义下不该长得不一样）。
+   */
+  .seg-item:hover:not([aria-selected='true']):not([aria-pressed='true']) {
     background: var(--rg-bg-secondary);
   }
-  .seg-item[aria-selected='true'] {
+  .seg-item[aria-selected='true'],
+  .seg-item[aria-pressed='true'] {
     background: var(--rg-brand-600);
     color: var(--rg-text-onbrand);
     font-weight: 600;
@@ -1030,6 +1154,37 @@ html[data-density='compact'] {
   .td-actions {
     @apply flex items-center justify-end gap-1.5 flex-nowrap;
   }
+  /*
+   * 通用列宽档（统计页 / 审计页 / 表格内嵌的小表）
+   *
+   * 这一组不带业务语义、只表达宽度，用于「列的内容是可预判的数值或短文本」的表。
+   * 与 .col-account / .col-actions 这类语义列宽的分工：
+   *   语义类   —— 跨页面复用同一个字段（账号、操作、权益）时用
+   *   通用档   —— 只在本页出现、但需要 table-fixed 才能稳住的列
+   *
+   * 命名用 col-w-<档> 而不是 col-num：.detail-table .col-num 已经存在
+   * （那一套是「明细表」专用，宽度 140px 且靠右）。两套同名会让
+   * 「col-num 到底是 96 还是 140」永远说不清，只能靠选择器权重去猜。
+   *
+   * 数值档取 96px：容得下「1,234,567」这类七位数加千分位与内边距，
+   * 再窄会被 break-words 折行（fixed 布局不扩列，只会换行）。
+   */
+  .col-w-num {
+    width: 96px;
+  }
+  .col-w-num-wide {
+    width: 128px;
+  }
+  .col-w-text {
+    width: 120px;
+  }
+  .col-w-text-wide {
+    width: 168px;
+  }
+  .col-w-min {
+    /* 剩余宽度：给需要吃掉剩余空间的那一列 */
+    width: auto;
+  }
   /* 表格里的等宽文本格：.td 已定 13px，这里只降一档并换字体 */
   .td-mono {
     @apply font-mono text-[12px];
@@ -1090,6 +1245,19 @@ html[data-density='compact'] {
     @apply text-right;
     font-family: var(--rg-font-mono);
     font-variant-numeric: tabular-nums;
+  }
+  /*
+   * 跨列单元格（展开行、汇总行、空态行）
+   *
+   * 这些行用一个 td 横跨整表，底色与普通行不同（灰底表示「这是附属信息」）。
+   * 抽出前是 5 处 `style={{ background: 'var(--rg-bg-secondary)' }}`：
+   * GrowthPanel / QoderOps / ZcodeOps / ModelRouterPage / TokenStatsPage 各写一遍。
+   *
+   * 为什么必须与 row-hover 分开：跨列行不是数据行，鼠标划过时不该整行变灰
+   * （它已经是灰的），所以这里不参与 hover，也不参与 row-hover 的选中语义。
+   */
+  .td-spanned {
+    background: var(--rg-bg-secondary);
   }
   .cell-act {
     @apply text-right whitespace-nowrap;
@@ -1182,11 +1350,22 @@ html[data-density='compact'] {
     background: transparent;
   }
 
-  /* 工具条 */
+  /*
+   * 工具条
+   *
+   * 不带外边距：它总是被放进某个 flex/grid 容器里（PageShell 的 gap-4 流，
+   * 或 CredentialsPage 的面板体），间距由父级决定。此前自带 mb-4，
+   * 与父级的 gap-4 叠成 32px —— 同页出现两种区块间距。
+   */
   .toolbar {
-    @apply flex items-center justify-between gap-4 px-4 py-3 rounded-lg border mb-4 flex-wrap;
+    @apply flex items-center justify-between gap-4 px-4 py-3 rounded-lg border flex-wrap;
     background: var(--rg-bg-base);
     border-color: var(--rg-border);
+  }
+  /* 嵌在面板体内时的变体：面板已提供外框，这里只保留内部分隔 */
+  .toolbar-flush {
+    @apply flex items-center justify-between gap-4 px-4 py-3 flex-wrap;
+    border-bottom: 1px solid var(--rg-border);
   }
 
   /*

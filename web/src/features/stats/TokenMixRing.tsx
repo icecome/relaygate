@@ -146,7 +146,7 @@ export function TokenMixRing({ rows }: { rows: ModelStat[] }) {
                 style={{ background: s.color }}
                 aria-hidden="true"
               />
-              <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <span className="text-aux fg-2">
                 {s.label}
               </span>
               <span className="ml-auto font-mono text-aux tabular-nums font-medium">
@@ -161,7 +161,7 @@ export function TokenMixRing({ rows }: { rows: ModelStat[] }) {
             </button>
           );
         })}
-        <div className="mt-1 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="mt-1 text-aux fg-3">
           合计 {formatCompact(total)} Token
           {unmetered > 0 && ` · ${formatNumber(unmetered)} 次请求未回传 usage，未计入`}
         </div>

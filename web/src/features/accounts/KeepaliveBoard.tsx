@@ -143,7 +143,7 @@ export function KeepaliveBoard({
               className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-aux"
               style={{ background: 'var(--rg-bg-secondary)', color: 'var(--rg-text-secondary)' }}
             >
-              <span className="text-[13px] font-medium" style={{ color: 'var(--rg-text-primary)' }}>
+              <span className="text-[13px] font-medium fg-1">
                 {platformIdLabel(s.platform)}
               </span>
               <span>{s.accounts} 个启用账号</span>
@@ -195,7 +195,7 @@ export function KeepaliveBoard({
               ) : (
                 <span>Token 均 7 日以上</span>
               )}
-              <span className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="font-mono text-aux fg-3">
                 池最近保活：{s.lastAtMs == null ? '无' : formatTime(new Date(s.lastAtMs).toISOString())}
               </span>
             </div>
@@ -254,7 +254,7 @@ export function KeepaliveBoard({
                   })}
                   {members.length === 0 && (
                     <tr>
-                      <td colSpan={7} className="td" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <td colSpan={7} className="td fg-3">
                         当前筛选下该平台没有账号
                       </td>
                     </tr>
@@ -272,7 +272,7 @@ export function KeepaliveBoard({
         对 ZCode 也不成立（它没有 refresh_token 可续）。一句兜底话把三种
         语义压成「都在保活」，正是与卡片上「不参与定时保活」打脸的成因。
       */}
-      <div className="flex flex-col gap-1 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <div className="flex flex-col gap-1 text-aux fg-3">
         <p>
           「最近保活」由两条链路写入（<code>scheduler.runKeepalive</code> 每日轮 +
           临期扫描的按需续期），扫描周期见「运维 → 定时任务」。

@@ -53,8 +53,10 @@ import {
   LoadingBlock,
   MetricGrid,
   Note,
+  NumberField,
   Panel,
   Segmented,
+  TimeOfDay,
 } from '../../shared/ui';
 import { PageShell, Stack } from '../../shared/ui/PageShell';
 import { useToast } from '../../shared/ui/Toast';
@@ -462,6 +464,8 @@ const rotateRows = useMemo(() => {
       toolbar={
         <Segmented
           ariaLabel="运维分区"
+          /* 真页签：每一项对应一条路由，切换是导航而不是过滤 */
+          variant="tabs"
           value={active}
           onChange={(v) => {
             const t = TABS.find((x) => x.value === v);
@@ -585,20 +589,20 @@ const rotateRows = useMemo(() => {
                 />
               ) : (
                 <div className="scroll-y overflow-x-auto" style={{ maxHeight: 420 }}>
-                  <table className="data-table">
+                  <table className="data-table table-fixed">
                     <thead
                       className="sticky top-0 z-10"
                       style={{ background: 'var(--rg-bg-secondary)' }}
                     >
                       <tr>
                         <th scope="col" className="th">账号</th>
-                        <th scope="col" className="th">可用</th>
-                        <th scope="col" className="th cell-num">在途</th>
-                        <th scope="col" className="th cell-num">余额</th>
-                        <th scope="col" className="th cell-num">优先级</th>
-                        <th scope="col" className="th">最近到期</th>
-                        <th scope="col" className="th cell-num">模型冷却</th>
-                        <th scope="col" className="th cell-num">错误数</th>
+                        <th scope="col" className="th w-[76px]">可用</th>
+                        <th scope="col" className="th cell-num w-[72px]">在途</th>
+                        <th scope="col" className="th cell-num col-w-num">余额</th>
+                        <th scope="col" className="th cell-num w-[80px]">优先级</th>
+                        <th scope="col" className="th w-[148px]">最近到期</th>
+                        <th scope="col" className="th cell-num w-[96px]">模型冷却</th>
+                        <th scope="col" className="th cell-num w-[88px]">错误数</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -659,12 +663,12 @@ const rotateRows = useMemo(() => {
                   hint="客户端首次携带 session 标识的请求之后才绑定。"
                 />
               ) : (
-                <table className="data-table">
+                <table className="data-table table-fixed">
                   <thead>
                     <tr>
                       <th scope="col" className="th">会话键</th>
-                      <th scope="col" className="th">绑定账号</th>
-                      <th scope="col" className="th">过期时间</th>
+                      <th scope="col" className="th col-w-text-wide">绑定账号</th>
+                      <th scope="col" className="th w-[148px]">过期时间</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -729,7 +733,7 @@ const rotateRows = useMemo(() => {
                 <div className="flex flex-col gap-4">
                   {/* 总开关来自环境变量，配置文件改不了，如实展示来源而非做无效开关 */}
                   <div className="flex items-center justify-between gap-3 flex-wrap">
-                    <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                    <div className="text-aux fg-2">
                       调度器总开关
                     </div>
                     {scheduler.data?.schedulerEnabled ? (
@@ -749,98 +753,44 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           执行时刻
                         </span>
                         <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="每日签到">
-                          <div className="flex items-center gap-2">
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={23}
-                              value={String(schedulerDraft.checkinHour)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, checkinHour: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="签到小时"
-                            />
-                            <span className="font-mono text-aux">:</span>
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={59}
-                              value={String(schedulerDraft.checkinMinute)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, checkinMinute: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="签到分钟"
-                            />
-                          </div>
+                          <TimeOfDay
+                            label="每日签到"
+                            hour={schedulerDraft.checkinHour}
+                            minute={schedulerDraft.checkinMinute}
+                            onChange={({ hour, minute }) => {
+                              setSchedulerDraft((d) => ({ ...d, checkinHour: hour, checkinMinute: minute }));
+                              setSchedulerDirty(true);
+                            }}
+                          />
                         </FieldRow>
                         <FieldRow label="每日保活">
-                          <div className="flex items-center gap-2">
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={23}
-                              value={String(schedulerDraft.keepaliveHour)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, keepaliveHour: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="保活小时"
-                            />
-                            <span className="font-mono text-aux">:</span>
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={59}
-                              value={String(schedulerDraft.keepaliveMinute)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, keepaliveMinute: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="保活分钟"
-                            />
-                          </div>
+                          <TimeOfDay
+                            label="每日保活"
+                            hour={schedulerDraft.keepaliveHour}
+                            minute={schedulerDraft.keepaliveMinute}
+                            onChange={({ hour, minute }) => {
+                              setSchedulerDraft((d) => ({ ...d, keepaliveHour: hour, keepaliveMinute: minute }));
+                              setSchedulerDirty(true);
+                            }}
+                          />
                         </FieldRow>
                         <FieldRow label="账号轮换时刻">
-                          <div className="flex items-center gap-2">
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={23}
-                              value={String(schedulerDraft.rotateHour)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, rotateHour: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="轮换小时"
-                            />
-                            <span className="font-mono text-aux">:</span>
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={59}
-                              value={String(schedulerDraft.rotateMinute)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, rotateMinute: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="轮换分钟"
-                            />
-                          </div>
+                          <TimeOfDay
+                            label="账号轮换时刻"
+                            hour={schedulerDraft.rotateHour}
+                            minute={schedulerDraft.rotateMinute}
+                            onChange={({ hour, minute }) => {
+                              setSchedulerDraft((d) => ({ ...d, rotateHour: hour, rotateMinute: minute }));
+                              setSchedulerDirty(true);
+                            }}
+                          />
                         </FieldRow>
                       </div>
                     </div>
@@ -850,73 +800,73 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           间隔与错峰
                         </span>
                         <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="令牌扫描（分钟）">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="令牌扫描间隔（分钟）"
                             min={1}
                             max={1440}
-                            value={String(schedulerDraft.tokenSweepMinutes)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, tokenSweepMinutes: Number(e.target.value) }));
+                            width={80}
+                            value={schedulerDraft.tokenSweepMinutes}
+                            onChange={(n) => {
+                              setSchedulerDraft((d) => ({ ...d, tokenSweepMinutes: n }));
                               setSchedulerDirty(true);
                             }}
                           />
                         </FieldRow>
                         <FieldRow label="模型探测间隔（小时）">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="模型探测间隔（小时）"
                             min={0}
                             max={168}
-                            value={String(schedulerDraft.modelProbeIntervalHours)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, modelProbeIntervalHours: Number(e.target.value) }));
+                            width={80}
+                            value={schedulerDraft.modelProbeIntervalHours}
+                            onChange={(n) => {
+                              setSchedulerDraft((d) => ({ ...d, modelProbeIntervalHours: n }));
                               setSchedulerDirty(true);
                             }}
                           />
                         </FieldRow>
                         <FieldRow label="每次探测模型数">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="每次探测模型数"
                             min={0}
                             max={100}
-                            value={String(schedulerDraft.modelProbeMaxPerRun)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, modelProbeMaxPerRun: Number(e.target.value) }));
+                            width={80}
+                            value={schedulerDraft.modelProbeMaxPerRun}
+                            onChange={(n) => {
+                              setSchedulerDraft((d) => ({ ...d, modelProbeMaxPerRun: n }));
                               setSchedulerDirty(true);
                             }}
                           />
                         </FieldRow>
                         <FieldRow label="签到错峰窗口（分钟）">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="签到错峰窗口（分钟）"
                             min={0}
                             max={720}
-                            value={String(schedulerDraft.checkinSpreadMinutes)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, checkinSpreadMinutes: Number(e.target.value) }));
+                            width={80}
+                            value={schedulerDraft.checkinSpreadMinutes}
+                            onChange={(n) => {
+                              setSchedulerDraft((d) => ({ ...d, checkinSpreadMinutes: n }));
                               setSchedulerDirty(true);
                             }}
                           />
                         </FieldRow>
                         <FieldRow label="余额错峰窗口（分钟）">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="余额错峰窗口（分钟）"
                             min={0}
                             max={720}
-                            value={String(schedulerDraft.balanceSpreadMinutes)}
-                            onChange={(e) => {
-                              setSchedulerDraft((d) => ({ ...d, balanceSpreadMinutes: Number(e.target.value) }));
+                            width={80}
+                            value={schedulerDraft.balanceSpreadMinutes}
+                            onChange={(n) => {
+                              setSchedulerDraft((d) => ({ ...d, balanceSpreadMinutes: n }));
                               setSchedulerDirty(true);
                             }}
                           />
@@ -929,14 +879,14 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           成长中心（WorkBuddy 派猫旅行）
                         </span>
                         <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <label className="flex items-center justify-between gap-3">
-                          <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                          <span className="text-aux fg-2">
                             启用
                           </span>
                           <input
@@ -952,33 +902,15 @@ const rotateRows = useMemo(() => {
                           />
                         </label>
                         <FieldRow label="每日执行时刻">
-                          <div className="flex items-center gap-2">
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={23}
-                              value={String(schedulerDraft.growthHour)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, growthHour: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="成长中心小时"
-                            />
-                            <span className="font-mono text-aux">:</span>
-                            <input
-                              className="field font-mono text-aux"
-                              type="number"
-                              min={0}
-                              max={59}
-                              value={String(schedulerDraft.growthMinute)}
-                              onChange={(e) => {
-                                setSchedulerDraft((d) => ({ ...d, growthMinute: Number(e.target.value) }));
-                                setSchedulerDirty(true);
-                              }}
-                              aria-label="成长中心分钟"
-                            />
-                          </div>
+                          <TimeOfDay
+                            label="成长中心每日执行"
+                            hour={schedulerDraft.growthHour}
+                            minute={schedulerDraft.growthMinute}
+                            onChange={({ hour, minute }) => {
+                              setSchedulerDraft((d) => ({ ...d, growthHour: hour, growthMinute: minute }));
+                              setSchedulerDirty(true);
+                            }}
+                          />
                         </FieldRow>
                       </div>
                     </div>
@@ -988,7 +920,7 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           下次执行
                         </span>
                         <span className="card-head-line" />
@@ -1005,7 +937,7 @@ const rotateRows = useMemo(() => {
                             className="grid gap-2 py-[5px] items-baseline"
                             style={{ gridTemplateColumns: '64px minmax(0, 1fr)' }}
                           >
-                            <dt className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            <dt className="text-aux fg-3">
                               {row.k}
                             </dt>
                             <dd className="m-0 font-mono text-aux break-all">
@@ -1027,7 +959,7 @@ const rotateRows = useMemo(() => {
                     style={{ borderColor: 'var(--rg-border)' }}
                   >
                     <div className="mb-2.5 flex items-center gap-2">
-                      <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                      <span className="text-aux font-medium fg-2">
                         余额自动刷新
                       </span>
                       <span className="card-head-line" />
@@ -1044,7 +976,7 @@ const rotateRows = useMemo(() => {
 
                     <div className="flex flex-col gap-2.5">
                       <label className="flex items-center justify-between gap-3">
-                        <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux fg-2">
                           启用定时刷新
                         </span>
                         <input
@@ -1059,14 +991,14 @@ const rotateRows = useMemo(() => {
                       </label>
 
                       <FieldRow label="刷新间隔（分钟）">
-                        <input
-                          className="field font-mono text-aux"
-                          type="number"
+                        <NumberField
+                          label="余额定时刷新间隔（分钟）"
                           min={5}
                           max={1440}
-                          value={String(balanceDraft.intervalMinutes)}
-                          onChange={(e) => {
-                            setBalanceDraft((d) => ({ ...d, intervalMinutes: Number(e.target.value) }));
+                          width={80}
+                          value={balanceDraft.intervalMinutes}
+                          onChange={(n) => {
+                            setBalanceDraft((d) => ({ ...d, intervalMinutes: n }));
                             setBalanceDirty(true);
                           }}
                         />
@@ -1082,7 +1014,7 @@ const rotateRows = useMemo(() => {
                           {busy === 'balance-cfg' ? '保存中…' : '保存刷新设置'}
                         </Button>
                         {balanceRefresh.data?.lastRunAt && (
-                          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <span className="text-aux fg-3">
                             上次 {formatTime(balanceRefresh.data.lastRunAt)}
                             {balanceRefresh.data.lastFailed
                               ? ` · 失败 ${balanceRefresh.data.lastFailed}`
@@ -1091,7 +1023,7 @@ const rotateRows = useMemo(() => {
                         )}
                       </div>
 
-                      <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="text-aux fg-3">
                         {balanceRefresh.data?.timer?.nextRunAt
                           ? `下次运行：${balanceRefresh.data.timer.nextRunAt}`
                           : '定时器未启动；每日签到流程结束后也会刷新一次余额'}
@@ -1160,18 +1092,18 @@ const rotateRows = useMemo(() => {
               ) : (
                 <>
                   <div className="scroll-y overflow-x-auto" style={{ maxHeight: 420 }}>
-                    <table className="data-table">
+                    <table className="data-table table-fixed">
                       {/* 表头吸顶：翻页时列名始终可见 */}
                       <thead
                         className="sticky top-0 z-10"
                         style={{ background: 'var(--rg-bg-base)' }}
                       >
                         <tr>
-                          <th scope="col" className="th">时间</th>
-                          <th scope="col" className="th">任务</th>
-                          <th scope="col" className="th">触发</th>
-                          <th scope="col" className="th cell-num">成功</th>
-                          <th scope="col" className="th cell-num">失败</th>
+                          <th scope="col" className="th w-[148px]">时间</th>
+                          <th scope="col" className="th col-w-text">任务</th>
+                          <th scope="col" className="th col-w-text">触发</th>
+                          <th scope="col" className="th cell-num w-[72px]">成功</th>
+                          <th scope="col" className="th cell-num w-[72px]">失败</th>
                           <th scope="col" className="th">详情</th>
                         </tr>
                       </thead>
@@ -1185,7 +1117,7 @@ const rotateRows = useMemo(() => {
                             <tr key={`${t.ts ?? i}`} className="row-hover">
                               <td className="td td-mono">{formatTime(t.ts)}</td>
                               <td className="td td-mono">{t.task || '—'}</td>
-                              <td className="td td-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <td className="td td-mono fg-3">
                                 {t.trigger || '—'}
                               </td>
                               <td className="td cell-num font-mono text-aux">{formatNumber(okCount)}</td>
@@ -1198,7 +1130,7 @@ const rotateRows = useMemo(() => {
                               </td>
                               <td className="td font-mono text-aux break-all">
                                 {t.error ? (
-                                  <span className="line-clamp-2" style={{ color: 'var(--rg-state-error)' }} title={t.error}>
+                                  <span className="line-clamp-2 fg-danger" title={t.error}>
                                     {t.error}
                                   </span>
                                 ) : t.acted != null ? (
@@ -1220,7 +1152,7 @@ const rotateRows = useMemo(() => {
                     className="flex items-center justify-between px-4 py-2.5"
                     style={{ borderTop: '1px solid var(--rg-border)' }}
                   >
-                    <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <span className="text-aux fg-3">
                       第 {safeLogPage + 1} / {taskPages} 页 · 显示第{' '}
                       {safeLogPage * LOG_PAGE_SIZE + 1} 至{' '}
                       {Math.min((safeLogPage + 1) * LOG_PAGE_SIZE, taskRows.length)} 条
@@ -1351,10 +1283,10 @@ const rotateRows = useMemo(() => {
                 <div className="flex flex-col gap-4">
                   <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="min-w-0">
-                      <div className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                      <div className="text-aux font-medium fg-2">
                         自动轮换
                       </div>
-                      <div className="text-aux mt-0.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="text-aux mt-0.5 fg-3">
                         到达设定时刻后自动遍历候选账号，每个账号停留下方设定的时长。
                       </div>
                     </div>
@@ -1386,28 +1318,27 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           轮换行为
                         </span>
                         <span className="card-head-line" />
                       </div>
                       <div className="flex flex-col gap-2.5">
                         <FieldRow label="每账号停留（秒）">
-                          <input
-                            className="field font-mono text-aux"
-                            type="number"
+                          <NumberField
+                            label="轮换时每账号停留（秒）"
                             min={10}
                             max={3600}
-                            value={String(Math.round(rotateCfg.stayMs / 1000))}
-                            onChange={(e) => {
-                              const sec = Number(e.target.value);
-                              setRotateCfg((c) => ({ ...c, stayMs: Number.isFinite(sec) ? sec * 1000 : c.stayMs }));
+                            width={80}
+                            value={Math.round(rotateCfg.stayMs / 1000)}
+                            onChange={(sec) => {
+                              setRotateCfg((c) => ({ ...c, stayMs: sec * 1000 }));
                               setRotateCfgDirty(true);
                             }}
                           />
                         </FieldRow>
                         <label className="flex items-center justify-between gap-3">
-                          <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                          <span className="text-aux fg-2">
                             结束后切回起始账号
                           </span>
                           <input
@@ -1427,7 +1358,7 @@ const rotateRows = useMemo(() => {
                       style={{ borderColor: 'var(--rg-border)' }}
                     >
                       <div className="mb-2.5 flex items-center gap-2">
-                        <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+                        <span className="text-aux font-medium fg-2">
                           排除与目录
                         </span>
                         <span className="card-head-line" />
@@ -1444,7 +1375,7 @@ const rotateRows = useMemo(() => {
                             }}
                           />
                         </FieldRow>
-                        <div className="text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>
+                        <div className="text-aux break-all fg-3">
                           auth 目录：{rotateSettings.data?.authDir || rotateStatus.data?.authDir || '默认探测'}
                         </div>
                       </div>
@@ -1495,24 +1426,24 @@ const rotateRows = useMemo(() => {
                   hint="点上方「生成种子」写入账号备份后，可在此切换账号。"
                 />
               ) : (
-                <table className="data-table">
+                <table className="data-table table-fixed">
                   <thead>
                     <tr>
-                      <th scope="col" className="th">账号</th>
+                      <th scope="col" className="th col-w-text">账号</th>
                       <th scope="col" className="th">uid</th>
-                      <th scope="col" className="th">状态</th>
-                      <th scope="col" className="th cell-num">当日活跃</th>
+                      <th scope="col" className="th w-[88px]">状态</th>
+                      <th scope="col" className="th cell-num col-w-num">当日活跃</th>
                       {/*
                         连登列紧跟「当日活跃」，因为两者是同一轮检查里取的同一套上游数据：
                         当日活跃 = 今天有没有动过（heatmap.today.is_active）
                         连登     = 连续多少天动过（growth/streak 的 days）
                         分开看才能回答「今天动了但连登断了没」这类问题。
                       */}
-                      <th scope="col" className="th cell-num" title="连续活跃天数（成长中心 /activity/growth/streak）">
+                      <th scope="col" className="th cell-num w-[72px]" title="连续活跃天数（成长中心 /activity/growth/streak）">
                         连登
                       </th>
-                      <th scope="col" className="th">说明</th>
-                      <th scope="col" className="th cell-act">操作</th>
+                      <th scope="col" className="th col-w-text-wide">说明</th>
+                      <th scope="col" className="th cell-act w-[116px]">操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1522,7 +1453,7 @@ const rotateRows = useMemo(() => {
                       return (
                         <tr key={r.uid} className="row-hover">
                           <td className="td text-[13px]">{r.label || '—'}</td>
-                          <td className="td font-mono text-aux break-all" style={{ color: 'var(--rg-text-tertiary)' }}>{r.uid}</td>
+                          <td className="td font-mono text-aux break-all fg-3">{r.uid}</td>
                           <td className="td">
                             {isCurrent ? (
                               <Chip tone="brand" dot="dot-ok">

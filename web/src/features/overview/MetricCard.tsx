@@ -91,7 +91,7 @@ export function MetricCard({
           {unit && <span className="text-unit shrink-0">{unit}</span>}
         </span>
         {hint && (
-          <span className="mt-1 text-aux block" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="mt-1 text-aux block fg-3">
             {hint}
           </span>
         )}
@@ -155,14 +155,14 @@ export function DetailState({
   if (loading) return <LoadingBlock label="读取明细" />;
   if (error) {
     return (
-      <div className="text-aux" style={{ color: 'var(--rg-state-error)' }}>
+      <div className="text-aux fg-danger">
         {error}
       </div>
     );
   }
   if (empty) {
     return (
-      <div className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <div className="text-aux leading-relaxed fg-3">
         {emptyHint ?? '没有可展示的明细'}
       </div>
     );

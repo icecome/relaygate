@@ -96,12 +96,12 @@ export default class ErrorBoundary extends Component<Props, State> {
         <div className="panel w-[min(560px,100%)]">
           <div className="panel-body">
             <h1 className="text-block mb-2">面板渲染出错</h1>
-            <p className="text-[13px] mb-4 leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
+            <p className="text-[13px] mb-4 leading-relaxed fg-2">
               {chunkFailure
                 ? '页面引用的某个模块文件已失效，通常是网关重新构建后当前页面仍为旧版本所致。已尝试自动刷新；若仍反复出现，需确认前端与后端版本一致后重新构建。'
                 : '页面组件抛出异常，界面已停止渲染。可先重新加载；若反复出现，需把下面的错误摘要一并反馈。'}
             </p>
-            <pre className="code-block mb-4" style={{ color: 'var(--rg-state-error)' }}>
+            <pre className="code-block mb-4 fg-danger">
               {error.message || String(error)}
             </pre>
             <div className="flex gap-2">

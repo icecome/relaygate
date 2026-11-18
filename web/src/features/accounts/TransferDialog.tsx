@@ -225,7 +225,7 @@ export function TransferDialog({ open, onClose, onDone }: {
                       onChange={() => toggle(a.id)}
                     />
                     <span className="truncate">{a.label || a.id}</span>
-                    <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <span className="text-aux fg-3">
                       {platformIdLabel(platformOf(a))}
                     </span>
                   </label>
@@ -254,7 +254,7 @@ export function TransferDialog({ open, onClose, onDone }: {
               style={{ color: 'var(--rg-text-secondary)' }}
             />
             {fileName && (
-              <div className="text-aux mt-1 font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <div className="text-aux mt-1 font-mono text-aux fg-3">
                 {fileName}
               </div>
             )}

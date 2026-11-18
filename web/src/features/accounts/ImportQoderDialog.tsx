@@ -294,7 +294,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
         {mode === 'manual' && !importedId && (
           <>
             <div>
-              <div className="text-aux mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux mb-1.5 fg-2">
                 区域（必须与账号实际区域一致）
               </div>
               <Segmented
@@ -308,7 +308,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
               />
             </div>
             <div>
-              <div className="text-aux mb-1.5" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux mb-1.5 fg-2">
                 dt- 开头的 access token，或客户端凭据 JSON
               </div>
               <textarea
@@ -319,7 +319,7 @@ export function ImportQoderDialog({ open, onClose, onImported }: {
                 aria-label="Qoder 凭据"
               />
             </div>
-            <label className="flex items-center gap-2 text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <label className="flex items-center gap-2 text-aux fg-2">
               <input
                 type="checkbox"
                 checked={verify}

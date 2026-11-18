@@ -41,7 +41,7 @@ export function ClientAccessPanel({
     if (!v) return null;
     return (
       <div className="grid items-start gap-2 py-1.5 grid-cols-[minmax(120px,176px)_minmax(0,1fr)_auto]">
-        <span className="font-mono text-aux break-all" style={{ color: 'var(--rg-text-secondary)' }}>
+        <span className="font-mono text-aux break-all fg-2">
           {k}
         </span>
         <span className="font-mono text-aux break-all">{v}</span>

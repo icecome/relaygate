@@ -30,7 +30,7 @@ import {
   type QoderRunSummary,
 } from '../../shared/api/qoder';
 import { formatNumber, formatTime } from '../../shared/lib/format';
-import { Button, Chip, EmptyState, LoadingBlock, Note } from '../../shared/ui';
+import { Button, Chip, EmptyState, LoadingBlock, Note, TimeOfDay } from '../../shared/ui';
 import { useToast } from '../../shared/ui/Toast';
 
 interface RowResult {
@@ -54,24 +54,6 @@ function formFrom(jobs: ChannelJobs | null): JobsForm {
     hour: jobs?.hour ?? 10,
     minute: jobs?.minute ?? 15,
   };
-}
-
-function NumInput({ value, max, label, onChange }: { value: number; max: number; label: string; onChange: (n: number) => void }) {
-  return (
-    <input
-      type="number"
-      min={0}
-      max={max}
-      className="field"
-      style={{ width: 56 }}
-      value={value}
-      aria-label={label}
-      onChange={(e) => {
-        const n = Number.parseInt(e.target.value, 10);
-        onChange(Number.isFinite(n) ? n : 0);
-      }}
-    />
-  );
 }
 
 /** 活动状态 → 可读文案与色调。 */
@@ -214,7 +196,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           刷新账号
         </Button>
         {jobs && (
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             定时任务{jobs.enabled ? '已启用' : '已停用'} · 下次执行 {formatTime(jobs.nextRunAt)}（{jobs.accounts} 个启用账号）
           </span>
         )}
@@ -222,8 +204,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
 
       {batch && (
         <div
-          className="rounded-lg border p-3 text-aux flex flex-col gap-1"
-          style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+          className="subcard-soft text-aux flex flex-col gap-1"
         >
           <div className="font-medium">最近一轮结果</div>
           <div>
@@ -252,8 +233,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       )}
 
       <div
-        className="rounded-lg border p-3 flex flex-col gap-2.5"
-        style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+        className="subcard-soft flex flex-col gap-2.5"
       >
         <div className="text-aux font-medium">每日积分活动领取（本地时区）</div>
         <div className="flex items-center gap-4 flex-wrap text-aux">
@@ -273,16 +253,20 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
             />
             自动领取（关闭则只探测并通知）
           </label>
-          <span className="inline-flex items-center gap-1">
+          <span className="inline-flex items-center gap-2">
             每日
-            <NumInput max={23} label="领取小时" value={form.hour} onChange={(n) => setForm((f) => ({ ...f, hour: n }))} />：
-            <NumInput max={59} label="领取分钟" value={form.minute} onChange={(n) => setForm((f) => ({ ...f, minute: n }))} />
+            <TimeOfDay
+              label="每日领取时刻"
+              hour={form.hour}
+              minute={form.minute}
+              onChange={({ hour, minute }) => setForm((f) => ({ ...f, hour, minute }))}
+            />
           </span>
           <Button size="sm" onClick={saveSettings} disabled={busy !== null}>
             {busy === '__settings__' ? '保存中…' : '保存设置'}
           </Button>
         </div>
-        <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux fg-3">
           上游按 UTC+8 每日 10:00 刷新可领状态、领取后 30 天有效，故默认排在本地 10:15。
           部署机时区不是 UTC+8 时请自行把时刻调整到刷新之后。
         </div>
@@ -318,7 +302,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                       <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux fg-3">
                         {a.userId || a.id}
                       </div>
                     </td>
@@ -373,7 +357,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
 
                   {r && (
                     <tr>
-                      <td className="td" colSpan={6} style={{ background: 'var(--rg-bg-secondary)' }}>
+                      <td className="td td-spanned" colSpan={6}>
                         <div className="flex flex-col gap-1.5 py-1">
                           <span
                             style={{
@@ -389,7 +373,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           </span>
 
                           {r.campaigns && r.campaigns.campaigns.length > 0 && (
-                            <table className="data-table text-aux">
+                            <table className="data-table">
                               <thead>
                                 <tr>
                                   <th scope="col" className="th">活动</th>
@@ -440,7 +424,7 @@ export function QoderOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           )}
 
                           {r.quota && (
-                            <table className="data-table text-aux">
+                            <table className="data-table">
                               <thead>
                                 <tr>
                                   <th scope="col" className="th">额度段</th>

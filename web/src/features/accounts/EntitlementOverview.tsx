@@ -94,7 +94,7 @@ export function EntitlementOverview({
           />
         ))}
       </div>
-      <p className="mt-3 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <p className="mt-3 text-aux leading-relaxed fg-3">
         除 ZCode 按 Token 计量外，其余四个平台上游都按积分计量，但各平台积分价值不同、不可换算，因此不做跨平台总额；上方「可累积积分合计」只含 Trae 与 WorkBuddy（同一单位）。
       </p>
     </>
@@ -282,13 +282,13 @@ function CreditDetail({ members }: { members: Account[] }) {
     }
     return (
       <>
-        <table className="data-table">
+        <table className="data-table table-fixed">
           <thead>
             <tr>
               <th scope="col" className="th">账号</th>
-              <th scope="col" className="th cell-num">可用包</th>
-              <th scope="col" className="th cell-num">剩余积分</th>
-              <th scope="col" className="th">最近到期</th>
+              <th scope="col" className="th cell-num w-[88px]">可用包</th>
+              <th scope="col" className="th cell-num col-w-num-wide">剩余积分</th>
+              <th scope="col" className="th w-[120px]">最近到期</th>
             </tr>
           </thead>
           <tbody>
@@ -303,7 +303,7 @@ function CreditDetail({ members }: { members: Account[] }) {
                   </td>
                   <td className="td cell-num">{formatNumber(d.usable)}</td>
                   <td className="td cell-num">{formatNumber(d.usableAmount)}</td>
-                  <td className="td td-mono" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <td className="td td-mono fg-2">
                     {d.soonestDays == null
                       ? '长期'
                       : d.soonestDays <= 0
@@ -317,10 +317,10 @@ function CreditDetail({ members }: { members: Account[] }) {
               <td className="td font-semibold">合计</td>
               <td className="td cell-num font-semibold">{formatNumber(usable)}</td>
               <td className="td cell-num font-semibold">{formatNumber(usableAmount)}</td>
-              <td className="td td-mono" style={{ color: 'var(--rg-text-secondary)' }}>
+              <td className="td td-mono fg-2">
                 {soonest == null ? '长期' : `${soonest} 天后`}
                 {expiring7d > 0 && (
-                  <span className="ml-1.5" style={{ color: 'var(--rg-state-warning)' }}>
+                  <span className="ml-1.5 fg-warn">
                     · 7 日内 {formatNumber(expiring7d)}
                   </span>
                 )}
@@ -328,7 +328,7 @@ function CreditDetail({ members }: { members: Account[] }) {
             </tr>
           </tbody>
         </table>
-        <p className="mt-2.5 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <p className="mt-2.5 text-aux leading-relaxed fg-3">
           这是后端下发的**权益摘要**（列表端点带 <code className="font-mono">?slim=1</code>，
           为省带宽不下发逐包明细）。需要看每个包的名称与到期时刻时，
           在下方凭据表点该账号「权益」列的「权益明细」。
@@ -347,13 +347,13 @@ function CreditDetail({ members }: { members: Account[] }) {
   }
 
   return (
-    <table className="data-table">
+    <table className="data-table table-fixed">
       <thead>
         <tr>
           <th scope="col" className="th">账号</th>
-          <th scope="col" className="th cell-num">可用包</th>
-          <th scope="col" className="th cell-num">剩余</th>
-          <th scope="col" className="th">最近到期</th>
+          <th scope="col" className="th cell-num w-[88px]">可用包</th>
+          <th scope="col" className="th cell-num col-w-num-wide">剩余</th>
+          <th scope="col" className="th w-[120px]">最近到期</th>
         </tr>
       </thead>
       <tbody>
@@ -372,7 +372,7 @@ function CreditDetail({ members }: { members: Account[] }) {
               </td>
               <td className="td cell-num">{packs.length}</td>
               <td className="td cell-num">{formatNumber(sum)}</td>
-              <td className="td td-mono" style={{ color: 'var(--rg-text-secondary)' }}>
+              <td className="td td-mono fg-2">
                 {soonest == null
                   ? '长期'
                   : soonest.days != null && soonest.days <= 0
@@ -411,13 +411,13 @@ function TokenDetail({ members }: { members: Account[] }) {
   }, [members]);
 
   return (
-    <table className="data-table">
+    <table className="data-table table-fixed">
       <thead>
         <tr>
           <th scope="col" className="th">账号</th>
-          <th scope="col" className="th">额度桶</th>
-          <th scope="col" className="th cell-num">剩余 Token</th>
-          <th scope="col" className="th cell-num">总量</th>
+          <th scope="col" className="th col-w-text">额度桶</th>
+          <th scope="col" className="th cell-num col-w-num-wide">剩余 Token</th>
+          <th scope="col" className="th cell-num col-w-num-wide">总量</th>
           <th scope="col" className="th">到期</th>
         </tr>
       </thead>
@@ -445,12 +445,12 @@ function TokenDetail({ members }: { members: Account[] }) {
 /** Qoder 两段积分：基础 / 赠送分列，不合并成一行。 */
 function QuotaDetail({ members }: { members: Account[] }) {
   return (
-    <table className="data-table">
+    <table className="data-table table-fixed">
       <thead>
         <tr>
           <th scope="col" className="th">账号</th>
-          <th scope="col" className="th cell-num">基础额度</th>
-          <th scope="col" className="th cell-num">赠送额度</th>
+          <th scope="col" className="th cell-num col-w-num-wide">基础额度</th>
+          <th scope="col" className="th cell-num col-w-num-wide">赠送额度</th>
           <th scope="col" className="th cell-num">合计</th>
           <th scope="col" className="th">到期</th>
         </tr>
@@ -481,11 +481,11 @@ function QuotaDetail({ members }: { members: Account[] }) {
 /** Raccoon：分池。 */
 function RaccoonDetail({ members }: { members: Account[] }) {
   return (
-    <table className="data-table">
+    <table className="data-table table-fixed">
       <thead>
         <tr>
           <th scope="col" className="th">账号</th>
-          <th scope="col" className="th cell-num">合计</th>
+          <th scope="col" className="th cell-num col-w-num-wide">合计</th>
           <th scope="col" className="th">分池</th>
           <th scope="col" className="th">快照</th>
         </tr>

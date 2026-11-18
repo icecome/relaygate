@@ -81,9 +81,8 @@ function PasswordLoginForm({
   const [password, setPassword] = useState('');
   const prompt = usePrompt();
   return (
-    <div className="rounded-lg border p-3 mt-3 flex flex-col gap-2"
-      style={{ borderColor: 'var(--rg-border)' }}>
-      <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+    <div className="subcard mt-3 flex flex-col gap-2">
+      <div className="text-aux fg-2">
         为 <strong>{targetLabel}</strong> 配置密码登录（手机号 + 密码）。保存前网关会先试登录一次，
         成功才落库。密码在服务端加密存储、不回显。留空点清除即删除凭据。
       </div>
@@ -500,7 +499,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 {keepalive.enabled ? '已启用' : '已停用'}
               </Chip>
               {keepalive.enabled && keepalive.nextRunAt && (
-                <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <span className="text-aux fg-3">
                   下次 {formatTime(keepalive.nextRunAt)}
                 </span>
               )}
@@ -512,7 +511,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 立即保活
               </Button>
             </div>
-            <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <div className="text-aux fg-2">
               上游规则：每日 300 分默认<strong>当天 24:00 清零</strong>，当天登录后有效期延长至
               <strong> 7 天</strong>。
               <br />
@@ -523,7 +522,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
               上游未产生当日账单时显示「上游未发放」，属上游状态，不是故障。
             </div>
             {keepalive.lastSummary && (
-              <div className="text-aux flex gap-3 flex-wrap" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <div className="text-aux flex gap-3 flex-wrap fg-3">
                 <span>
                   上次（{formatTime(keepalive.lastSummary.ranAt)}）：
                   延长 {keepalive.lastSummary.ok} / 未延长 {keepalive.lastSummary.notExtended} / 失败 {keepalive.lastSummary.failed}
@@ -559,7 +558,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 <rect width={session.qr.dim} height={session.qr.dim} fill="#ffffff" />
                 <path d={session.qr.path} fill="#000000" />
               </svg>
-              <div className="text-aux text-center" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux text-center fg-2">
                 {phase === 'scanned'
                   ? '已扫码，请在微信内确认授权，本页会自动进入下一步'
                   : '打开微信「扫一扫」，扫描上方二维码完成授权'}
@@ -569,7 +568,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                   {phase === 'scanned' ? '等待微信确认' : '等待扫码'}
                 </Chip>
                 {remainingMs > 0 && (
-                  <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux fg-3">
                     二维码 {Math.ceil(remainingMs / 1000)} 秒后过期
                   </span>
                 )}
@@ -592,10 +591,10 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
 
         {/* ---------- 已登录账号 ---------- */}
         <div className="flex flex-col gap-2">
-          <div className="flex items-center gap-2 flex-wrap text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+          <div className="flex items-center gap-2 flex-wrap text-aux fg-2">
             <span>已接入账号 {accounts?.length ?? 0} 个</span>
             {models && (
-              <span style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="fg-3">
                 模型目录 {models.count} 个（{models.source === 'remote' ? '远端' : '内置静态表，倍率可能不是最新'}）
               </span>
             )}
@@ -621,7 +620,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                       <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux fg-3">
                         {a.userId || a.id}
                         {a.raccoonOrg ? ` · ${a.raccoonOrg}` : ''}
                       </div>
@@ -634,14 +633,14 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                       ) : typeof a.balance === 'number' ? (
                         formatNumber(a.balance)
                       ) : (
-                        <span style={{ color: 'var(--rg-text-tertiary)' }}>未查询</span>
+                        <span className="fg-3">未查询</span>
                       )}
                     </td>
                     <td className="td">
                       {a.expiredAt ? (
                         <span className="text-aux">{formatTime(a.expiredAt)}</span>
                       ) : (
-                        <span style={{ color: 'var(--rg-text-tertiary)' }}>—</span>
+                        <span className="fg-3">—</span>
                       )}
                     </td>
                     <td className="td cell-act">
@@ -734,7 +733,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 <Chip tone="warn">余额数据不可用</Chip>
               )}
             </div>
-            <div className="flex gap-4 flex-wrap" style={{ color: 'var(--rg-text-secondary)' }}>
+            <div className="flex gap-4 flex-wrap fg-2">
               <span>
                 今日剩余
                 <strong className="mx-1">
@@ -754,7 +753,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
                 <strong className="mx-1">{formatNumber(daily.data.expiredTotal)}</strong>
               </span>
             </div>
-            <div style={{ color: 'var(--rg-text-tertiary)' }}>
+            <div className="fg-3">
               每日 {daily.data.grantPoints} 分由服务端自动发放（无领取端点），约 7 天内未用完即清零。
               想少浪费就把它排进消耗计划，而不是等一个不存在的签到按钮。
             </div>

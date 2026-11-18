@@ -228,7 +228,7 @@ export default function TrafficPage() {
             </div>
             <Button onClick={traffic.reload}>刷新</Button>
           </div>
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             第 {effPage} 页 · 共 {traffic.data?.totalPages ?? 1} 页
           </span>
         </>
@@ -263,18 +263,18 @@ export default function TrafficPage() {
               />
             )
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
-                  <th scope="col" className="th cell-num">#</th>
-                  <th scope="col" className="th">时间</th>
-                  <th scope="col" className="th">接口</th>
-                  <th scope="col" className="th">模型</th>
-                  <th scope="col" className="th">上游模型</th>
-                  <th scope="col" className="th">账号</th>
-                  <th scope="col" className="th">状态</th>
-                  <th scope="col" className="th cell-num">耗时</th>
-                  <th scope="col" className="th cell-num">Token</th>
+                  <th scope="col" className="th cell-num w-[56px]">#</th>
+                  <th scope="col" className="th w-[148px]">时间</th>
+                  <th scope="col" className="th col-w-text">接口</th>
+                  <th scope="col" className="th col-w-text-wide">模型</th>
+                  <th scope="col" className="th col-w-text-wide">上游模型</th>
+                  <th scope="col" className="th col-w-text">账号</th>
+                  <th scope="col" className="th w-[88px]">状态</th>
+                  <th scope="col" className="th cell-num w-[80px]">耗时</th>
+                  <th scope="col" className="th cell-num col-w-num">Token</th>
                 </tr>
               </thead>
               <tbody>
@@ -326,7 +326,7 @@ export default function TrafficPage() {
         </Panel>
 
         <div className="flex items-center justify-between">
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             共 {formatNumber(traffic.data?.total ?? 0)} 条记录
           </span>
           <div className="flex items-center gap-2">
@@ -350,11 +350,11 @@ export default function TrafficPage() {
                 {failed.status ?? 'ERR'}
               </Chip>
               <span className="font-mono text-aux">{failed.model || '—'}</span>
-              <span className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="font-mono text-aux fg-3">
                 {formatTime(failed.ts)}
               </span>
             </div>
-            <pre className="code-block" style={{ color: 'var(--rg-state-error)' }}>
+            <pre className="code-block fg-danger">
               {failed.error || '网关未返回错误文本'}
             </pre>
           </Panel>
@@ -377,14 +377,14 @@ export default function TrafficPage() {
             />
           ) : (
             <div className="scroll-y overflow-x-auto" style={{ maxHeight: 320 }}>
-              <table className="data-table">
+              <table className="data-table table-fixed">
                 <thead>
                   <tr>
-                    <th scope="col" className="th">时间</th>
+                    <th scope="col" className="th w-[148px]">时间</th>
                     <th scope="col" className="th">Request ID</th>
-                    <th scope="col" className="th">账号</th>
-                    <th scope="col" className="th">模型</th>
-                    <th scope="col" className="th">事件</th>
+                    <th scope="col" className="th col-w-text">账号</th>
+                    <th scope="col" className="th col-w-text-wide">模型</th>
+                    <th scope="col" className="th col-w-text">事件</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -434,17 +434,17 @@ export default function TrafficPage() {
                 </Chip>
                 <span className="font-mono text-aux">{testResult.model}</span>
                 {testResult.durationMs != null && (
-                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux font-mono fg-3">
                     {formatDuration(testResult.durationMs)}
                   </span>
                 )}
                 {testResult.totalTokens != null && (
-                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux font-mono fg-3">
                     {testResult.totalTokens} Token
                   </span>
                 )}
                 {testResult.finishReason && (
-                  <span className="text-aux font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux font-mono fg-3">
                     {finishReasonLabel(testResult.finishReason)}
                   </span>
                 )}
@@ -457,7 +457,7 @@ export default function TrafficPage() {
                 </pre>
               )}
               {testResult.message && (
-                <p className="text-aux" style={{ color: 'var(--rg-state-error)' }}>
+                <p className="text-aux fg-danger">
                   {testResult.message}
                 </p>
               )}

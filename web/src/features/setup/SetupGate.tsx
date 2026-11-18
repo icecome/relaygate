@@ -138,7 +138,7 @@ export default function SetupGate({ onReady }: Props) {
             </div>
             <div>
               <div className="text-block leading-tight">RelayGate</div>
-              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux fg-2">
                 管理面板 · {hasLoginKey ? '登录' : '首次使用'}
               </div>
             </div>
@@ -158,20 +158,20 @@ export default function SetupGate({ onReady }: Props) {
                     {verifying ? '校验中…' : '进入面板'}
                   </Button>
                   <div className="mt-1 pt-4 rule-top">
-                    <p className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+                    <p className="text-aux fg-2">
                       没有可用的登录密钥？在服务器本机执行
                     </p>
-                    <code className="block mt-1 font-mono text-aux" style={{ color: 'var(--rg-text-primary)' }}>
+                    <code className="block mt-1 font-mono text-aux fg-1">
                       node scripts/login-key.js reset
                     </code>
-                    <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <p className="mt-2 text-aux fg-3">
                       重置会使旧密钥立即失效，需要重新分发；该命令只能在服务器本机执行。
                     </p>
                   </div>
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  <p className="text-[13px] leading-relaxed" style={{ color: 'var(--rg-text-secondary)' }}>
+                  <p className="text-[13px] leading-relaxed fg-2">
                     尚未配置登录密钥。请创建首把登录密钥，或粘贴已有密钥。
                   </p>
                   <Field
@@ -189,7 +189,7 @@ export default function SetupGate({ onReady }: Props) {
                     {verifying ? '校验中…' : '使用该密钥进入'}
                   </Button>
                   <div className="mt-1 pt-4 rule-top">
-                    <p className="text-aux mb-2" style={{ color: 'var(--rg-text-secondary)' }}>
+                    <p className="text-aux mb-2 fg-2">
                       确认没有任何登录密钥时，创建一把新的
                     </p>
                     <Field
@@ -207,7 +207,7 @@ export default function SetupGate({ onReady }: Props) {
                     >
                       {phase === 'creating' ? '创建中…' : '创建登录密钥'}
                     </Button>
-                    <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <p className="mt-2 text-aux fg-3">
                       创建接口仅接受服务器本机来源的请求；创建后明文仅显示一次。
                     </p>
                   </div>
@@ -219,7 +219,7 @@ export default function SetupGate({ onReady }: Props) {
           {fresh && (
             <>
               <h1 className="text-block mb-1">登录密钥已生成</h1>
-              <p className="text-[13px] mb-4" style={{ color: 'var(--rg-text-secondary)' }}>
+              <p className="text-[13px] mb-4 fg-2">
                 请立即复制并妥善保存。离开本页后将无法再次查看完整明文。
               </p>
               <div
@@ -246,7 +246,7 @@ export default function SetupGate({ onReady }: Props) {
           )}
 
           {err && (
-            <div className="text-aux mt-3" style={{ color: 'var(--rg-state-error)' }} role="alert">
+            <div className="text-aux mt-3 fg-danger" role="alert">
               {err}
             </div>
           )}

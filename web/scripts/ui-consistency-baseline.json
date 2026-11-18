@@ -1,0 +1,14 @@
+{
+  "generatedAt": "2026-11-18",
+  "note": "UI 一致性预算。数值只允许下调：重构收敛后用 --update 重写，闸门会随之收紧。",
+  "budgets": {
+    "styleBlocks": 202,
+    "inlineTokenRefs": 227,
+    "rawButtonNoBtnClass": 0,
+    "rawTextInputNoField": 2,
+    "hardcodedTextPx": 36,
+    "literalHexColors": 0,
+    "textAuxNoFg": 77,
+    "inlineColSpanBg": 0
+  }
+}

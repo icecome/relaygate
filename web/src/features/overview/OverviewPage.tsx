@@ -447,7 +447,7 @@ export default function OverviewPage() {
                 hint="账号掉线或额度临期时会在这里出现提示。"
               />
             ) : (
-              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux fg-2">
                 「需重新登录」的账号无法自动恢复，需要重新导入凭据或重新登录；
                 冷却中的账号会在冷却结束后自动回到调度池。
               </div>
@@ -455,7 +455,7 @@ export default function OverviewPage() {
           </Panel>
         )}
 
-        <div className="flex items-center gap-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="flex items-center gap-2 text-aux fg-3">
           <button
             type="button"
             className="underline"

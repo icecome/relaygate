@@ -156,7 +156,7 @@ export function ChannelDetailDialog({
                 <Chip tone={meta.tone} title={meta.hint}>
                   {meta.label}
                 </Chip>
-                <span className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <span className="text-aux leading-relaxed fg-3">
                   {meta.hint}
                 </span>
               </div>
@@ -168,7 +168,7 @@ export function ChannelDetailDialog({
         <section>
           <div className="text-label mb-2">平台能力（{caps.length} 项）</div>
           {caps.length === 0 ? (
-            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux fg-3">
               该平台没有声明任何能力位。
             </span>
           ) : (
@@ -178,7 +178,7 @@ export function ChannelDetailDialog({
               ))}
             </div>
           )}
-          <p className="mt-2 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <p className="mt-2 text-aux leading-relaxed fg-3">
             能力位决定界面上会出现哪些按钮：例如只有声明了「每日签到」的平台，
             行内才有签到入口。这些声明来自服务端，前端不按平台名硬编码。
           </p>
@@ -213,7 +213,7 @@ export function ChannelDetailDialog({
                 </>
               )}
             </dl>
-            <p className="mt-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <p className="mt-2 text-aux fg-3">
               执行时刻可在「运维 → 定时任务」调整；这里只读。
             </p>
           </section>

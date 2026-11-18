@@ -60,7 +60,7 @@ export function ShareBar({
 }) {
   if (!parts.length) {
     return (
-      <div className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+      <div className="text-aux leading-relaxed fg-3">
         还没有查过余额。点右上角「刷新」，或到凭据池逐个「查余额」。
       </div>
     );
@@ -103,7 +103,7 @@ export function ShareBar({
         读者会开始怀疑两个数是不是不同口径。
       */}
       {(unknownPlatforms.length > 0 || showTotal) && (
-        <div className="mt-1.5 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="mt-1.5 text-aux fg-3">
           {showTotal && `合计 ${formatNumber(total)} ${unit}`}
           {showTotal && unknownPlatforms.length > 0 && ' · '}
           {unknownPlatforms.length > 0 &&

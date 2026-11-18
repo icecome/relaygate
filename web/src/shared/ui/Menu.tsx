@@ -221,7 +221,7 @@ export function MenuButton({
         {items.map((item, i) => (
           <div key={item.key}>
             {item.groupStart && (
-              <div className="my-1 h-px" style={{ background: 'var(--rg-border)' }} role="separator" />
+              <div className="rule-line my-1" role="separator" />
             )}
             <button
               type="button"

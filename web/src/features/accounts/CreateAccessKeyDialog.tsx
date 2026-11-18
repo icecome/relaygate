@@ -143,7 +143,7 @@ export function CreateAccessKeyDialog({ open, onClose, onCreated }: {
         />
 
         <div className="flex flex-col gap-2">
-          <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+          <span className="text-aux fg-2">
             平台
           </span>
           {/*
@@ -169,7 +169,7 @@ export function CreateAccessKeyDialog({ open, onClose, onCreated }: {
                 />
                 <span className="flex flex-col gap-0.5 min-w-0">
                   <span style={{ color: 'var(--rg-text-primary)' }}>{opt.label}</span>
-                  <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <span className="text-aux fg-3">
                     {opt.hint}
                   </span>
                 </span>

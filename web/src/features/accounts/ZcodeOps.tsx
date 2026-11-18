@@ -32,7 +32,7 @@ import {
   type ZcodeRunSummary,
 } from '../../shared/api/zcode';
 import { formatNumber, formatTime } from '../../shared/lib/format';
-import { Button, Chip, EmptyState, LoadingBlock, Note } from '../../shared/ui';
+import { Button, Chip, EmptyState, LoadingBlock, Note, TimeOfDay } from '../../shared/ui';
 import { useToast } from '../../shared/ui/Toast';
 
 /** 每账号最近一次操作结果（探测到的套餐 / 额度 / 文案）。 */
@@ -65,42 +65,6 @@ function formFrom(jobs: ChannelJobs | null): JobsForm {
 }
 
 /** 紧凑数字输入：Field 会强制 w-full，在工具条里会撑开，这里直接用 field 类定宽。 */
-function HourInput({ value, label, onChange }: { value: number; label: string; onChange: (n: number) => void }) {
-  return (
-    <input
-      type="number"
-      min={0}
-      max={23}
-      className="field"
-      style={{ width: 56 }}
-      value={value}
-      aria-label={label}
-      onChange={(e) => {
-        const n = Number.parseInt(e.target.value, 10);
-        onChange(Number.isFinite(n) ? n : 0);
-      }}
-    />
-  );
-}
-
-function MinuteInput({ value, label, onChange }: { value: number; label: string; onChange: (n: number) => void }) {
-  return (
-    <input
-      type="number"
-      min={0}
-      max={59}
-      className="field"
-      style={{ width: 56 }}
-      value={value}
-      aria-label={label}
-      onChange={(e) => {
-        const n = Number.parseInt(e.target.value, 10);
-        onChange(Number.isFinite(n) ? n : 0);
-      }}
-    />
-  );
-}
-
 export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChanged: () => void }) {
   const { key } = useAuth();
   const toast = useToast();
@@ -249,7 +213,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
           刷新账号
         </Button>
         {jobs && (
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             定时任务{jobs.enabled ? '已启用' : '已停用'} · 下次执行 {formatTime(jobs.nextRunAt)} · 求解器
             {jobs.solver?.available ? '可用' : '不可用'}（{jobs.accounts} 个启用账号）
           </span>
@@ -259,8 +223,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
       {/* 一轮批量结果：失败明细必须给出，只报计数等于没有反馈 */}
       {batch && (batch.failed > 0 || batch.claimed > 0 || (batch.claimedPlans?.length ?? 0) > 0) && (
         <div
-          className="rounded-lg border p-3 text-aux flex flex-col gap-1"
-          style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+          className="subcard-soft text-aux flex flex-col gap-1"
         >
           <div className="font-medium">最近一轮结果</div>
           <div>
@@ -286,8 +249,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
 
       {/* 定时任务设置 */}
       <div
-        className="rounded-lg border p-3 flex flex-col gap-2.5"
-        style={{ borderColor: 'var(--rg-border)', background: 'var(--rg-bg-secondary)' }}
+        className="subcard-soft flex flex-col gap-2.5"
       >
         <div className="text-aux font-medium">每日定时探测与领取（本地时区）</div>
         <div className="flex items-center gap-4 flex-wrap text-aux">
@@ -307,21 +269,29 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
             />
             自动领取（关闭则只探测并通知）
           </label>
-          <span className="inline-flex items-center gap-1">
+          <span className="inline-flex items-center gap-2">
             时段一
-            <HourInput label="时段一 小时" value={form.hour1} onChange={(n) => setForm((f) => ({ ...f, hour1: n }))} />：
-            <MinuteInput label="时段一 分钟" value={form.minute1} onChange={(n) => setForm((f) => ({ ...f, minute1: n }))} />
+            <TimeOfDay
+              label="时段一"
+              hour={form.hour1}
+              minute={form.minute1}
+              onChange={({ hour, minute }) => setForm((f) => ({ ...f, hour1: hour, minute1: minute }))}
+            />
           </span>
-          <span className="inline-flex items-center gap-1">
+          <span className="inline-flex items-center gap-2">
             时段二
-            <HourInput label="时段二 小时" value={form.hour2} onChange={(n) => setForm((f) => ({ ...f, hour2: n }))} />：
-            <MinuteInput label="时段二 分钟" value={form.minute2} onChange={(n) => setForm((f) => ({ ...f, minute2: n }))} />
+            <TimeOfDay
+              label="时段二"
+              hour={form.hour2}
+              minute={form.minute2}
+              onChange={({ hour, minute }) => setForm((f) => ({ ...f, hour2: hour, minute2: minute }))}
+            />
           </span>
           <Button size="sm" onClick={saveSettings} disabled={busy !== null}>
             {busy === '__settings__' ? '保存中…' : '保存设置'}
           </Button>
         </div>
-        <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux fg-3">
           默认 00:30 与 21:30：前者抓日切后新批次，后者补晚间二次投放。保存后重排定时器。
         </div>
       </div>
@@ -355,7 +325,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                       <div className="font-mono text-aux truncate" title={a.label}>
                         {a.label || a.id}
                       </div>
-                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux fg-3">
                         {a.userId || a.id}
                       </div>
                     </td>
@@ -412,7 +382,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
 
                   {r && (
                     <tr>
-                      <td className="td" colSpan={5} style={{ background: 'var(--rg-bg-secondary)' }}>
+                      <td className="td td-spanned" colSpan={5}>
                         <div className="flex flex-col gap-1.5 py-1">
                           <span
                             style={{
@@ -428,7 +398,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           </span>
 
                           {r.plans && r.plans.length > 0 && (
-                            <table className="data-table text-aux">
+                            <table className="data-table">
                               <thead>
                                 <tr>
                                   <th scope="col" className="th">套餐</th>
@@ -467,7 +437,7 @@ export function ZcodeOps({ jobs, onChanged }: { jobs: ChannelJobs | null; onChan
                           )}
 
                           {r.balance && (
-                            <table className="data-table text-aux">
+                            <table className="data-table">
                               <thead>
                                 <tr>
                                   <th scope="col" className="th">额度桶</th>

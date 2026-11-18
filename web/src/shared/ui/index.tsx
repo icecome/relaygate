@@ -69,7 +69,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
   if (!label) return input;
   return (
     <label className="flex flex-col gap-1 min-w-0" htmlFor={inputId}>
-      <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+      <span className="text-aux fg-2">
         {label}
       </span>
       {input}
@@ -84,7 +84,7 @@ export const Field = forwardRef<HTMLInputElement, FieldProps>(function Field(
 export function FieldRow({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-1 min-w-0">
-      <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+      <span className="text-aux fg-2">
         {label}
       </span>
       {children}
@@ -136,8 +136,7 @@ export function Stepper({
     >
       <button
         type="button"
-        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40"
-        style={{ color: 'var(--rg-text-secondary)' }}
+        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40 fg-2"
         disabled={disabled || value <= min}
         aria-label={`${label}：减少`}
         onClick={() => nudge(-step)}
@@ -158,13 +157,12 @@ export function Stepper({
           const next = clamp(raw);
           if (next !== value) onChange(next);
         }}
-        className="stepper-input w-[34px] border-0 text-center text-aux font-mono p-0"
-        style={{ color: 'var(--rg-text-primary)', background: 'transparent' }}
+        className="stepper-input w-[34px] border-0 text-center text-aux font-mono p-0 fg-1"
+        style={{ background: 'transparent' }}
       />
       <button
         type="button"
-        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40"
-        style={{ color: 'var(--rg-text-secondary)' }}
+        className="stepper-btn px-1.5 text-[13px] leading-none disabled:opacity-40 fg-2"
         disabled={disabled || value >= max}
         aria-label={`${label}：增加`}
         onClick={() => nudge(step)}
@@ -172,6 +170,128 @@ export function Stepper({
         +
       </button>
     </div>
+  );
+}
+
+/* NumberField */
+
+/**
+ * 定宽数字输入。
+ *
+ * ## 为什么不是 Field + props
+ *
+ * `Field` 强制 `w-full`（它的设计场景是表单主体，标签在上、输入框铺满）。
+ * 而这些场景全是「工具条里一个 56px 的格子」：定时任务的小时、分钟、
+ * 轮转池大小、探测间隔。硬套 Field 就得再写 `style={{ width: 56 }}`，
+ * 那正是此前三处独立实现各自绕开 Field 的原因 ——
+ * QoderOps.NumInput、ZcodeOps.HourInput / MinuteInput、OpsPage 的裸 input。
+ *
+ * ## 为什么 height 用 .field 而宽度内联
+ *
+ * 高度是控件基线（32px），必须与 .btn / .select / .seg-item 一致；
+ * 宽度是布局量，随场景变化（两位数是 56px，三位数是 72px）。
+ * 把高度做成类、宽度做成 props，是这两者唯一合理的分工。
+ *
+ * 宽度只能内联：取值来自 props（运行时才知道），Tailwind 无法为
+ * 动态拼出的 `w-[${width}px]` 生成类。这是 styleBlocks 规则允许的内联类型。
+ */
+export function NumberField({
+  value,
+  min = 0,
+  max = 99,
+  step = 1,
+  width = 56,
+  label,
+  disabled,
+  onChange,
+}: {
+  value: number;
+  min?: number;
+  max?: number;
+  step?: number;
+  /** 像素宽。默认 56 够放两位数字加内边距；三位数场景传 72 */
+  width?: number;
+  /** 无障碍名，必填：这些控件没有可见标签 */
+  label: string;
+  disabled?: boolean;
+  onChange: (next: number) => void;
+}) {
+  return (
+    <input
+      type="number"
+      className="field font-mono text-aux text-center"
+      style={{ width }}
+      min={min}
+      max={max}
+      step={step}
+      value={value}
+      disabled={disabled}
+      aria-label={label}
+      onChange={(e) => {
+        const raw = Number.parseInt(e.target.value, 10);
+        // 空串（用户全选删除）不当作 0：保持原值，等用户输入下一位
+        if (!Number.isFinite(raw)) return;
+        const next = Math.max(min, Math.min(max, raw));
+        if (next !== value) onChange(next);
+      }}
+    />
+  );
+}
+
+/* TimeOfDay */
+
+/**
+ * 「时:分」组合。
+ *
+ * 此前同一个语义存在三套实现：
+ *   QoderOps.NumInput                       —— 通用数字框，靠调用方传 max
+ *   ZcodeOps.HourInput + MinuteInput        —— 两个几乎相同的函数
+ *   OpsPage 的 FieldRow + 两个裸 input      —— 6 组各写一遍、各带一次内联
+ *
+ * 三者的差异只有 min/max 与 aria-label，却因此产生了三处需要同步维护的
+ * 边界处理（clamp 逻辑）与三个不同的可访问名风格（「时」「分」vs 无）。
+ *
+ * 语义在这里定死：两个输入各有独立标签，前缀是业务名
+ * （「每日签到：时」而不是「时」），读屏才知道这个格子在填什么。
+ */
+export function TimeOfDay({
+  hour,
+  minute,
+  label,
+  disabled,
+  onChange,
+}: {
+  hour: number;
+  minute: number;
+  /** 业务名，例如「每日签到」「账号轮换时刻」 */
+  label: string;
+  disabled?: boolean;
+  onChange: (next: { hour: number; minute: number }) => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-2">
+      <NumberField
+        value={hour}
+        min={0}
+        max={23}
+        width={56}
+        label={`${label}：时`}
+        disabled={disabled}
+        onChange={(h) => onChange({ hour: h, minute })}
+      />
+      <span className="font-mono text-aux fg-2" aria-hidden="true">
+        :
+      </span>
+      <NumberField
+        value={minute}
+        min={0}
+        max={59}
+        width={56}
+        label={`${label}：分`}
+        disabled={disabled}
+        onChange={(m) => onChange({ hour, minute: m })}
+      />
+    </span>
   );
 }
 
@@ -239,11 +359,22 @@ export function MetricGrid({ items }: { items: Metric[] }) {
 
 /* StateChip */
 
-export type ChipTone = 'neutral' | 'brand' | 'ok' | 'warn' | 'danger';
+/**
+ * 状态色调。五档业务状态 + 一档中性。
+ *
+ * 为什么需要 info 而不是复用 brand：brand 表达「这是品牌强调」—— 来源标记、
+ * 层级标识、当前选中项；info 表达「这件事正在发生」—— 进行中、排队中、
+ * 同步中。此前这两种语义共用 brand，于是「进行中」和「来源：手动导入」
+ * 在界面上完全同形，用户无法从颜色读出区别。
+ *
+ * 令牌 --rg-state-info 早已定义（含 12% 淡底），但零引用 —— 这一档是它的出口。
+ */
+export type ChipTone = 'neutral' | 'brand' | 'info' | 'ok' | 'warn' | 'danger';
 
 const CHIP_CLASS: Record<ChipTone, string> = {
   neutral: 'pill',
   brand: 'pill pill-brand',
+  info: 'pill pill-info',
   ok: 'pill pill-ok',
   warn: 'pill pill-warn',
   danger: 'pill pill-danger',
@@ -270,7 +401,7 @@ export function Chip({ tone = 'neutral', dot, title, children }: ChipProps) {
   );
 }
 
-/* Tabs */
+/* Segmented */
 
 export interface SegOption<T extends string> {
   value: T;
@@ -282,24 +413,59 @@ export interface SegmentedProps<T extends string> {
   value: T;
   onChange: (value: T) => void;
   ariaLabel?: string;
+  /**
+   * 语义档位。
+   *
+   *   tabs   = 切换内容面板（role=tablist / role=tab，选中项 aria-selected）
+   *   filter = 过滤当前列表（role=group，选中项 aria-pressed）
+   *
+   * 默认 filter：全库 17 处调用点里 16 处是筛选 —— 选完只是过滤当前表格，
+   * 屏幕上的内容面板没有切换。剩下 1 处是 OpsPage 的运维分区（回调里
+   * 调 navigate 跳到另一条路由），它必须显式传 tabs。
+   *
+   * 反过来设默认（tabs）会让 16 处筛选控件被读屏播报成「选项卡 2/4，
+   * 已选中」，而按 Tab 键时用户会期待焦点进入一个新面板 —— 那个面板不存在。
+   *
+   * 两档的视觉完全一致（.seg-item 同时匹配 aria-selected 与 aria-pressed），
+   * 只有无障碍语义不同。同一个控件在不同语义下不该长得不一样。
+   */
+  variant?: 'tabs' | 'filter';
 }
 
-/** 分段控件。用于筛选与页内分区，选中项用 aria-selected 标记。 */
+/** 分段控件。用于筛选与页内分区。 */
 export function Segmented<T extends string>({
   options,
   value,
   onChange,
   ariaLabel,
+  variant = 'filter',
 }: SegmentedProps<T>) {
+  if (variant === 'tabs') {
+    return (
+      <div className="seg" role="tablist" aria-label={ariaLabel}>
+        {options.map((o) => (
+          <button
+            key={o.value}
+            type="button"
+            role="tab"
+            className="seg-item"
+            aria-selected={o.value === value}
+            onClick={() => onChange(o.value)}
+          >
+            {o.label}
+          </button>
+        ))}
+      </div>
+    );
+  }
   return (
-    <div className="seg" role="tablist" aria-label={ariaLabel}>
+    <div className="seg" role="group" aria-label={ariaLabel}>
       {options.map((o) => (
         <button
           key={o.value}
           type="button"
-          role="tab"
           className="seg-item"
-          aria-selected={o.value === value}
+          aria-pressed={o.value === value}
           onClick={() => onChange(o.value)}
         >
           {o.label}
@@ -348,7 +514,7 @@ export function KeyCards({ cols = 3, rows }: { cols?: number; rows: KeyValueRow[
     >
       {rows.map((r) => (
         <div key={r.k} className="subcard-soft px-3.5 py-2.5">
-          <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <div className="text-aux fg-3">
             {r.k}
           </div>
           <div className="mt-1 text-[15px] font-medium break-words">{r.v}</div>
@@ -380,7 +546,7 @@ export function KeyCardGroups({ groups }: { groups: KeyCardGroup[] }) {
         return (
           <div key={g.title} className="subcard px-3.5">
             <div className="mb-1.5 card-head">
-              <span className="text-aux font-medium" style={{ color: 'var(--rg-text-secondary)' }}>
+              <span className="text-aux font-medium fg-2">
                 {g.title}
               </span>
               <span className="card-head-line" />
@@ -399,7 +565,7 @@ export function KeyCardGroups({ groups }: { groups: KeyCardGroup[] }) {
                   }
                   style={{ gridTemplateColumns: dense ? '88px minmax(0, 1fr)' : '132px minmax(0, 1fr)' }}
                 >
-                  <dt className="text-aux leading-[1.5]" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <dt className="text-aux leading-[1.5] fg-3">
                     {r.k}
                   </dt>
                   <dd className="m-0 text-[13px] leading-[1.5] break-words">{r.v}</dd>
@@ -459,7 +625,7 @@ export function ProgressBar({
  */
 export function LoadingBlock({ label = '加载中' }: { label?: string }) {
   return (
-    <div className="p-4 text-aux" style={{ color: 'var(--rg-text-tertiary)' }} role="status">
+    <div className="p-4 text-aux fg-3" role="status">
       {label.replace(/…+$/, '')}…
     </div>
   );
@@ -487,10 +653,10 @@ export function EmptyState({
   action?: { label: string; onClick: () => void };
 }) {
   return (
-    <div className="p-4 text-aux flex flex-col items-start gap-2" style={{ color: 'var(--rg-text-tertiary)' }}>
+    <div className="p-4 text-aux flex flex-col items-start gap-2 fg-3">
       <div>{stripTrailingPeriod(label)}</div>
       {hint && (
-        <div className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux leading-relaxed fg-3">
           {hint}
         </div>
       )}

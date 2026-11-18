@@ -268,7 +268,7 @@ export default function AccessKeysPage() {
               { value: 'revoked', label: '停用 / 吊销 / 过期' },
             ]}
           />
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             共 {rows.length} 个密钥
           </span>
         </>
@@ -287,17 +287,23 @@ export default function AccessKeysPage() {
               action={{ label: '创建第一把访问密钥', onClick: create }}
             />
           ) : (
-            <table className="data-table">
+            /*
+             * table-fixed：状态筛选「全部 / 生效中 / 停用」会改变行数与内容，
+             * auto 布局按当前内容反推列宽，切换后整表横向位移。
+             * 固定列合计 128 + 88 + 168 + 88 + 148 + 148 + 116 = 884px，
+             * 「权限与配额」吃剩余宽度（1366 窗口下约 220px，1280 下约 134px）。
+             */
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
-                  <th scope="col" className="th">备注</th>
-                  <th scope="col" className="th">平台</th>
-                  <th scope="col" className="th">密钥</th>
+                  <th scope="col" className="th col-w-num-wide">备注</th>
+                  <th scope="col" className="th w-[88px]">平台</th>
+                  <th scope="col" className="th col-w-text-wide">密钥</th>
                   <th scope="col" className="th">权限与配额</th>
-                  <th scope="col" className="th">状态</th>
-                  <th scope="col" className="th">创建时间</th>
-                  <th scope="col" className="th">最近使用</th>
-                  <th scope="col" className="th cell-act">操作</th>
+                  <th scope="col" className="th w-[88px]">状态</th>
+                  <th scope="col" className="th w-[148px]">创建时间</th>
+                  <th scope="col" className="th w-[148px]">最近使用</th>
+                  <th scope="col" className="th cell-act w-[116px]">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -456,7 +462,7 @@ export default function AccessKeysPage() {
               <Button size="sm" onClick={() => navigate('/traffic')}>
                 去验证连通性
               </Button>
-              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux fg-3">
                 在「请求日志 → 连通性测试」里发一次真实请求，确认这把密钥可用。
               </span>
             </div>

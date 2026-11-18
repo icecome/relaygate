@@ -222,7 +222,7 @@ export function CommandMenu({ open, onClose }: { open: boolean; onClose: () => v
                 onClick={() => exec(c)}
               >
                 <span className="text-[13px] truncate flex-1 min-w-0">{c.label}</span>
-                <span className="text-aux shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
+                <span className="text-aux shrink-0 fg-3">
                   {c.detail}
                 </span>
               </button>

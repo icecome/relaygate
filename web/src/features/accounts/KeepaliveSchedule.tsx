@@ -100,7 +100,7 @@ export function KeepaliveSchedule() {
         <>
           <span title={`排程时刻：${formatTime(sched.nextKeepaliveAt)}`}>
             下次保活{' '}
-            <strong className="font-mono" style={{ color: 'var(--rg-text-primary)' }}>
+            <strong className="font-mono fg-1">
               {nextKeepalive ?? '未排程'}
             </strong>
             <span style={{ color: 'var(--rg-text-tertiary)' }}>
@@ -111,7 +111,7 @@ export function KeepaliveSchedule() {
 
           <span title={sched.lastKeepaliveAt ? formatTime(sched.lastKeepaliveAt) : '本进程内尚未执行过'}>
             上轮保活{' '}
-            <strong className="font-mono" style={{ color: 'var(--rg-text-primary)' }}>
+            <strong className="font-mono fg-1">
               {lastKeepalive ?? '未执行'}
             </strong>
           </span>

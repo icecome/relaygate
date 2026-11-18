@@ -238,7 +238,7 @@ export function ProviderDialog({
 
         {!editing && (
           <div className="flex flex-col gap-1 min-w-0">
-            <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <span className="text-aux fg-2">
               类型
             </span>
             <select
@@ -250,7 +250,7 @@ export function ProviderDialog({
               <option value="openai">第三方 OpenAI 兼容端点</option>
               <option value="builtin">内置账号池（trae / workbuddy / raccoon）</option>
             </select>
-            <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux fg-3">
               内置类型只登记已有账号池的别名；日常接入外部模型 API 请选第一项。
             </span>
           </div>
@@ -280,7 +280,7 @@ export function ProviderDialog({
                 className="font-mono"
                 onChange={(e) => patch({ apiKeyEnv: e.target.value.trim() })}
               />
-              <span className="text-aux leading-[1.6]" style={{ color: 'var(--rg-state-warning)' }}>
+              <span className="text-aux leading-[1.6] fg-warn">
                 密钥值写在项目根 .env：<code className="font-mono">{draft.apiKeyEnv.trim() || 'MY_PROVIDER_API_KEY'}=sk-…</code>
                 ，保存后需重启进程。面板不存密钥：后端剥离明文，运行时按变量名取。
               </span>
@@ -305,7 +305,7 @@ export function ProviderDialog({
             </div>
 
             {modelsList.length > 0 && (
-              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+              <span className="text-aux fg-3">
                 将登记 {modelsList.length} 个模型：{modelsList.slice(0, 6).join('、')}
                 {modelsList.length > 6 ? ` 等 ${modelsList.length} 个` : ''}。新增虚拟模型时，
                 下拉里能直接选到这些名字。
@@ -321,7 +321,7 @@ export function ProviderDialog({
             onChange={(e) => patch({ enabled: e.target.checked })}
           />
           <span style={{ color: 'var(--rg-text-primary)' }}>启用这个 Provider</span>
-          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+          <span className="text-aux fg-3">
             停用后引用它的候选会被标记为不可用，但不会被删除
           </span>
         </label>

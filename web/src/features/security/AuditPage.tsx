@@ -104,7 +104,7 @@ export default function AuditPage() {
         />
       }
       toolbar={
-        <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <span className="text-aux fg-3">
           共 {rows.length} 条 · 涉及 {actions.length} 类动作
         </span>
       }
@@ -117,6 +117,12 @@ export default function AuditPage() {
           description={`最近 ${rows.length} 条`}
           flush
         >
+          {/*
+            table-fixed：分段切换「全部 / 密钥 / 凭据 / 导出」时行数变化，
+            auto 布局会按当前内容重算全部列宽，整表横向位移。
+            列宽按「时间 148 / 动作 120 / 对象吃剩余 / 结果 88 / 原因 168」分配，
+            固定合计 524px，1280 宽窗口下对象列还有约 520px，足够显示资源名。
+          */}
           {audit.loading && !audit.data ? (
             <LoadingBlock />
           ) : rows.length === 0 ? (
@@ -125,14 +131,14 @@ export default function AuditPage() {
               hint="密钥明文查看、凭据导出等敏感操作记录在此。本页只读。"
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
-                  <th scope="col" className="th">时间</th>
-                  <th scope="col" className="th">动作</th>
+                  <th scope="col" className="th w-[148px]">时间</th>
+                  <th scope="col" className="th col-w-text">动作</th>
                   <th scope="col" className="th">对象</th>
-                  <th scope="col" className="th">结果</th>
-                  <th scope="col" className="th">原因</th>
+                  <th scope="col" className="th w-[88px]">结果</th>
+                  <th scope="col" className="th col-w-text-wide">原因</th>
                 </tr>
               </thead>
               <tbody>
@@ -142,11 +148,9 @@ export default function AuditPage() {
                     <td className="td">
                       <span title={r.action ?? undefined}>{actionLabel(r.action)}</span>
                     </td>
-                    <td className="td font-mono text-aux break-all">{r.resource || '—'}</td>
+                    <td className="td td-mono break-all">{r.resource || '—'}</td>
                     <td className="td">{resultChip(r.result)}</td>
-                    <td className="td text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
-                      {r.reason || '—'}
-                    </td>
+                    <td className="td text-aux fg-2 break-words">{r.reason || '—'}</td>
                   </tr>
                 ))}
               </tbody>

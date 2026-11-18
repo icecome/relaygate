@@ -692,13 +692,13 @@ export default function CredentialsPage() {
             >
               <span title="只加 Trae + WorkBuddy 的可累积积分；Qoder / Raccoon 的积分不同值、ZCode 是 Token，均在下方单列">
                 可累积积分合计{' '}
-                <strong className="font-mono" style={{ color: 'var(--rg-text-primary)' }}>
+                <strong className="font-mono fg-1">
                   {formatNumber(rollup?.usableAmount ?? 0)}
                 </strong>
               </span>
               <span>
                 可用权益包{' '}
-                <strong className="font-mono" style={{ color: 'var(--rg-text-primary)' }}>
+                <strong className="font-mono fg-1">
                   {formatNumber(rollup?.usable ?? 0)}
                 </strong>
               </span>
@@ -731,8 +731,10 @@ export default function CredentialsPage() {
         </Panel>
 
         <Panel flush>
-          {/* 工具条：搜索 + 平台下拉（带计数）+ 状态分段 + 分组下拉 */}
-          <div className="toolbar" style={{ margin: 0, border: 0, borderRadius: 0 }}>
+          {/* 工具条：搜索 + 平台下拉（带计数）+ 状态分段 + 分组下拉。
+              嵌在面板体内，用 toolbar-flush：面板已提供外框，
+              这里只需要内部分隔，不再自己加边框与圆角。 */}
+          <div className="toolbar-flush">
             <div className="flex items-center gap-3 flex-wrap min-w-0">
               <div className="w-[200px]">
                 <Field
@@ -803,7 +805,7 @@ export default function CredentialsPage() {
                 ))}
               </select>
             </div>
-            <span className="text-aux shrink-0" style={{ color: 'var(--rg-text-tertiary)' }}>
+            <span className="text-aux shrink-0 fg-3">
               共 {rows.length} 个账号
             </span>
           </div>
@@ -919,7 +921,7 @@ export default function CredentialsPage() {
                           <div className="truncate text-[13px]" title={`${a.label || a.id}\nID: ${a.id}`}>
                             {a.label || a.id}
                           </div>
-                          <div className="truncate text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <div className="truncate text-aux fg-3">
                             {subBits.length ? subBits.join(' · ') : <span className="font-mono">{a.id}</span>}
                           </div>
                         </td>

@@ -324,17 +324,17 @@ export default function ModelRouterPage() {
               action={{ label: '新增 Provider', onClick: () => setProviderDialog({ provider: null }) }}
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">名称</th>
-                  <th scope="col" className="th">类型</th>
-                  <th scope="col" className="th">状态</th>
-                  <th scope="col" className="th">密钥</th>
-                  <th scope="col" className="th cell-num">模型数</th>
-                  <th scope="col" className="th cell-num">超时</th>
-                  <th scope="col" className="th">Base URL</th>
-                  <th scope="col" className="th cell-act">操作</th>
+                  <th scope="col" className="th w-[88px]">类型</th>
+                  <th scope="col" className="th w-[76px]">状态</th>
+                  <th scope="col" className="th col-w-text">密钥</th>
+                  <th scope="col" className="th cell-num col-w-num">模型数</th>
+                  <th scope="col" className="th cell-num col-w-num">超时</th>
+                  <th scope="col" className="th col-w-text-wide">Base URL</th>
+                  <th scope="col" className="th cell-act w-[212px]">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -342,7 +342,7 @@ export default function ModelRouterPage() {
                   <tr key={p.id} className="row-hover">
                     <td className="td">
                       <div className="text-[13px]">{p.label}</div>
-                      <div className="font-mono text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                      <div className="font-mono text-aux fg-3">
                         {p.id}
                       </div>
                     </td>
@@ -370,7 +370,7 @@ export default function ModelRouterPage() {
                          */
                         <span title="后端只校验变量名是否存在，不校验进程环境里有没有值">
                           {p.apiKeyEnv ?? '已声明'}
-                          <span className="ml-1" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <span className="ml-1 fg-3">
                             · 未验证
                           </span>
                         </span>
@@ -391,7 +391,7 @@ export default function ModelRouterPage() {
                           编辑
                         </Button>
                         {p.type === 'builtin' ? (
-                          <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                          <span className="text-aux fg-3">
                             内置，不可删除
                           </span>
                         ) : (
@@ -433,16 +433,16 @@ export default function ModelRouterPage() {
               action={{ label: '新增虚拟模型', onClick: () => setCreateOpen(true) }}
             />
           ) : (
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">虚拟模型</th>
-                  <th scope="col" className="th">策略</th>
-                  <th scope="col" className="th">生成方式</th>
-                  <th scope="col" className="th">声明上下文窗口</th>
-                  <th scope="col" className="th cell-num">候选</th>
-                  <th scope="col" className="th">健康度</th>
-                  <th scope="col" className="th cell-act">操作</th>
+                  <th scope="col" className="th col-w-text">策略</th>
+                  <th scope="col" className="th col-w-text">生成方式</th>
+                  <th scope="col" className="th col-w-text-wide">声明上下文窗口</th>
+                  <th scope="col" className="th cell-num w-[80px]">候选</th>
+                  <th scope="col" className="th col-w-text-wide">健康度</th>
+                  <th scope="col" className="th cell-act w-[212px]">操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -502,7 +502,7 @@ export default function ModelRouterPage() {
                         <td className="td">
                           <div className="font-mono text-aux font-semibold">{v.id}</div>
                           {v.description && (
-                            <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                            <div className="text-aux fg-3">
                               {v.description}
                             </div>
                           )}
@@ -514,7 +514,7 @@ export default function ModelRouterPage() {
                               className="mt-1 flex items-center gap-1"
                               title="轮转池大小：取排序前 N 个候选加权轮转（sort=rate 时按倍率升序）。0 表示关闭，固定用第一位。"
                             >
-                              <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <span className="text-aux fg-3">
                                 轮转
                               </span>
                               <Stepper
@@ -564,7 +564,7 @@ export default function ModelRouterPage() {
                           ) : (
                             <div className="min-w-[120px]">
                               <ProgressBar ratio={rate} tone={cooling ? 'warn' : 'brand'} />
-                              <div className="text-aux mt-1 font-mono" style={{ color: 'var(--rg-text-tertiary)' }}>
+                              <div className="text-aux mt-1 font-mono fg-3">
                                 {cooling
                                   ? `冷却中 · 成功 ${okCount} / ${okCount + failCount}`
                                   : `成功 ${okCount} / ${okCount + failCount}`}
@@ -598,25 +598,25 @@ export default function ModelRouterPage() {
                       </tr>
                       {open && (
                         <tr>
-                          <td className="td" colSpan={7} style={{ background: 'var(--rg-bg-secondary)' }}>
+                          <td className="td td-spanned" colSpan={7}>
                             {/*
                               嵌套候选表必须自带 table-fixed + 列宽：
                               外层表是 auto 布局（未加 .table-fixed），所以内表若
                               也不定宽，列宽会随「当前展开的候选内容」反推 ——
                               展开不同虚拟模型时整表横向位移，横向滚动条位置也随之跳。
                             */}
-                            <table className="data-table table-fixed text-aux">
+                            <table className="data-table table-fixed">
                               <thead>
                                 <tr>
                                   {/* 列宽合计 704px：候选列吃剩余宽度，其余定宽 */}
                                   <th scope="col" className="th">候选</th>
-                                  <th scope="col" className="th" style={{ width: 120 }}>上游</th>
-                                  <th scope="col" className="th cell-num" style={{ width: 56 }}>优先</th>
-                                  <th scope="col" className="th cell-num" style={{ width: 56 }}>权重</th>
-                                  <th scope="col" className="th cell-num" style={{ width: 72 }}>倍率</th>
-                                  <th scope="col" className="th cell-num" style={{ width: 92 }}>窗口</th>
-                                  <th scope="col" className="th" style={{ width: 168 }}>状态</th>
-                                  <th scope="col" className="th cell-act" style={{ width: 168 }}>操作</th>
+                                  <th scope="col" className="th w-[120px]">上游</th>
+                                  <th scope="col" className="th cell-num w-[56px]">优先</th>
+                                  <th scope="col" className="th cell-num w-[56px]">权重</th>
+                                  <th scope="col" className="th cell-num w-[72px]">倍率</th>
+                                  <th scope="col" className="th cell-num w-[92px]">窗口</th>
+                                  <th scope="col" className="th w-[168px]">状态</th>
+                                  <th scope="col" className="th cell-act w-[168px]">操作</th>
                                 </tr>
                               </thead>
                               <tbody>
@@ -635,17 +635,17 @@ export default function ModelRouterPage() {
                                       <td className="td font-mono break-all">
                                         {c.model}
                                         {c.pinned && (
-                                          <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                                          <span className="ml-1.5 fg-3">
                                             · 置顶
                                           </span>
                                         )}
                                         {inPool && !c.pinned && (
-                                          <span className="ml-1.5" style={{ color: 'var(--rg-text-tertiary)' }}>
+                                          <span className="ml-1.5 fg-3">
                                             · 轮转池
                                           </span>
                                         )}
                                       </td>
-                                      <td className="td" style={{ color: 'var(--rg-text-secondary)' }}>
+                                      <td className="td fg-2">
                                         {c.providerLabel || c.provider}
                                       </td>
                                       <td className="td cell-num font-mono">{c.priority}</td>
@@ -715,17 +715,17 @@ export default function ModelRouterPage() {
 
         {(overview.data?.health ?? []).length > 0 && (
           <Panel title="候选健康明细" description="按候选展示成功率、延迟与最近一次错误" flush>
-            <table className="data-table">
+            <table className="data-table table-fixed">
               <thead>
                 <tr>
                   <th scope="col" className="th">虚拟模型</th>
-                  <th scope="col" className="th">候选</th>
-                  <th scope="col" className="th cell-num">成功</th>
-                  <th scope="col" className="th cell-num">失败</th>
-                  <th scope="col" className="th cell-num">成功率</th>
-                  <th scope="col" className="th cell-num">平均延迟</th>
-                  <th scope="col" className="th">状态</th>
-                  <th scope="col" className="th">最近错误</th>
+                  <th scope="col" className="th col-w-text-wide">候选</th>
+                  <th scope="col" className="th cell-num col-w-num">成功</th>
+                  <th scope="col" className="th cell-num col-w-num">失败</th>
+                  <th scope="col" className="th cell-num col-w-num">成功率</th>
+                  <th scope="col" className="th cell-num col-w-num-wide">平均延迟</th>
+                  <th scope="col" className="th w-[88px]">状态</th>
+                  <th scope="col" className="th col-w-text-wide">最近错误</th>
                 </tr>
               </thead>
               <tbody>
@@ -819,7 +819,7 @@ export default function ModelRouterPage() {
                       {routeCheck.data.strategy === 'weighted' ? '加权轮转' : '优先级'}
                     </Chip>
                   </div>
-                  <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  <div className="text-aux fg-3">
                     可用候选 {routeCheck.data.usableCount} / {routeCheck.data.candidates.length}
                     {typeof routeCheck.data.wouldPick.rate === 'number'
                       ? ` · 倍率 ${formatRate(routeCheck.data.wouldPick.rate)}`
@@ -840,14 +840,14 @@ export default function ModelRouterPage() {
             <div>
               <div className="text-label mb-2">逐候选判定</div>
               <div className="table-wrap">
-                <table className="data-table">
+                <table className="data-table table-fixed">
                   <thead>
                     <tr>
                       <th scope="col" className="th">候选</th>
                       <th scope="col" className="th">上游</th>
-                      <th scope="col" className="th cell-num">优先</th>
-                      <th scope="col" className="th cell-num">倍率</th>
-                      <th scope="col" className="th">判定</th>
+                      <th scope="col" className="th cell-num w-[72px]">优先</th>
+                      <th scope="col" className="th cell-num w-[72px]">倍率</th>
+                      <th scope="col" className="th col-w-text-wide">判定</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -892,7 +892,7 @@ export default function ModelRouterPage() {
 
             <div className="subcard-soft">
               <div className="text-label mb-1.5">失败切换策略（failover）</div>
-              <div className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+              <div className="text-aux fg-2">
                 最多尝试 <strong>{routeCheck.data.failover.maxAttempts}</strong> 次 ·
                 单候选冷却 <strong>{formatDuration(routeCheck.data.failover.cooldownMs)}</strong> ·
                 触发切换的错误：{routeCheck.data.failover.switchOn.join(' / ')}

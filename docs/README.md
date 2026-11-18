@@ -62,6 +62,7 @@
 | [upgrade-plan-2026-10-04.md](03-development/upgrade-plan-2026-10-04.md) | 从 v3.0 起的升级路线与取舍 | 历史（大部分已落地） |
 | [frontend-refactor-plan.md](03-development/frontend-refactor-plan.md) | 管理端从单页迁到 Vite + React 的结构方案 | 已落地 |
 | [remediation-plan.md](03-development/remediation-plan.md) | 汇总两轮审查 87 项发现的整改总方案（4 条 P0 主线 / 7 个工作段） | 执行中 |
+| [ui-unification-plan-2026-11-18.md](03-development/ui-unification-plan-2026-11-18.md) | **管理端组件界面统一方案**：411 处内联样式、298 处「仅 color」、47 张表仅 3 张 table-fixed 等量化基线；统一规范 12 条裁决；P0/P1/P2 三级执行清单；两个零依赖守门脚本（ratchet 闸门 + 颜色 codemod） | 现行 |
 | [repo-normalization-2026-10-22.md](03-development/repo-normalization-2026-10-22.md) | 本次文档与目录规范化：完整迁移/删除清单 | 现行 |
 
 ## 5. 04-reviews — 审查与审计

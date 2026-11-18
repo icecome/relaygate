@@ -176,7 +176,7 @@ export function WbOauthDialog({ open, onClose, onDone }: {
       )}
 
       {phase === 'authorizing' && expiresIn > 0 && (
-        <div className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+        <div className="text-aux fg-3">
           授权链接 {Math.round(expiresIn / 60)} 分钟内有效；超时未完成请重新发起。
         </div>
       )}

@@ -176,7 +176,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
 
         <div className="grid gap-3 grid-cols-2">
           <div className="flex flex-col gap-1 min-w-0">
-            <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <span className="text-aux fg-2">
               候选选择策略
             </span>
             <select
@@ -200,7 +200,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
 
         <div>
           <div className="flex items-center justify-between mb-2">
-            <span className="text-aux" style={{ color: 'var(--rg-text-secondary)' }}>
+            <span className="text-aux fg-2">
               候选（按顺序尝试，失败自动切换下一个）
             </span>
             <Button size="sm" onClick={() => setDrafts((p) => [...p, { ...EMPTY_DRAFT }])}>
@@ -218,7 +218,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
                   className="grid gap-2 items-end grid-cols-2 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_88px_76px_84px_auto]"
                 >
                   <div className="flex flex-col gap-1 min-w-0">
-                    <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <span className="text-aux fg-3">
                       上游
                     </span>
                     <select
@@ -236,7 +236,7 @@ export function VirtualModelDialog({ open, onClose, onSaved }: {
                     </select>
                   </div>
                   <div className="flex flex-col gap-1 min-w-0">
-                    <span className="text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
+                    <span className="text-aux fg-3">
                       上游模型
                     </span>
                     {options.length ? (
