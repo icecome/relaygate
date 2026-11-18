@@ -253,12 +253,17 @@ export interface ChipProps {
   tone?: ChipTone;
   /** 状态方点，颜色需与 tone 语义一致 */
   dot?: string;
+  /**
+   * 悬停说明。保活这类「一个词背后有三种语义」的 chip 必须能带理由，
+   * 否则「无需保活」与「不保活」在界面上只是两个猜不出差别的短语。
+   */
+  title?: string;
   children: ReactNode;
 }
 
-export function Chip({ tone = 'neutral', dot, children }: ChipProps) {
+export function Chip({ tone = 'neutral', dot, title, children }: ChipProps) {
   return (
-    <span className={CHIP_CLASS[tone]}>
+    <span className={CHIP_CLASS[tone]} title={title}>
       {dot && <i className={`dot ${dot}`} aria-hidden="true" />}
       {children}
     </span>

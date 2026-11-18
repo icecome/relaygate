@@ -10,8 +10,13 @@
  * 每 60 秒的响应能从 121 KB 降到 ≈18 KB 的前提。
  *
  * 单位边界（整个文件最重要的约束）：
- *   积分（credit）/ Token / 配额 三者不可相加，也绝不放在同一列里比较。
- *   每个平台的表各自标注单位，没有「总计」这一行。
+ *   除 ZCode 按 Token 计量外，Trae / WorkBuddy / Qoder / Raccoon 的上游单位
+ *   **都是积分**，但各平台积分价值不同、不可换算，所以四类额度不可相加，
+ *   也绝不放在同一列里比较。每个平台的表各自标注单位与口径限定语，
+ *   没有跨平台的「总计」这一行。
+ *   （2026-11-17 订正：此处原文写「积分 / Token / 配额 三者」，把 Qoder 的
+ *   两段积分叫成「配额」，与它自己表格里的「基础额度 / 赠送额度」以及
+ *   上游 Credits 都对不上。）
  */
 import { useMemo } from 'react';
 import type { Account } from '../../shared/api/types';
@@ -32,6 +37,7 @@ import {
 import {
   amountUnitOf,
   entitlementOf,
+  unitCaliberOf,
   toneOfDays,
 } from '../../shared/lib/entitlement';
 import { packsOf, toMs, type PackView } from './accountPacks';
@@ -112,9 +118,9 @@ export function EntitlementDialog({
       {detail.error && <ErrorState message={detail.error} onRetry={detail.reload} />}
       {detail.loading && !detail.data && <LoadingBlock label="读取权益明细" />}
 
-      {/* 摘要条：所有平台统一的一行读数 */}
+      {/* 摘要条：所有平台统一的一行读数（单位后带口径限定语，说明这一种积分差在哪） */}
       <div className="stat-strip mb-3">
-        <span>
+        <span title={unitCaliberOf(e.unit)}>
           剩余 <strong>{e.amountText}</strong> {amountUnitOf(e) !== '积分' ? amountUnitOf(e) : ''}
         </span>
         <span>{e.detailText}</span>
@@ -293,15 +299,15 @@ function TokenBucketTable({ account }: { account: Account }) {
   );
 }
 
-/* ---------- 配额口径：两段额度 ---------- */
+/* ---------- Qoder：基础 / 赠送两段积分 ---------- */
 
 function QuotaTable({ account }: { account: Account }) {
   const q = account.quota;
   if (!q) {
     return (
       <EmptyState
-        label="还没有查到配额"
-        hint="分「基础」与「赠送」两段，点行内「查额度」向上游查询。"
+        label="还没有查到额度"
+        hint="分「基础」与「赠送」两段积分，点行内「查额度」向上游查询。"
       />
     );
   }
@@ -313,10 +319,11 @@ function QuotaTable({ account }: { account: Account }) {
   return (
     <>
       <Note>
-        Qoder 的额度分两段：<strong>基础额度</strong>属套餐内在额度，
+        Qoder 的积分分两段：<strong>基础额度</strong>属套餐内在额度，
         <strong>赠送额度</strong>由签到与活动发放，两段独立、不互相包含。
+        单位与 Trae / WorkBuddy 同为积分，但<strong>换算比不同</strong>，不可相加。
         {q.userType ? `当前账号类型：${q.userType}。` : ''}
-        {q.isQuotaExceeded ? ' 上游标记该账号配额已用尽。' : ''}
+        {q.isQuotaExceeded ? ' 上游标记该账号额度已用尽。' : ''}
       </Note>
       <table className="data-table mt-3">
         <thead>
@@ -333,7 +340,7 @@ function QuotaTable({ account }: { account: Account }) {
             <tr key={r.key}>
               <td className="td">{r.label}</td>
               <td className="td cell-num">
-                {formatNumber(r.seg!.remaining)} <span className="text-unit">配额</span>
+                {formatNumber(r.seg!.remaining)} <span className="text-unit">积分</span>
               </td>
               <td className="td cell-num">{formatNumber(r.seg!.total)}</td>
               <td className="td cell-num">{formatNumber(r.seg!.used)}</td>
@@ -347,9 +354,9 @@ function QuotaTable({ account }: { account: Account }) {
               两段合计（仅供参考）
             </td>
             <td className="td cell-num" colSpan={4}>
-              {formatNumber(q.totalRemaining)} <span className="text-unit">配额</span>
+              {formatNumber(q.totalRemaining)} <span className="text-unit">积分</span>
               <span className="ml-2 text-aux" style={{ color: 'var(--rg-text-tertiary)' }}>
-                不并入其他平台的额度汇总
+                不并入其他平台的积分汇总
               </span>
             </td>
           </tr>

@@ -129,17 +129,50 @@ function main() {
   check('Trae 额度 780 积分', byPlatform.trae.amount === 780 && byPlatform.trae.unit === '积分', JSON.stringify(byPlatform.trae));
   check('WorkBuddy 额度 200 积分', byPlatform.workbuddy.amount === 200 && byPlatform.workbuddy.unit === '积分', JSON.stringify(byPlatform.workbuddy));
   check('ZCode 单列 Token 单位', byPlatform.zcode.unit === 'Token' && byPlatform.zcode.amount === 15000000, JSON.stringify(byPlatform.zcode));
-  check('Qoder 单列配额单位', byPlatform.qoder.unit === '配额' && byPlatform.qoder.amount === 1926, JSON.stringify(byPlatform.qoder));
-  check('Raccoon 单列（分池日清，不与可累积积分合并）', byPlatform.raccoon.amount === 2124, JSON.stringify(byPlatform.raccoon));
+  /*
+   * Qoder / Raccoon 的展示名（2026-11-17 订正）：
+   * 上游单位确实都是积分（Qoder /api/v2/quota/usage 的 userQuota/addOnQuota
+   * 与每日活动都是 Credits；Raccoon points/v1/balance 是 credit），
+   * 所以计量列就写「积分」——此前标「配额」/「points」，与同一行的
+   * 「赠送 1,926」「奖励积分 / 每日积分」自相矛盾。
+   * 区分它们靠 caliber 内部键 + caliberNote 限定语，不靠发明第二个名字。
+   */
+  check(
+    'Qoder 展示为积分（口径键仍是 quota，并带两段积分的限定语）',
+    byPlatform.qoder.unit === '积分'
+      && byPlatform.qoder.caliber === 'quota'
+      && byPlatform.qoder.amount === 1926
+      && /两段/.test(byPlatform.qoder.caliberNote),
+    JSON.stringify(byPlatform.qoder),
+  );
+  check(
+    'Raccoon 展示为积分（口径键仍是 points，限定语说明日清）',
+    byPlatform.raccoon.unit === '积分'
+      && byPlatform.raccoon.caliber === 'points'
+      && byPlatform.raccoon.amount === 2124
+      && /日清|清零/.test(byPlatform.raccoon.caliberNote),
+    JSON.stringify(byPlatform.raccoon),
+  );
 
-  // 界面上的合计算法：只累加「积分」且排除 Raccoon
+  /*
+   * 界面上的合计算法：**按 caliber 筛，绝不按展示名筛**。
+   * 这是本次订正真正的守门断言 —— 展示名统一成「积分」之后，
+   * 任何 `unit === '积分'` 的过滤都会把 Qoder 与 Raccoon 误并进合计
+   * （旧写法靠 `platform !== 'raccoon'` 兜住 Raccoon，却兜不住 Qoder：
+   * 2906 = 780 + 200 + 1926，正是这个漏口的实测值）。
+   */
   const creditSum = amountRows
-    .filter((r) => r.unit === '积分' && r.platform !== 'raccoon')
+    .filter((r) => r.caliber === 'credit')
     .reduce((s, r) => s + (r.amount ?? 0), 0);
   check(
-    '积分口径合计 = 780 + 200 = 980（不含 Token / 配额 / Raccoon）',
+    '可累积积分合计 = 780 + 200 = 980（不含 Token / Qoder 两段积分 / Raccoon 日清积分）',
     creditSum === 980,
     `合计=${creditSum}`,
+  );
+  check(
+    '按展示名筛会得到 5030（980 + Qoder 1926 + Raccoon 2124）—— 断言这个错误算法确实会出错',
+    amountRows.filter((r) => r.unit === '积分').reduce((s, r) => s + (r.amount ?? 0), 0) === 5030,
+    `错误算法值=${amountRows.filter((r) => r.unit === '积分').reduce((s, r) => s + (r.amount ?? 0), 0)}`,
   );
   check(
     '积分合计不含 ZCode 的 1500 万 Token',

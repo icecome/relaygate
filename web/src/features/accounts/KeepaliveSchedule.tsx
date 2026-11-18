@@ -92,7 +92,8 @@ export function KeepaliveSchedule() {
           <Chip tone="neutral">定时调度已停用</Chip>
           <span style={{ color: 'var(--rg-text-tertiary)' }}>
             当前进程没有运行定时链（SCHEDULER_ENABLED=false 或调度未启动）。
-            下方账号的保活记录来自手动触发与转发时的按需续期。
+            下方账号的保活记录来自手动触发，或转发与签到前的按需续期 ——
+            按需续期只覆盖「参与定时保活」的那几个平台，其余平台各池的说明见下方卡片。
           </span>
         </>
       ) : (

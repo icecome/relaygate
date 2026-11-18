@@ -14,11 +14,21 @@
  *   - 今日消耗**不得**给 ZCode / Qoder / Raccoon 编数字。后端从 2026-10 起刻意
  *     不写它们的 credit_history（token 混进积分曾把今日消耗抬高 4 个数量级）。
  *     这三类平台如实标「未纳入统计」，而不是显示 0。
- *   - 跨平台额度不可相加：积分 / Token / 配额 / 分池积分是四种计量。
+*   - 跨平台额度不可相加：除 ZCode 是 Token 外四个平台都按积分计量，
+*     但 credit / quota / points 三类积分价值不同、不可换算。分组与合计走
+*     `caliber` 内部键，不走展示名（三个「积分」按名字筛会被误并成一个数）。
  */
 import type { Account } from '../api/types';
 import type { CreditHistoryRow } from '../api/stats';
-import { entitlementOf, rollupByPlatform, type PlatformRollup } from './entitlement';
+import {
+  entitlementOf,
+  rollupByPlatform,
+  isCumulativeCredit,
+  unitCaliberOf,
+  unitLabelOf,
+  type EntitlementUnit,
+  type PlatformRollup,
+} from './entitlement';
 import { platformIdLabel, formatNumber, type Platform } from './format';
 
 /* ---------- ① 可用额度：按平台 ---------- */
@@ -26,8 +36,19 @@ import { platformIdLabel, formatNumber, type Platform } from './format';
 export interface PlatformAmountRow {
   platform: Platform;
   label: string;
+  /**
+   * 计量列的展示名。除 ZCode 是 Token 外，四个平台都叫「积分」
+   * （上游单位确实都是积分，只是各平台积分价值不同）。
+   */
   unit: string;
-  /** 该平台额度合计（同 unit 内累加） */
+  /**
+   * 内部口径键。**任何过滤 / 分组 / 合计都必须用它，不能用 `unit`**：
+   * quota 与 points 的展示名与 credit 相同，按字符串筛会把不可相加的三类并成一个数。
+   */
+  caliber: EntitlementUnit;
+  /** 口径限定语（tooltip / 说明位用）：这一种积分差在哪、能不能相加 */
+  caliberNote: string;
+  /** 该平台额度合计（同 caliber 内累加） */
   amount: number | null;
   accounts: number;
   known: number;
@@ -37,19 +58,14 @@ export interface PlatformAmountRow {
   stale: boolean;
 }
 
-const UNIT_LABEL: Record<string, string> = {
-  credit: '积分',
-  token: 'Token',
-  quota: '配额',
-  points: '积分',
-};
-
 /** 可用额度的按平台拆分。直接复用权益总览的汇总口径，不另算一套。 */
 export function amountByPlatform(accounts: Account[]): PlatformAmountRow[] {
   return rollupByPlatform(accounts).map((r: PlatformRollup) => ({
     platform: r.platform,
     label: platformIdLabel(r.platform),
-    unit: UNIT_LABEL[r.unit] ?? r.unit,
+    unit: unitLabelOf(r.unit),
+    caliber: r.unit,
+    caliberNote: unitCaliberOf(r.unit),
     amount: r.known > 0 ? r.amount : null,
     accounts: r.accounts,
     known: r.known,
@@ -61,9 +77,9 @@ export function amountByPlatform(accounts: Account[]): PlatformAmountRow[] {
 /**
  * 积分口径的「按平台占比」序列，供卡面混合条使用。
  *
- * 只统计 `unit === 'credit'` 且平台不是 raccoon 的行——那是唯一可相加的口径
- * （Trae + WorkBuddy）。Token / 配额 / 分池积分不进来：它们的量级差 4～5 个
- * 数量级，混进同一条百分比条会变成「WorkBuddy 占 99.9%」这种没有信息的图。
+ * 只统计 `caliber === 'credit'` 的行——那是唯一可相加的口径（Trae + WorkBuddy）。
+ * Token / Qoder 两段积分 / Raccoon 日清积分不进来：它们的量级差 4～5 个数量级，
+ * 且单位价值不同，混进同一条百分比条会变成「WorkBuddy 占 99.9%」这种没有信息的图。
  *
  * `unknown` 是「有账号但一次都没查过余额」的平台数。它必须能被单独说出来：
  * 把这些平台当作 0 参与分母，会让已有数据的平台占比虚高。
@@ -81,7 +97,7 @@ export function creditShare(rows: PlatformAmountRow[]): {
   parts: CreditShareRow[];
   unknownPlatforms: string[];
 } {
-  const credit = rows.filter((r) => r.unit === '积分' && r.platform !== 'raccoon');
+  const credit = rows.filter((r) => isCumulativeCredit(r.caliber));
   const total = credit.reduce((s, r) => s + (r.amount ?? 0), 0);
   const parts = credit
     .filter((r) => (r.amount ?? 0) > 0)
@@ -108,8 +124,12 @@ export interface UsageByPlatformRow {
   accounts: number;
   /** 有可差分快照的账号数（< accounts 说明部分账号本轮没刷新过） */
   covered: number;
-  /** 该平台是否根本不写 credit_history（token / 配额 / 分池口径） */
+  /** 该平台是否根本不写 credit_history（token / 两段积分 / 日清积分口径） */
   notTracked: boolean;
+  /** 计量列的展示名（不写消耗表的平台也如实标自己的单位，不统一标「积分」） */
+  unit: string;
+  /** 口径限定语 */
+  caliberNote: string;
   /** 按账号明细，金额降序 */
   members: { accountId: string; label: string; amount: number; covered: boolean }[];
 }
@@ -120,7 +140,7 @@ export interface UsageByPlatformRow {
  * `accounts` 是当前账号清单（用来给 credit_history 的行补平台归属——
  * 后端的 summary() 只回 accountId，不重复存 edition）。
  *
- * `notTracked` 的判定：该平台既没有任何已被统计的账号，又不是积分口径。
+ * `notTracked` 的判定：该平台既没有任何已被统计的账号，又不是可累积积分口径。
  * 这样 ZCode / Qoder / Raccoon 会明确显示「未纳入统计」，而不是 0。
  */
 export function usageByPlatform(
@@ -143,6 +163,8 @@ export function usageByPlatform(
         accounts: 0,
         covered: 0,
         notTracked: false,
+        unit: unitLabelOf(e.unit),
+        caliberNote: unitCaliberOf(e.unit),
         members: [],
       });
     }
@@ -170,8 +192,8 @@ export function usageByPlatform(
   for (const [platform, bucket] of byPlatform) {
     const first = accounts.find((a) => entitlementOf(a).platform === platform);
     const unit = first ? entitlementOf(first).unit : 'credit';
-    // 非积分口径（token / quota / points）不写 credit_history —— 如实标注
-    bucket.notTracked = unit !== 'credit';
+    // 非可累积积分口径（token / 两段积分 / 日清积分）不写 credit_history —— 如实标注
+    bucket.notTracked = !isCumulativeCredit(unit);
     bucket.amount = Math.round(bucket.amount * 100) / 100;
     bucket.members.sort((x, y) => y.amount - x.amount);
     void seenPlatforms;
@@ -188,8 +210,16 @@ export interface ExpiringAccountRow {
   label: string;
   platform: Platform;
   platformLabel: string;
+  /** 计量列展示名（积分 / Token） */
   unit: string;
-  /** 该账号在窗口内到期的积分总额 */
+  /**
+   * 口径内部键。**合计按它分组，不按 `unit`**：credit / quota / points 三者
+   * 展示名都是「积分」，按展示名分组会把不可相加的三类加成一个数。
+   */
+  caliber: EntitlementUnit;
+  /** 口径限定语（tooltip 用） */
+  caliberNote: string;
+  /** 该账号在窗口内到期的额度总额 */
   amount: number;
   /** 最近一项的剩余自然日（0 = 今天到期） */
   days: number;
@@ -284,7 +314,9 @@ export function expiringAccounts(
       label: a.label || a.id,
       platform: e.platform,
       platformLabel: platformIdLabel(e.platform),
-      unit: UNIT_LABEL[e.unit] ?? e.unit,
+      unit: unitLabelOf(e.unit),
+      caliber: e.unit,
+      caliberNote: unitCaliberOf(e.unit),
       amount: Math.round(items.reduce((s, x) => s + x.amount, 0) * 100) / 100,
       days: items[0].days,
       items: items.length,
@@ -307,14 +339,31 @@ function naturalDays(expireMs: number, nowMs: number): number | null {
   return Math.round((startOfDay(expireMs) - startOfDay(nowMs)) / 86_400_000);
 }
 
-/** 到期行的合计文案（按单位分组，绝不跨单位相加）。 */
-export function expiringTotals(rows: ExpiringAccountRow[]): { unit: string; amount: number }[] {
-  const map = new Map<string, number>();
+/**
+ * 到期行的合计（按**口径内部键**分组，绝不跨口径相加）。
+ *
+ * 分组键刻意不是 `unit`：credit / quota / points 的展示名都是「积分」，
+ * 按展示名分组会把 Trae 的可累积积分、Qoder 的两段积分、Raccoon 的日清积分
+ * 加成一个没有意义的数（2026-11-17 修正：此前正是这么算的，卡面读数因此
+ * 与「积分口径合计」两个数互相不一致）。
+ */
+export function expiringTotals(rows: ExpiringAccountRow[]): {
+  caliber: EntitlementUnit;
+  unit: string;
+  caliberNote: string;
+  amount: number;
+}[] {
+  const map = new Map<EntitlementUnit, number>();
   for (const r of rows) {
-    map.set(r.unit, (map.get(r.unit) ?? 0) + r.amount);
+    map.set(r.caliber, (map.get(r.caliber) ?? 0) + r.amount);
   }
   return [...map.entries()]
-    .map(([unit, amount]) => ({ unit, amount: Math.round(amount * 100) / 100 }))
+    .map(([caliber, amount]) => ({
+      caliber,
+      unit: unitLabelOf(caliber),
+      caliberNote: unitCaliberOf(caliber),
+      amount: Math.round(amount * 100) / 100,
+    }))
     .sort((x, y) => y.amount - x.amount);
 }
 

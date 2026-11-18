@@ -12,8 +12,8 @@
  * Account.tokenBuckets（非 packs），故本模块不会读到它。若将来要展示 ZCode 额度，
  * 必须走独立通道，绝不能并入 packs 或 creditTotals。
  *
- * 跨平台的权益视图（Token / 配额 / Raccoon 分池）在 shared/lib/entitlement.ts，
- * 本模块只负责积分口径与保活判定这两件事。
+ * 跨平台的权益视图（Token / Qoder 两段积分 / Raccoon 分池积分）在 shared/lib/entitlement.ts，
+ * 本模块只负责可累积积分口径与保活判定这两件事。
  */
 import type { Account } from '../../shared/api/types';
 import { platformOf, type Platform } from '../../shared/lib/format';
@@ -174,15 +174,22 @@ export function creditTotals(accounts: Account[], now = Date.now()): CreditTotal
 
 /**
  * 账号凭据保活状态（登录 token 的有效期与刷新流程）。
+ *
  * 口径说明（避免与「到期」列混淆——那是权益包积分的到期）：
  *   - expiredAt 是登录 token（JWT）的过期时间，由上游 ExchangeToken / WorkBuddy refresh
  *     写回；保活定时任务（scheduler 的 keepalive）在到期前用 refreshToken 换新。
- *     ZCode 账号的 JWT 无 exp，恒为 null —— 属「长期有效」，不是异常；
  *   - refreshExpiredAt 是 refreshToken 本身的有效期，一旦过期就无法再换新，
  *     账号只能重新导入或 OAuth 登录，是保活流程的最终期限。
+ *
+ * ⚠️ 「长期有效」这一态只对**上游确实不发到期时间**的平台成立（ZCode：
+ * JWT 无 exp 字段，恒为 null）。Qoder 的 `dt-` token 上游确实给约 30 天有效期，
+ * 手动粘贴导入时若没带 `expiresAt`，库里同样是 null —— 那是**未知**，
+ * 不是长期有效。此前这里一律报「长期有效」，与同一池卡片上的
+ * 「不保活 · 到期需手动更新」直接打脸（2026-11-17 用户指出这类
+ * 「这里写保活、那里写不保活」的自相矛盾）。未知就如实说未知。
  */
 export interface KeepaliveView {
-  /** 登录 token 到期毫秒；null 表示无记录或长期有效（ZCode） */
+  /** 登录 token 到期毫秒；null 表示无记录或该平台无到期概念（ZCode） */
   expiresMs: number | null;
   /** refreshToken 到期毫秒；null 表示无记录 */
   refreshExpiresMs: number | null;
@@ -214,8 +221,17 @@ export function keepaliveOf(account: Account, now = Date.now()): KeepaliveView {
     return { expiresMs, refreshExpiresMs, days: null, label: '已过期 · 待刷新', tone: 'warn' };
   }
   if (expiresMs == null) {
-    // ZCode 的 JWT 无 exp 字段，属长期有效而非数据缺失
-    return { expiresMs, refreshExpiresMs, days: null, label: '长期有效', tone: 'neutral' };
+    /*
+     * 两个来源都让 expiredAt 为空，语义完全不同，必须分开说：
+     *   - ZCode：客户端 JWT 没有 exp 字段，上游确实不给到期时间 → 长期有效；
+     *   - 其余平台（典型是手动导入的 Qoder，没带 expiresAt）：到期时间存在
+     *     只是本地没记录 → 未知。报「长期有效」等于替一个 30 天必死的凭据
+     *     担保，且与同池卡片的「到期需手动更新」互相打脸。
+     */
+    if (platformOf(account) === 'zcode') {
+      return { expiresMs, refreshExpiresMs, days: null, label: '长期有效', tone: 'neutral' };
+    }
+    return { expiresMs, refreshExpiresMs, days: null, label: '到期未知', tone: 'neutral' };
   }
   const days = Math.ceil((expiresMs - now) / 86_400_000);
   if (days <= KEEPALIVE_NOTICE_DAYS) {
@@ -248,6 +264,22 @@ export interface KeepalivePoolStat {
   failing: number;
   /** 登录 token 7 日内到期（含已过期）的账号数 */
   expiringSoon: number;
+  /**
+   * 到期时间未知的账号数（`expiredAt` 为空，且该平台**有**到期概念）。
+   *
+   * 必须与 expiringSoon 分开计：ZCode 的 null 是「上游不发到期字段」（长期有效），
+   * 而手动导入的 Qoder 的 null 是「本地没记录」。把后者并进「Token 均 7 日以上」
+   * 等于替一个 30 天必死、且网关不会自动续期的凭据担保它还早 ——
+   * 这正是 2026-11-17 那处「这里写保活、那里写不保活」矛盾的同一形状。
+   */
+  expiryUnknown: number;
+  /**
+   * 上游**没有到期概念**的账号数（目前只有 ZCode：客户端 JWT 无 exp 字段）。
+   * 与 expiryUnknown 是两件事：一个是「确实没有这回事」，一个是「有但我们没记录」。
+   * 混在一起会让 ZCode 池显示「到期时间未知」（夸大不确定性），
+   * 或让缺记录的 Qoder 池显示「Token 均 7 日以上」（做出无依据的担保）。
+   */
+  noExpiryConcept: number;
   /**
    * 保活记录超过一个执行周期（26 小时）的账号数。
    * 定时保活每天一次（默认 22:00），超期意味着服务停机或调度未启动，
@@ -292,6 +324,8 @@ export function keepalivePools(accounts: Account[], now = Date.now()): Keepalive
         lastAtMs: null,
         failing: 0,
         expiringSoon: 0,
+        expiryUnknown: 0,
+        noExpiryConcept: 0,
         stale: 0,
       };
       byPlatform.set(p, s);
@@ -305,6 +339,11 @@ export function keepalivePools(accounts: Account[], now = Date.now()): Keepalive
       if (now - kaMs > KEEPALIVE_RECORD_FRESH_MS) s.stale += 1;
     }
     const k = keepaliveOf(a, now);
+    // 到期时间缺失分两种：上游没有到期概念（ZCode）/ 有概念但本地缺记录
+    if (k.expiresMs == null) {
+      if (p === 'zcode') s.noExpiryConcept += 1;
+      else s.expiryUnknown += 1;
+    }
     // 已过期与临期都计入 expiringSoon；「长期有效」（token 无到期）不计
     if (k.expiresMs != null && k.expiresMs - now <= KEEPALIVE_NOTICE_DAYS * 86_400_000) {
       s.expiringSoon += 1;

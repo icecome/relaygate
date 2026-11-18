@@ -70,6 +70,12 @@ const VARIANTS = {
       // 此前该扫描复用 oauthLogin，对 Trae 恰好成立；引入 Raccoon（非 OAuth
       // 但必须续期）后两者不能再混为一谈。
       tokenRefresh: true,
+      // 保活模式：面板「参与/不参与定时保活」这句结论的唯一判据。
+      // 此前前端只能从 tokenRefresh||oauthLogin 反推语义，而这两个位说的是
+      // 「有没有静默续期能力」，不等于「凭据会不会过期」「网关有没有实现续期」
+      // 「有没有被定时轮覆盖」——三件事混在一起，才出现尾注说「都会按需续期」、
+      // 卡片说「不参与保活」这种自相矛盾。三态取值见 Qoder / ZCode 的注释。
+      keepaliveMode: 'scheduled',
     },
     hosts: {
       // agent 面（chat / 模型详情）：按 edition 或 userRegion 选
@@ -158,6 +164,7 @@ const VARIANTS = {
       // 全系统没有任何机制会发现或修复——面板只看到「签到部分失败」。
       // 端点与响应结构在 workbuddy/auth.js#refresh 里，四账号 401 后实测 8/8 刷新成功。
       tokenRefresh: true,
+      keepaliveMode: 'scheduled',
     },
     hosts: {
       chat: { cn: 'https://copilot.tencent.com', global: 'https://www.workbuddy.ai' },
@@ -260,6 +267,12 @@ const VARIANTS = {
       rewardClaim: true,
       // 本机客户端凭据导入（~/.zcode/v2/credentials.json）
       localImport: true,
+      // **无需保活**：ZCode 的客户端 JWT 没有 exp 字段、也不发放 refresh_token
+      // （tokenRefresh/oauthLogin 两位皆 false 的原因，见 scheduler.js
+      // keepaliveCandidates 的注释）。它不是「该保活而没保活」，是**没有可续期的东西**，
+      // 上游作废凭据时只能重新导入。前端必须把这一态与 Qoder 的「未实现续期」分开写，
+      // 否则同一句「不参与定时保活」会把两种完全不同的处置方式混成一个结论。
+      keepaliveMode: 'not-needed',
     },
     hosts: {
       zcode: 'https://zcode.z.ai',
@@ -376,6 +389,22 @@ const VARIANTS = {
       rewardClaim: true,
       // 本机客户端凭据导入（auth.v1.dat，双区域）
       localImport: true,
+      // **不保活（网关未实现续期）**：与 ZCode 的「无需保活」是两件事。
+      // Qoder 的 dt- token **会过期**（实测 accounts.expired_at = 导入时刻 +30 天），
+      // 上游也确实有续期端点（paths.jobRefresh = /api/v1/jobToken/refresh，
+      // drt- refreshToken 轮换制），但本网关**没有实现它**：
+      //   - auth.ensureAuth 没有 qoder 分支，落到通用 Trae 换票链路会打到 api.trae.cn；
+      //   - capability.tokenRefresh / oauthLogin 皆 false ⇒ keepaliveCandidates() 不含它，
+      //     定时保活轮与 15 分钟临期扫描都覆盖不到；
+      //   - 转发面（qoder/chat.js）直接读 acct.token，不做任何刷新。
+      // 所以到期前必须重新导出 token（scripts/ops/export-qoder-token.js）再走
+      // POST /v1/qoder/manual/import —— 这是**手动**动作，不是自动保活。
+      // 面板据此写「不保活 · 凭据到期需手动更新」，不再用一句「按需续期」掩盖。
+      // 补齐自动续期的前提：轮换制 refresh_token 必须带正确的 machine_id
+      // （md5('machine:'+uid) 前 36 位，见 docs/02-technical/channels/
+      // qoder-integration-analysis-v2.md 双区域附录），打错即作废既有凭据，
+      // 因此未做多账号验证前不启用。
+      keepaliveMode: 'not-implemented',
     },
     // 默认（未知 realm 时按国际版）：运营面端点双区域同构，域名是唯一差异
     hosts: {
@@ -484,6 +513,10 @@ const VARIANTS = {
       // 与 checkin 的区别：checkin=false 是「没有领取端点」（事实），
       // dailyKeepalive=true 是「有等价动作可代做」（能力）。两者并存不矛盾。
       dailyKeepalive: true,
+      // 定时保活：tokenRefresh=true，runKeepalive 每轮逐个账号写
+      // lastKeepaliveAt / lastKeepaliveResult。面板该池若「从无记录」，
+      // 是**执行中断或调度未跑**，不是设计使然——必须报红而不是报灰。
+      keepaliveMode: 'scheduled',
     },
     hosts: {
       openapi: 'https://xiaohuanxiong.com',
@@ -724,6 +757,28 @@ function qoderChatOk(acct) {
 }
 
 /**
+ * 平台的保活模式（'scheduled' | 'not-needed' | 'not-implemented'）。
+ *
+ * 单一判据：`scheduler.keepaliveCandidates()` 与前端渠道面板都读它。
+ * 此前前端只能从 `tokenRefresh || oauthLogin` 反推，一个布尔压住了
+ * 「凭据会不会过期」「网关有没有实现续期」「定时轮覆不覆盖」三件事，
+ * 于是同一屏出现「卡片说不参与保活、尾注说会按需续期」的自相矛盾。
+ *
+ * 未声明 keepaliveMode 的历史 edition（如 Trae 的 cn/sg/us 折叠形态）
+ * 回落到 `tokenRefresh || oauthLogin`，与旧判据等价，不改变覆盖范围。
+ */
+function keepaliveModeOf(edition) {
+  const cap = variantOf(edition).capability || {};
+  if (cap.keepaliveMode) return cap.keepaliveMode;
+  return cap.tokenRefresh === true || cap.oauthLogin === true ? 'scheduled' : 'not-implemented';
+}
+
+/** 该平台是否参与定时保活（keepaliveModeOf 的便捷谓词）。 */
+function isKeepaliveScheduled(edition) {
+  return keepaliveModeOf(edition) === 'scheduled';
+}
+
+/**
  * 全部渠道变体，按展示顺序返回。
  *
  * 顺序即 VARIANTS 的定义顺序（JS 对象字符串键保序）：Trae / WorkBuddy / ZCode / Qoder。
@@ -751,6 +806,8 @@ module.exports = {
   editionOf,
   can,
   canChat,
+  keepaliveModeOf,
+  isKeepaliveScheduled,
   isTrae,
   isEdition,
   hostFor,

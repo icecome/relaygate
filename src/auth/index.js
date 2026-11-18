@@ -146,12 +146,28 @@ async function ensureAuth(accountId) {
           refreshExpiredAt: refreshed.refreshExpiredAt || acct.refreshExpiredAt,
           tokenReleaseAt: refreshed.tokenReleaseAt || acct.tokenReleaseAt,
         };
+        /*
+         * 展示位与 WorkBuddy 分支同一处理（2026-11-17 补）：
+         * 此前这里成功续期后**不写** lastKeepaliveAt，只有每日保活轮写。
+         * 表现是「凭据明明被按需续期成功了，面板的『最近保活』却还是空 /
+         * 停在昨天」，而尾注写着「会在转发前按需续期」——两处对不上，
+         * 用户只能得出「到底保没保活？」。展示位的语义是
+         * 「最近一次保活尝试（任何链路）」，本分支正是一次尝试。
+         * 判据位 lastRefreshAt 仍只由 WB 分支按周期续期语义写，不在此处动。
+         */
+        patch.lastKeepaliveAt = new Date().toISOString();
+        patch.lastKeepaliveResult = 'ok（按需续期）';
         credStore.update(acct.id, patch);
         acct = { ...acct, ...patch };
       }
     } catch (e) {
       console.error(`[auth] refresh failed for ${acct.id}: ${e.message}`);
-      acct = { ...acct, _refreshError: e.message };
+      const failAt = new Date().toISOString();
+      const failResult = `fail: ${e.message}`.slice(0, 120);
+      try {
+        credStore.update(acct.id, { lastKeepaliveAt: failAt, lastKeepaliveResult: failResult });
+      } catch { /* 落库失败不影响本次返回 */ }
+      acct = { ...acct, _refreshError: e.message, lastKeepaliveAt: failAt, lastKeepaliveResult: failResult };
     }
   } else if (isExpiring(acct) && !acct.refreshToken) {
     acct = { ...acct, _refreshError: '临期但缺少 refreshToken，无法自动续期' };

@@ -177,7 +177,8 @@
   账户跑 `node scripts/ops/export-qoder-token.js`（单文件、只读、不发网络请求），
   详见 `docs/02-technical/channels/qoder-integration-guide.md`「怎么从客户端机器上取出 token」。
   注意这条路**没有自动续期**（`drt-` refreshToken 不随 token 发放），
-  `dt-` 约 30 天到期后需重新导出。
+  `dt-` 约 30 天到期后需重新导出；平台级结论见 F15 与
+  `docs/01-architecture/entitlement-units.md` §2。
 - **重新评估的条件**：无需评估——本机扫描的定位就是「同机 Windows 的便捷路径」，
   跨机场景已有手动导入承接。
 
@@ -266,6 +267,28 @@
   `.env` 的 `API_KEY` 在 bootstrap 时是 `platform=trae` 的专用密钥，
   **不能**用来调它们。这是与 Qoder 一致的既有边界（防止平台密钥越界消耗别家积分），
   不是缺陷，但第一次用会撞上，故记在这里。
+
+### F15. Qoder 不参与定时保活（凭据会过期，需手动重新导出）
+
+- **现状**：`capability.keepaliveMode = 'not-implemented'`。`dt-` access token
+  约 30 天到期（实测 `accounts.expired_at` = 导入时刻 +30 天），而网关**没有**
+  实现它的续期链路：`auth.ensureAuth` 没有 qoder 分支，
+  `scheduler.keepaliveCandidates()` 不含 qoder 账号，转发面
+  （`src/qoder/chat.js`）直接读库里的 `token`，不做任何刷新。
+- **界面上的口径**：凭据池的 Qoder 池卡片写「不保活 · 到期需手动更新」，
+  尾注**不**出现「按需续期」——此前那句兜底话对本平台根本不成立，
+  与卡片上的「不参与定时保活」直接矛盾（2026-11-17 用户指出）。
+  三态语义与判据来源见 `docs/01-architecture/entitlement-units.md` §2。
+- **为什么这样**：上游 `jobToken/refresh` 的 `drt-` refreshToken 是**轮换制**
+  （旧值换新值即失效），且请求必须带正确的 `machine_id`
+  （上游按 `md5('machine:'+uid)` 前 36 位派生）。打错的代价是把既有凭据直接作废，
+  属于「一次失败就把账号打死」，未经多账号验证前不接。
+- **规避方式（不是重新评估）**：到期前在能解开 DPAPI 的那台机器上跑
+  `node scripts/ops/export-qoder-token.js`，再走 `POST /v1/qoder/manual/import`
+  重新导入（与 F7 同一条路径）。面板「有效期」列会显示剩余天数。
+- **重新评估的条件**：拿到两个以上 Qoder 账号、且愿意用一次性小号承担
+  「refresh 失败即作废」的代价时，实现 `src/qoder/refresh.js`
+  （端点已在 `variant.js` 的 `paths.jobRefresh` 就位）并把模式改为 `scheduled`。
 
 ---
 

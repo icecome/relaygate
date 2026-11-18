@@ -1908,10 +1908,102 @@ t('scheduler.runKeepalive 纳入 Raccoon 账号并走其自有续期端点', asy
   }
 });
 
+t('scheduler.refreshExpiringTokens 按需续期也写保活记录（面板不再出现「活着却无记录」）', async () => {
+  // 2026-11-17 回归：本函数此前成功续期只写 lastRefreshAt / 凭据本身，
+  // 不写 lastKeepaliveAt。面板「最近保活」列读的是后者，于是每日轮跑之前
+  // 刚被按需续期成功的账号显示「尚无记录」，而尾注写着「会按需续期」——
+  // 同一屏两个相反结论。修复：成功与失败都写展示位。
+  const scheduler = require('../jobs/scheduler');
+  const authMod = require('../auth');
+  const legacy = require('../lib/auth.js');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origGet = store.get;
+  const origUpdate = store.update;
+  const origExchange = legacy.exchangeToken;
+  const updates = [];
+  store.list = () => [{ id: 'acct_sweep_1', edition: 'cn', enabled: true, label: 'sweep-1' }];
+  // expiredAt 设为 1 小时后 → 落在 24h 前置量内，本函数应当处理它
+  store.get = () => ({
+    id: 'acct_sweep_1', edition: 'cn', enabled: true, token: 't',
+    refreshToken: 'rt', expiredAt: new Date(Date.now() + 3600_000).toISOString(),
+  });
+  store.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  legacy.exchangeToken = async () => ({ token: 't2', refreshToken: 'rt2' });
+  try {
+    const r = await scheduler.refreshExpiringTokens();
+    assert.strictEqual(r.refreshed, 1, '临期账号应被续期一次');
+    const ka = updates.find((x) => x.patch.lastKeepaliveAt);
+    assert.ok(ka, '按需续期成功必须写 lastKeepaliveAt');
+    assert.ok(/按需续期/.test(String(ka.patch.lastKeepaliveResult)),
+      `结果需标明来自按需续期: ${ka.patch.lastKeepaliveResult}`);
+  } finally {
+    store.list = origList;
+    store.get = origGet;
+    store.update = origUpdate;
+    legacy.exchangeToken = origExchange;
+  }
+});
+
+t('scheduler.refreshExpiringTokens 续期失败写 fail 结果而不是留空', async () => {
+  const scheduler = require('../jobs/scheduler');
+  const legacy = require('../lib/auth.js');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origGet = store.get;
+  const origUpdate = store.update;
+  const origExchange = legacy.exchangeToken;
+  const updates = [];
+  store.list = () => [{ id: 'acct_sweep_2', edition: 'cn', enabled: true, label: 'sweep-2' }];
+  store.get = () => ({
+    id: 'acct_sweep_2', edition: 'cn', enabled: true, token: 't', refreshToken: 'rt',
+    expiredAt: new Date(Date.now() + 3600_000).toISOString(), errorCount: 0,
+  });
+  store.update = (id, patch) => { updates.push({ id, patch }); return {}; };
+  legacy.exchangeToken = async () => { throw new Error('mock sweep fail'); };
+  try {
+    const r = await scheduler.refreshExpiringTokens();
+    assert.strictEqual(r.failed, 1);
+    const ka = updates.find((x) => /^fail/.test(String(x.patch.lastKeepaliveResult || '')));
+    assert.ok(ka, '失败必须写 lastKeepaliveResult=fail:*，面板才看得见');
+  } finally {
+    store.list = origList;
+    store.get = origGet;
+    store.update = origUpdate;
+    legacy.exchangeToken = origExchange;
+  }
+});
+
+t('scheduler 候选不含 Qoder（not-implemented）与 ZCode（not-needed）', async () => {
+  // 2026-11-17：面板对这两个平台的结论是「不保活 / 无需保活」，
+  // 判据必须与结论一致 —— 若哪天候选里出现了 qoder，说明界面在说谎。
+  const scheduler = require('../jobs/scheduler');
+  const authMod = require('../auth');
+  const store = require('../credentials/store');
+  const origList = store.list;
+  const origEnsure = authMod.ensureAuth;
+  const seen = [];
+  store.list = () => [
+    { id: 'a_q', edition: 'qoder', enabled: true, label: 'q' },
+    { id: 'a_z', edition: 'zcode', enabled: true, label: 'z' },
+    { id: 'a_t', edition: 'cn', enabled: true, label: 't' },
+  ];
+  authMod.ensureAuth = async (id) => { seen.push(id); return { id, token: 't' }; };
+  try {
+    const r = await scheduler.runKeepalive();
+    assert.deepStrictEqual(seen, ['a_t'], '只有 scheduled 平台进入保活');
+    assert.strictEqual(r.total, 1);
+  } finally {
+    store.list = origList;
+    authMod.ensureAuth = origEnsure;
+  }
+});
+
 // ---- 2026-10-18 WorkBuddy 401 事故回归 ----
 // 根因：variant 未给 WB 声明 tokenRefresh，keepaliveCandidates() 按
 // tokenRefresh||oauthLogin 筛账号 ⇒ WB 从未进入任何续期链路；上游单方面作废
 // 会话（JWT exp 还有 3 周但已拒绝服务）时，全系统无机制发现与修复。
+// 2026-11-17：该判据收口为能力位 keepaliveMode==='scheduled'，集合不变。
 t('WorkBuddy 声明 tokenRefresh 能力位', () => {
   const variant = require('../platform/variant');
   assert.strictEqual(variant.can(variant.WORKBUDDY, 'tokenRefresh'), true,

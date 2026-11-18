@@ -282,9 +282,10 @@ export default function CredentialsPage() {
   /**
    * 统计条数据。
    *
-   * 额度一行只报**积分口径**（rollup.usableAmount，来自后端 slim 响应）：
-   * 这是唯一可相加的口径（Trae + WorkBuddy）。Token 与配额分列在权益总览里，
-   * 混进来会让这个数变成一个没有意义的和。
+   * 额度一行只报**可累积积分**（rollup.usableAmount，来自后端 slim 响应）：
+   * 这是唯一可相加的那一份（Trae + WorkBuddy，同一单位）。Qoder 与 Raccoon 的
+   * 积分与它们不同值、ZCode 是 Token，三者分列在权益总览里；混进来会让这个数
+   * 变成一个没有意义的和。
    */
   const rollup = list.data?.rollup ?? null;
   const stats = useMemo(() => {
@@ -689,8 +690,8 @@ export default function CredentialsPage() {
               className="flex items-center flex-wrap gap-x-5 gap-y-1 px-4 py-2.5 text-aux"
               style={{ color: 'var(--rg-text-secondary)' }}
             >
-              <span title="仅统计积分口径（Trae + WorkBuddy）">
-                积分口径合计{' '}
+              <span title="只加 Trae + WorkBuddy 的可累积积分；Qoder / Raccoon 的积分不同值、ZCode 是 Token，均在下方单列">
+                可累积积分合计{' '}
                 <strong className="font-mono" style={{ color: 'var(--rg-text-primary)' }}>
                   {formatNumber(rollup?.usableAmount ?? 0)}
                 </strong>

@@ -15,19 +15,28 @@
  * ## 为什么这一块不做跨平台加总
  *
  * 后端刻意用四个隔离键存额度，因为它们不可相加：
- *   Trae / WorkBuddy → packs（积分，1e3 量级）
- *   ZCode            → tokenBuckets（Token，1e8 量级）
- *   Qoder            → quota（配额，两段独立）
- *   Raccoon          → raccoonPoints（积分，分池，日清）
+ *   Trae / WorkBuddy → packs（积分，1e3 量级，可累积、有到期日）
+ *   ZCode            → tokenBuckets（Token，1e8 量级，与积分不同维）
+ *   Qoder            → quota（积分，基础 / 赠送两段各自有到期日）
+ *   Raccoon          → raccoonPoints（积分，分池，每日积分次日清零）
+ *
+ * ⚠️ 计量列的写法（2026-11-17 订正）：除 ZCode 是 Token 外，四个平台上游单位
+ * **都是积分**，所以这一列就写「积分」，不再给 Qoder 发明「配额」、给 Raccoon
+ * 写「points」这个名字 —— 此前同一行的说明写「赠送 2,587」「奖励积分 / 每日积分」，
+ * 一个数两个名字，读的人只能认为那一列在骗他。
+ * 「都是积分」不等于「可以相加」：各平台积分价值不同、不可换算，
+ * 差别写在每行的口径限定语（unitCaliberOf）里，分组与合计一律走内部键 `unit`。
+ *
  * 此前面板只有「权益包」和「权益到期」两列且都只读 packs，于是实测
  * 7 / 23 个账号在权益包列显示「—」、23 / 23 个账号在到期列显示「—」
  * （worstExpiry 只在 ≤7 天返回非空，而实际最近到期是 8～22 天）。
  *
- * 这一块**不做跨平台加总**。积分 + Token + 配额相加是没有意义的数，
- * 而且这正是 ZCode 那一亿 token 曾被算进积分、把今日消耗抬高 4 个数量级
- * 的同一个坑。所以：分行展示，每行各自标注单位，页脚一句话说明为什么不相加。
+ * 这一块**不做跨平台加总**。积分 + Token 相加、或把三种不同值的积分相加，
+ * 都是没有意义的数，而且这正是 ZCode 那一亿 token 曾被算进积分、
+ * 把今日消耗抬高 4 个数量级的同一个坑。所以：分行展示，每行各自标注单位，
+ * 页脚一句话说明为什么不相加。
  *
- * 唯一出现的「合计」是积分口径（Trae + WorkBuddy），直接采用后端
+ * 唯一出现的「合计」是可累积积分（Trae + WorkBuddy），直接采用后端
  * `/v1/credentials?slim=1` 的 `rollup`，不在前端重算——重算就会与
  * `summarizeExpiry` / FEFO 的日历日判定差一天。
  */
@@ -39,16 +48,11 @@ import {
   entitlementOf,
   isStale,
   rollupByPlatform,
+  unitCaliberOf,
+  unitLabelOf,
   type PlatformRollup,
 } from '../../shared/lib/entitlement';
 import { packsOf, toMs } from './accountPacks';
-
-/** 单位标签。三者互不相通，界面上必须各自标注。 */
-const UNIT_LABEL: Record<string, string> = {
-  credit: '积分',
-  token: 'Token',
-  quota: '配额',
-};
 
 export function EntitlementOverview({
   accounts,
@@ -91,26 +95,29 @@ export function EntitlementOverview({
         ))}
       </div>
       <p className="mt-3 text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
-        四种计量不可相加，故不做跨口径总额；上方「积分口径合计」只含 Trae 与 WorkBuddy。
+        除 ZCode 按 Token 计量外，其余四个平台上游都按积分计量，但各平台积分价值不同、不可换算，因此不做跨平台总额；上方「可累积积分合计」只含 Trae 与 WorkBuddy（同一单位）。
       </p>
     </>
   );
 }
 
 /**
- * 积分口径汇总行。
+ * 可累积积分汇总行。
  *
  * 这三个数原属页面顶部统计条（`stat-strip`），2026-11-10 随权益总览上移一并
  * 搬到这里，避免同一屏出现两处相同的「可用积分」。
  *
  * 覆盖度必须写出来：`accounts` 是「至少有可用包的账号数」，小于账号总数时
  * 说明有账号没查过余额或包已用尽——用户看到 46,347 时要能判断它覆盖了几个号。
+ *
+ * 名字刻意叫「可累积积分」而不是「积分口径」：Qoder 与 Raccoon 的额度也是积分，
+ * 只说「积分口径」会让人以为这一行已经把所有平台的积分都加进来了。
  */
 function RollupStrip({ rollup }: { rollup: EntitlementRollup }) {
   return (
     <div className="ent-rollup">
-      <span title="仅统计积分口径（Trae + WorkBuddy）；Token 与配额见下方各行">
-        积分口径合计{' '}
+      <span title="只加 Trae + WorkBuddy 的可累积积分（同一单位）；Qoder 与 Raccoon 的积分不同值、ZCode 是 Token，均在下方单列，不并入这一行">
+        可累积积分合计{' '}
         <strong>{formatNumber(rollup.usableAmount)}</strong>
         <span className="text-unit"> 积分</span>
       </span>
@@ -149,7 +156,9 @@ function PlatformRow({
     () => accounts.filter((a) => entitlementOf(a).platform === row.platform),
     [accounts, row.platform],
   );
-  const unit = UNIT_LABEL[row.unit] ?? row.unit;
+  const unit = unitLabelOf(row.unit);
+  // 口径限定语：计量列现在四个平台里有三个都写「积分」，差别只能靠这句话讲清
+  const caliberNote = unitCaliberOf(row.unit);
   const snapshotText = row.oldestSnapshotAt ? formatTime(row.oldestSnapshotAt) : '从未查询';
 
   return (
@@ -162,7 +171,7 @@ function PlatformRow({
         title={open ? '收起明细' : '展开明细'}
       >
         <span className="ent-name">{platformIdLabel(row.platform)}</span>
-        <span className="ent-unit">{unit}</span>
+        <span className="ent-unit" title={caliberNote}>{unit}</span>
         <span className="ent-amount">
           {row.known > 0 && row.amount != null ? formatNumber(row.amount) : '—'}
         </span>
@@ -433,7 +442,7 @@ function TokenDetail({ members }: { members: Account[] }) {
   );
 }
 
-/** 配额口径：两段分列，不合并成一行。 */
+/** Qoder 两段积分：基础 / 赠送分列，不合并成一行。 */
 function QuotaDetail({ members }: { members: Account[] }) {
   return (
     <table className="data-table">

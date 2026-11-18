@@ -32,6 +32,7 @@
 | [system-overview.md](01-architecture/system-overview.md) | 分层结构、请求链路、数据落盘位置、模块职责与依赖方向 | 现行 |
 | [known-limitations.md](01-architecture/known-limitations.md) | 全部已知限制与显式取舍（安全边界、多进程、Windows 服务形态等），每条都写了接受理由 | 现行 |
 | [token-credit-metering.md](01-architecture/token-credit-metering.md) | Token / 积分 / 额度的计量口径，以及三套口径为何不能相加 | 现行 |
+| [entitlement-units.md](01-architecture/entitlement-units.md) | **额度口径与保活模式**：五平台四种口径（三种都是积分）的展示规则、合计为何必须按 `caliber` 筛；`keepaliveMode` 三态（参与 / 无需 / 未实现）与「最近保活」列的三个写入链路 | 现行 |
 
 ## 3. 02-technical — 技术方案
 

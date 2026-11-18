@@ -11,6 +11,7 @@ const availability = require('../models/availability');
 const catalog = require('../models/catalog');
 const wbChat = require('../workbuddy/chat');
 const raccoonProduct = require('../raccoon/product');
+const variant = require('../platform/variant');
 const { authenticateAdmin } = require('../middleware/auth');
 
 const router = Router();
@@ -88,7 +89,6 @@ async function listModels(req, res) {
     // （is_free 不等于可调用，qfmodel 实测 invalid_model_error，故不列）。
     // 只有真有启用的国际版账号时才列出——否则客户端会拿到一组必然失败的 id。
     const qoderChat = require('../qoder/chat');
-    const variant = require('../platform/variant');
     const qoderHasAccount = require('../credentials/store').list().some((a) => a.enabled
       && variant.isEdition(a.edition, variant.QODER)
       && variant.qoderChatRealms().includes(variant.qoderRealmOfAccount(a)));
@@ -245,7 +245,9 @@ router.get('/v1/models/status', admin, async (req, res) => {
     try { wbModels = await wbChat.modelCatalog(refresh); } catch (e) { /* 回退静态 */ }
     if (!wbModels.length) wbModels = wbChat.WB_MODELS.map((id) => ({ id, name: id, rateText: null, rate: null }));
     // 目录始终展示，但无启用账号时状态为 unavailable（实际无法调用）
-    const wbEnabled = require('../credentials/store').list().some((a) => a.enabled && a.edition === 'workbuddy');
+    // 平台判定与本文件其余三处（qoder/raccoon）同源走 variant.isEdition，
+    // 不再散落裸字符串比较：新增平台或改 edition 口径时只需动 variant.js。
+    const wbEnabled = require('../credentials/store').list().some((a) => a.enabled && variant.isEdition(a.edition, variant.WORKBUDDY));
     const wbReason = wbEnabled ? null : '无可用 WorkBuddy 账号';
     const wbRows = wbModels.map((m) => {
       const id = 'wb/' + m.id;

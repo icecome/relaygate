@@ -444,10 +444,14 @@ async function refreshAccount(acct) {
     throw err;
   }
   const next = await refreshCredential(credential);
+  // 展示位与 Trae / WorkBuddy 同一处理（2026-11-17）：成功续期就是一次保活尝试，
+  // 必须写 lastKeepaliveAt，否则面板「最近保活」列看不见请求前兜底这条链路。
   return store.update(acct.id, {
     token: next.access_token,
     refreshToken: next.refresh_token || null,
     expiredAt: next.expires_at ? new Date(Number(next.expires_at)).toISOString() : acct.expiredAt,
+    lastKeepaliveAt: new Date().toISOString(),
+    lastKeepaliveResult: 'ok（按需续期）',
   });
 }
 

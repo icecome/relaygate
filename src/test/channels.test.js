@@ -155,8 +155,56 @@ async function run() {
   }
   check('能力位与 variant.js 逐键一致（不被复制/改写）', capabilityMismatch === '', capabilityMismatch);
 
-  // ---------- 逐平台接入方式（回归：ZCode 曾完全没有入口） ----------
+  // ---------- 保活模式（2026-11-17 新增，面板结论的唯一判据） ----------
+  /*
+   * 三条断言守的是同一件事：**「保不保活」这个结论只能有一个来源**，
+   * 且后端下发的模式必须与 scheduler 实际覆盖的账号集合一致。
+   *
+   * 此前的失败模式：前端从 `tokenRefresh || oauthLogin` 反推一个布尔，
+   * 再配一句「未纳入扫描的平台 Token 仍会按需续期」。那句话对 Qoder
+   * 不成立（网关没有它的续期链路，转发面直接读库里的 token），
+   * 于是卡片写「不参与定时保活」、尾注写「会续期」——同一屏两个相反结论。
+   */
   const byId = Object.fromEntries(data.map((c) => [c.id, c]));
+  const MODES = ['scheduled', 'not-needed', 'not-implemented'];
+  const badMode = data.filter((c) => !MODES.includes(c.capability?.keepaliveMode));
+  check(
+    '每个渠道都下发 keepaliveMode（三态之一，前端不靠布尔反推）',
+    badMode.length === 0,
+    JSON.stringify(badMode.map((c) => [c.id, c.capability?.keepaliveMode])),
+  );
+  check(
+    'keepaliveMode 与 variant.keepaliveModeOf 逐渠道一致（不在路由里另算一套）',
+    data.every((c) => c.capability.keepaliveMode === variant.keepaliveModeOf(c.id)),
+    JSON.stringify(data.map((c) => [c.id, c.capability.keepaliveMode])),
+  );
+  // 判据等价性：scheduled 集合必须等于旧判据（tokenRefresh||oauthLogin）的集合。
+  // 不等就说明这次改位顺手改了覆盖范围——那是另一件事，需要单独提交与验证。
+  const scheduledIds = data.filter((c) => c.capability.keepaliveMode === 'scheduled').map((c) => c.id).sort();
+  const legacyIds = data
+    .filter((c) => c.capability.tokenRefresh === true || c.capability.oauthLogin === true)
+    .map((c) => c.id)
+    .sort();
+  check(
+    'scheduled 集合 == 旧判据集合（本次只收口判据来源，不改变覆盖范围）',
+    JSON.stringify(scheduledIds) === JSON.stringify(legacyIds),
+    `新 ${JSON.stringify(scheduledIds)} / 旧 ${JSON.stringify(legacyIds)}`,
+  );
+  check(
+    'Qoder 是 not-implemented（凭据会过期但网关未实现续期）；ZCode 是 not-needed（无到期概念、无 refresh_token）',
+    byId.qoder.capability.keepaliveMode === 'not-implemented'
+      && byId.zcode.capability.keepaliveMode === 'not-needed',
+    JSON.stringify({ qoder: byId.qoder.capability.keepaliveMode, zcode: byId.zcode.capability.keepaliveMode }),
+  );
+  // scheduler 侧的账号过滤与渠道结论同源：库里各 edition 折叠后必须
+  // 得到同一模式（否则面板说「参与」而调度器不覆盖它，正是 WB 当年的事故）。
+  check(
+    '历史 edition 折叠后仍得到同一模式（cn/sg/us/manual → scheduled）',
+    ['cn', 'sg', 'us', 'manual'].every((e) => variant.keepaliveModeOf(e) === 'scheduled'),
+    JSON.stringify(['cn', 'sg', 'us', 'manual'].map((e) => [e, variant.keepaliveModeOf(e)])),
+  );
+
+  // ---------- 逐平台接入方式（回归：ZCode 曾完全没有入口） ----------
   const kinds = (id) => (byId[id]?.onboarding || []).map((o) => o.kind).sort();
 
   check(

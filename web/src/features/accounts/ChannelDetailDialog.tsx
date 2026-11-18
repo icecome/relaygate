@@ -9,11 +9,36 @@
  * 数据来源：`/v1/admin/channels` 已经在手（父级传进来的 channel 对象），
  * 所以这个弹窗**不发任何请求**，纯展示。
  */
-import type { Channel } from '../../shared/api/channels';
+import type { Channel, KeepaliveMode } from '../../shared/api/channels';
 import { Button, Chip, Note } from '../../shared/ui';
 import Modal from '../../shared/ui/Modal';
 import { formatNumber, formatTime } from '../../shared/lib/format';
 import { channelEntry, wizardFor } from '../../shared/lib/channels';
+
+/**
+ * 保活模式 → 一句话结论。
+ *
+ * 必须与 KeepaliveBoard 的三态文案同义（那边是池卡片，这里是渠道详情）：
+ * 同一个平台在两处给出相反结论，正是 2026-11-17 用户指出的矛盾。
+ * 两处都只读后端 `keepaliveMode`，不各写一套判断。
+ */
+const KEEPALIVE_LABEL: Record<KeepaliveMode, { label: string; hint: string; tone: 'ok' | 'warn' | 'neutral' }> = {
+  scheduled: {
+    label: '参与定时保活',
+    hint: '每日定时轮逐个账号续期；临期账号在两轮之间也会被按需续期。',
+    tone: 'ok',
+  },
+  'not-needed': {
+    label: '无需保活',
+    hint: '上游凭据没有到期概念，也不发放可续期凭据，因此没有保活动作可做。',
+    tone: 'neutral',
+  },
+  'not-implemented': {
+    label: '不保活 · 到期需手动更新',
+    hint: '凭据会过期，但网关未实现该平台的续期链路；转发与签到前不会自动续期，到期前需重新导出凭据导入。',
+    tone: 'warn',
+  },
+};
 
 /** 能力位 → 用户能读懂的标签。只列对用户有意义的位。 */
 const CAPABILITY_LABEL: { key: keyof Channel['capability']; label: string; hint: string }[] = [
@@ -25,7 +50,10 @@ const CAPABILITY_LABEL: { key: keyof Channel['capability']; label: string; hint:
   { key: 'balance', label: '余额查询', hint: '可向上游查询剩余额度' },
   { key: 'billing', label: '用量账单', hint: '提供账单 / 用量明细接口' },
   { key: 'oauthOnboarding', label: 'OAuth 接入', hint: '支持通过授权页添加新账号' },
-  { key: 'tokenRefresh', label: '自动续期', hint: '服务端会自动刷新即将过期的登录凭据' },
+  // 「自动续期」这个词以前会和「不参与定时保活」打架（ZCode 两位皆 false，
+  // Qoder 有端点但网关没实现）。现在续期能力与保活结论是两个独立条目，
+  // 这一行只说**能力位本身**，结论由下面的 keepaliveMode 那一行给。
+  { key: 'tokenRefresh', label: '可静默续期', hint: '上游发放了 refreshToken 且网关已实现续期端点' },
   { key: 'deviceFingerprint', label: '设备标识', hint: '可重置设备指纹（个别平台风控后需要）' },
   { key: 'localImport', label: '本机导入', hint: '可读取本机桌面客户端的登录态' },
   { key: 'dailyKeepalive', label: '每日保活', hint: '每天代做一次等价动作以延长额度有效期' },
@@ -109,6 +137,33 @@ export function ChannelDetailDialog({
           )}
         </section>
 
+        {/* 保活结论：与凭据池的池卡片同一判据、同一措辞 */}
+        <section>
+          <div className="text-label mb-2">定时保活</div>
+          {(() => {
+            const mode = channel.capability.keepaliveMode;
+            const meta = mode ? KEEPALIVE_LABEL[mode] : null;
+            if (!meta) {
+              return (
+                <Note tone="warn">
+                  后端未下发保活模式（keepaliveMode）。此时界面只能确定「定时轮是否覆盖该平台」，
+                  不能断定原因；请升级后端以区分「无需保活」与「未实现续期」。
+                </Note>
+              );
+            }
+            return (
+              <div className="flex flex-wrap items-center gap-2">
+                <Chip tone={meta.tone} title={meta.hint}>
+                  {meta.label}
+                </Chip>
+                <span className="text-aux leading-relaxed" style={{ color: 'var(--rg-text-tertiary)' }}>
+                  {meta.hint}
+                </span>
+              </div>
+            );
+          })()}
+        </section>
+
         {/* 能力清单 */}
         <section>
           <div className="text-label mb-2">平台能力（{caps.length} 项）</div>
@@ -119,7 +174,7 @@ export function ChannelDetailDialog({
           ) : (
             <div className="flex flex-wrap gap-1.5">
               {caps.map((c) => (
-                <Chip key={c.key}>{c.label}</Chip>
+                <Chip key={c.key} title={c.hint}>{c.label}</Chip>
               ))}
             </div>
           )}

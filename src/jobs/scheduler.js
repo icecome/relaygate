@@ -86,14 +86,17 @@ function isExpiringSoon(acct) {
 }
 
 /**
- * 扫描并刷新临期账号 token。
+ * 扫描并刷新临期账号 token（15 分钟一轮的按需续期）。
  *
- * 平台判据用 **`tokenRefresh` 能力位**，不再复用 `oauthLogin`。
- * 此前用 oauthLogin 兼作「可续期」，对 Trae / WorkBuddy 恰好成立，但
- * Raccoon 既不是 OAuth 换票（它是扫码登录会话）又**必须**续期
- * （access_token 只有约 3 小时且有 refresh 端点）—— 继续复用会让它的
- * 凭据悄悄过期、续期从不触发，而这类失效没有任何报错。
- * ZCode 两侧都为 false：它的 JWT 无 exp、也不返回 refresh_token。
+ * 账号集合与每日兜底轮同一个判据（keepaliveCandidates → keepaliveMode），
+ * 不再在这里各写一遍布尔组合。历史上这里曾复用 `oauthLogin` 兼作「可续期」，
+ * 对 Trae / WorkBuddy 恰好成立，但 Raccoon 既不是 OAuth 换票（扫码登录会话）
+ * 又**必须**续期（access_token 只有约 3 小时且有 refresh 端点）——
+ * 继续复用会让它的凭据悄悄过期、续期从不触发，而这类失效没有任何报错。
+ *
+ * ZCode 不在集合内：它的 JWT 无 exp、也不返回 refresh_token（`not-needed`）。
+ * Qoder 不在集合内：token **会**过期、上游也有续期端点，但网关未实现（
+ * `not-implemented`）——所以本函数**不会**替它续期，界面上不得写「按需续期」。
  */
 async function refreshExpiringTokens() {
   // 与每日兜底轮 runKeepalive 共用 keepaliveCandidates()：两处各写一遍过滤
@@ -106,44 +109,51 @@ async function refreshExpiringTokens() {
     if (!full || !full.token) continue;
     if (!isExpiringSoon(full)) continue;
     if (!full.refreshToken) continue;
+    // 本轮是否真的做成了一次续期（决定要不要写保活记录）。
+    // 刻意不叫 refreshed：与外层计数器同名会在此块内遮蔽它，
+    // 返回值里的 refreshed 就会恒为 0（本次改动实测踩到）。
+    let didRefresh = false;
+    let sweepError = null;
     try {
       // Raccoon：自有 refresh 端点（POST /api/web/auth/v1/refresh）
       if (variant.isEdition(full.edition, variant.RACCOON)) {
         await require('../raccoon/auth').refreshAccount(full);
+        didRefresh = true;
         refreshed += 1;
         console.log(`[scheduler] refreshed raccoon token for ${full.label || full.id}`);
-        continue;
-      }
-      // WorkBuddy 与 Trae 刷新端点不同，统一走 ensureAuth（按 edition 分支）。
-      //
-      // 2026-10-18：variant 已为 WorkBuddy 声明 tokenRefresh，本分支从不可达变为
-      // 可达——WB 账号自此同时进入本函数与 runKeepalive 两条续期链路。
-      if (full.edition === 'workbuddy') {
+      } else if (full.edition === 'workbuddy') {
+        // WorkBuddy 与 Trae 刷新端点不同，统一走 ensureAuth（按 edition 分支）。
+        //
+        // 2026-10-18：variant 已为 WorkBuddy 声明 tokenRefresh，本分支从不可达变为
+        // 可达——WB 账号自此同时进入本函数与 runKeepalive 两条续期链路。
         await auth.ensureAuth(full.id);
+        didRefresh = true;
         refreshed += 1;
         console.log(`[scheduler] refreshed workbuddy token for ${full.label || full.id}`);
-        continue;
-      }
-      // OAuth 账号必须用自身 ClientID/authHost 换新，否则会请求全局默认主机。
-      // 账号没记（历史导入账号）时走换票面默认值：authHost 已由
-      // lib/auth.getAuthHost() 收敛到变体表 oauthExchange；clientId 仍按
-      // lib/auth.exchangeToken 内的默认取 SOLO 线值（与 Trae SOLO 账号绑定）。
-      const refreshedTok = await legacy.exchangeToken(full.refreshToken, {
-        clientId: full.authClientId || undefined,
-        host: full.authHost || undefined,
-      });
-      if (refreshedTok && refreshedTok.token) {
-        store.update(a.id, {
-          token: refreshedTok.token,
-          refreshToken: refreshedTok.refreshToken || full.refreshToken,
-          expiredAt: refreshedTok.expiredAt || full.expiredAt,
-          refreshExpiredAt: refreshedTok.refreshExpiredAt || full.refreshExpiredAt,
-          tokenReleaseAt: refreshedTok.tokenReleaseAt || full.tokenReleaseAt,
+      } else {
+        // OAuth 账号必须用自身 ClientID/authHost 换新，否则会请求全局默认主机。
+        // 账号没记（历史导入账号）时走换票面默认值：authHost 已由
+        // lib/auth.getAuthHost() 收敛到变体表 oauthExchange；clientId 仍按
+        // lib/auth.exchangeToken 内的默认取 SOLO 线值（与 Trae SOLO 账号绑定）。
+        const refreshedTok = await legacy.exchangeToken(full.refreshToken, {
+          clientId: full.authClientId || undefined,
+          host: full.authHost || undefined,
         });
-        refreshed += 1;
-        console.log(`[scheduler] refreshed token for ${a.label || a.id}`);
+        if (refreshedTok && refreshedTok.token) {
+          store.update(a.id, {
+            token: refreshedTok.token,
+            refreshToken: refreshedTok.refreshToken || full.refreshToken,
+            expiredAt: refreshedTok.expiredAt || full.expiredAt,
+            refreshExpiredAt: refreshedTok.refreshExpiredAt || full.refreshExpiredAt,
+            tokenReleaseAt: refreshedTok.tokenReleaseAt || full.tokenReleaseAt,
+          });
+          didRefresh = true;
+          refreshed += 1;
+          console.log(`[scheduler] refreshed token for ${a.label || a.id}`);
+        }
       }
     } catch (e) {
+      sweepError = e.message || String(e);
       failed += 1;
       console.error(`[scheduler] refresh fail ${a.id}: ${e.message}`);
       store.update(a.id, {
@@ -155,6 +165,33 @@ async function refreshExpiringTokens() {
         message: e.message,
       }).catch(() => {});
     }
+
+    /*
+     * 按需续期同样写保活记录（2026-11-17 补）。
+     *
+     * 此前的失败模式：本函数（15 分钟一轮的临期扫描）续期成功却**只写
+     * lastRefreshAt**（WB 经 ensureAuth 写、Raccoon 经 refreshAccount 写），
+     * 面板的「最近保活」列读的是 lastKeepaliveAt，只有每日 17:00 那一轮
+     * runKeepalive 会写。于是每天 17:00 之前，刚导入、或当天已被按需续期过的
+     * 账号在面板上都显示「参与定时保活 · 从无记录」——凭据明明活着，
+     * 面板却说没记录，尾注又说「会按需续期」，三处互相打脸。
+     *
+     * 判据位与展示位分工不变（见 auth/index.js#wbNeedsRefresh 的注释）：
+     * lastKeepaliveAt 是「最近一次保活**尝试**」的展示位，本函数成功续期
+     * 就是一次尝试，因此该写；**不写** lastRefreshAt（除 ensureAuth 内部
+     * 已按成功自己写之外），避免压制 WB 的 7 天周期续期窗口。
+     */
+    if (didRefresh || sweepError) {
+      try {
+        store.update(a.id, {
+          lastKeepaliveAt: new Date().toISOString(),
+          lastKeepaliveResult: sweepError
+            ? `fail: ${String(sweepError).slice(0, 112)}`
+            : 'ok（按需续期）',
+        });
+      } catch { /* 展示位落库失败不影响续期结果 */ }
+    }
+
     // 账号间随机间隔，替代固定 300ms 的整齐节奏
     await sleep(600 + Math.floor(Math.random() * 1600));
   }
@@ -314,19 +351,31 @@ async function runDailyCheckinInner(trigger) {
 /**
  * 保活候选账号（两条链路的唯一判据，避免口径分叉）。
  *
- * tokenRefresh || oauthLogin：
- * - Trae 两位皆 true；
- * - Raccoon 只有 tokenRefresh（扫码登录会话、非 OAuth，但 access_token
- *   约 3 小时且必须续期）—— 此前 runKeepalive 单独用 oauthLogin 过滤，
- *   把 Raccoon 整号漏掉，每天一次的兜底轮从不覆盖它，也不写保活记录；
- * - WorkBuddy 只有 tokenRefresh（2026-10-18 起。此前两位皆 false，WB 账号
- *   从未被任何续期链路覆盖，上游作废会话时表现为「签到部分账号 401」且无法自愈）；
- * - Qoder / ZCode 两位皆 false（当前不参与定时保活，
- *   判据与刷新端点实证见 platform/variant.js 各 capability 注释）。
+ * 2026-11-17 起判据改为能力位 **`keepaliveMode === 'scheduled'`**，不再由前端
+ * 从 `tokenRefresh || oauthLogin` 反推、也不再在这里各写一遍布尔组合。
+ * 变体表里两位真值（tokenRefresh || oauthLogin）为真的平台恰好就是
+ * scheduled 的三个（Trae / WorkBuddy / Raccoon），因此本次改动**不改变
+ * 任何账号的覆盖范围**（由 src/test/channels.test.js 钉住这一等价关系），
+ * 改变的是「谁有权决定保不保活」：只有变体表一处。
+ *
+ * 三态语义（面板文案与这里必须同源，否则同一屏会出现两种相反的说法）：
+ * - Trae `scheduled`：oauthLogin + tokenRefresh 皆 true，OAuth 换票续期；
+ * - WorkBuddy `scheduled`：只有 tokenRefresh（2026-10-18 起。此前两位皆 false，
+ *   WB 账号从未被任何续期链路覆盖，上游作废会话时表现为「签到部分账号 401」
+ *   且无法自愈）；
+ * - Raccoon `scheduled`：只有 tokenRefresh（扫码登录会话、非 OAuth，但
+ *   access_token 约 3 小时且必须续期）—— 此前 runKeepalive 单独用 oauthLogin
+ *   过滤，把 Raccoon 整号漏掉，每天一次的兜底轮从不覆盖它，也不写保活记录；
+ * - ZCode `not-needed`：上游 JWT 无 exp、不发放 refresh_token，**没有可续期的东西**，
+ *   不是「该保活而没保活」；
+ * - Qoder `not-implemented`：token **会**过期（expired_at = 导入 +30 天），上游也有
+ *   jobToken/refresh 端点，但网关未实现该续期链路（refresh_token 轮换制且必须带
+ *   正确 machine_id，未做多账号验证前不接）。到期需重新导出凭据导入。
+ *   ⚠️ 这一态**不得**在前端写成「按需续期」——转发面（qoder/chat.js）直接读
+ *   库里的 token，没有任何刷新动作，那句话是假的。
  */
 function keepaliveCandidates() {
-  return store.list().filter((a) => a.enabled
-    && (variant.can(a.edition, 'tokenRefresh') || variant.can(a.edition, 'oauthLogin')));
+  return store.list().filter((a) => a.enabled && variant.keepaliveModeOf(a.edition) === 'scheduled');
 }
 
 async function runKeepalive() {

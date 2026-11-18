@@ -8,6 +8,21 @@
  */
 import { api } from './http';
 
+/**
+ * 保活模式（后端 `keepaliveMode` 能力位）。
+ *
+ * 为什么必须有一个专门的位，而不是让前端从 `tokenRefresh || oauthLogin` 反推：
+ * 那两个位说的是「有没有静默续期能力」，而面板要回答的是三个不同的问题——
+ *   1. 这个平台的凭据会不会过期？（Qoder 会，ZCode 不会）
+ *   2. 网关有没有实现续期？（Qoder 有端点但没实现，ZCode 根本没有端点）
+ *   3. 定时保活轮覆不覆盖它？（两者都不覆盖）
+ * 前端此前把三件事压成一个布尔，于是同一屏出现「尾注说 Token 会按需续期、
+ * 卡片说不参与保活」这种自相矛盾（2026-11-17 用户指出）。三态各写各的文案，
+ * 才可能同时为真。判据与 `src/jobs/scheduler.js#keepaliveCandidates` 同源，
+ * 由 `src/test/channels.test.js` 钉住不漂移。
+ */
+export type KeepaliveMode = 'scheduled' | 'not-needed' | 'not-implemented';
+
 /** 渠道能力位，与 `src/platform/variant.js` 的 capability 一一对应。 */
 export interface ChannelCapability {
   chat: boolean;
@@ -35,6 +50,11 @@ export interface ChannelCapability {
    * 与 `oauthLogin` **不是**同一件事：Raccoon 不是 OAuth 换票但必须续期。
    */
   tokenRefresh?: boolean;
+  /**
+   * 保活模式。缺省（老后端不下发）时前端按 `tokenRefresh || oauthLogin`
+   * 推断为 scheduled / not-implemented，不静默当成「参与保活」。
+   */
+  keepaliveMode?: KeepaliveMode;
   /** 一次性登录奖励（Raccoon；与每日活动领取区分开） */
   loginReward?: boolean;
   /**

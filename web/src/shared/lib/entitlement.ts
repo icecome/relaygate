@@ -4,7 +4,7 @@
  * 为什么必须集中在一处：后端刻意用四个**隔离键**存额度，因为它们不可相加——
  *   Trae / WorkBuddy  → entitlement_snapshot.packs（积分，量级 1e3）
  *   ZCode             → tokenBuckets / tokenRemaining（token，量级 1e8）
- *   Qoder             → quota{base, addOn}（配额，两段独立）
+ *   Qoder             → quota{base, addOn}（积分，基础 / 赠送两段独立）
  *   Raccoon           → raccoonPoints{available, packages}（积分，分池，日清）
  * 代码里原本只有一个读取点 `accountPacks.tsx#packsOf`，它只读 `packs`，
  * 于是 ZCode / Qoder / Raccoon 三个平台在「权益包」「权益到期」两列恒为「—」。
@@ -22,6 +22,65 @@ import { formatNumber, platformOf, type Platform } from '../lib/format';
 
 /** 额度计量单位。不同单位之间不可相加，界面上必须各自标注。 */
 export type EntitlementUnit = 'credit' | 'token' | 'quota' | 'points';
+
+/**
+ * 计量单位的展示名。
+ *
+ * ⚠️ 这是**展示层**的唯一事实源；任何过滤 / 分组 / 合计都必须用 `EntitlementUnit`
+ * 这个内部键，不要用这里的字符串。2026-11-17 之前的版本把 quota 标成「配额」、
+ * 把 points 标成「points」，而同一屏的说明文案（Qoder「赠送 2,587」、
+ * Raccoon「奖励积分 / 每日积分」）说的都是积分 —— 一行之内两个名字指同一个东西，
+ * 用户据此判定「计量列在骗我」。
+ *
+ * 真实口径（后端实证，见 src/platform/variant.js 与 docs/02-technical/channels/）：
+ *   - credit  Trae / WorkBuddy：上游单位就是 credit（积分），可累积、有到期日；
+ *   - token   ZCode：上游按 token 计量（量级 1e8），与积分不同维，**只有这里是 Token**；
+ *   - quota   Qoder：上游 /api/v2/quota/usage 返回 userQuota + addOnQuota 两段
+ *             **积分**额度（每日活动发的也是 100 Credits），只是分两段、各自有到期日；
+ *   - points  Raccoon：上游 points/v1/balance，单位 credit（积分），只是**分池 + 日清**。
+ * 即除 ZCode 外四个平台都是积分计量，各平台积分价值不同 —— 因此展示名统一为「积分」，
+ * 语义差异由 UNIT_CALIBER 的限定语承担，不再靠发明第二个名字表达。
+ */
+export const UNIT_LABEL: Record<EntitlementUnit, string> = {
+  credit: '积分',
+  token: 'Token',
+  quota: '积分',
+  points: '积分',
+};
+
+/**
+ * 口径限定语：说明「这一种积分」与别种积分差在哪，以及能不能与别相加。
+ * 计量列放不下时用于 title 与说明位；不可相加的判定依据是内部键，不是这句话。
+ */
+export const UNIT_CALIBER: Record<EntitlementUnit, string> = {
+  credit: '可累积积分（Trae / WorkBuddy 同一单位，可相加）',
+  token: 'Token 计量（与积分不同维，永不与积分相加）',
+  quota: '积分，分「基础 / 赠送」两段且各自有到期日（与 Trae 积分不同值，不可相加）',
+  points: '积分，分池且每日积分次日清零（无到期日概念，不可与可累积积分相加）',
+};
+
+/** 单位展示名（内部键 → 文案）。未知键原样返回，不静默变成空串。 */
+export function unitLabelOf(unit: EntitlementUnit | string): string {
+  return UNIT_LABEL[unit as EntitlementUnit] ?? String(unit);
+}
+
+/** 口径限定语（内部键 → 文案）。 */
+export function unitCaliberOf(unit: EntitlementUnit | string): string {
+  return UNIT_CALIBER[unit as EntitlementUnit] ?? String(unit);
+}
+
+/**
+ * 是否属于**唯一可相加**的积分口径（Trae / WorkBuddy 的可累积积分）。
+ *
+ * 判据必须是内部键 `credit`：quota 与 points 的展示名同样是「积分」，
+ * 按字符串筛会把 Qoder 的两段额度与 Raccoon 的日清积分并进合计 ——
+ * 那正是本模块文件头禁止的事（ZCode 一亿 token 被算进积分、抬高 4 个数量级，
+ * 是同一类错误的上一次发作）。
+ */
+export function isCumulativeCredit(unit: EntitlementUnit | string): boolean {
+  return unit === 'credit';
+}
+
 
 /** 到期呈现形态。 */
 export type ExpiryTone = 'expired' | 'critical' | 'warning' | 'normal' | 'none';
@@ -299,12 +358,14 @@ function quotaSummary(a: Account, now: number): EntitlementSummary {
     amount: known ? sum : null,
     amountText: known ? formatNumber(sum) : '—',
     detailText: !known
-      ? '未查询到配额'
+      // 「配额」是内部键 quota 的旧展示名，与上游实际单位（Credits）不符，
+      // 也与本行数值后缀「积分」自相矛盾。这里说清是哪两段积分。
+      ? '未查询到额度（基础 / 赠送两段）'
       : parts.length > 1
         ? parts.join(' + ')
         : parts.length === 1
           ? `${parts[0]}`
-          : '基础与赠送额度均为 0',
+          : '基础与赠送两段均为 0',
     days: soonestDays,
     expiryText: known ? expiryTextOf(soonestDays) : '未查询',
     tone: known ? toneOfDays(soonestDays) : 'none',
@@ -389,7 +450,7 @@ export function entitlementOf(a: Account, now = Date.now()): EntitlementSummary 
  *   - 积分：`12 个可用包 · 21 天后`（数量 + 到期，两个维度都有意义）
  *   - Token：有桶时 `N 个额度桶 · 30 天后`；耗尽时只留「额度已用尽」
  *     （`0 Token · —` 这种破折号并排读不出信息）
- *   - 配额：`赠送 2,026 · 长期`（两段构成比段数重要）
+ *   - Qoder：`赠送 2,026 · 长期`（两段构成比段数重要；单位是积分）
  *   - Raccoon：`奖励积分 1,524 + 每日积分 600 · 日清`
  */
 export function entitlementCellText(e: EntitlementSummary): string {
@@ -404,10 +465,7 @@ export function entitlementCellText(e: EntitlementSummary): string {
 
 /** 额度列的数值文案（不含单位）；单位由调用方用 .text-unit 渲染。 */
 export function amountUnitOf(e: EntitlementSummary): string {
-  if (e.unit === 'token') return 'Token';
-  if (e.unit === 'quota') return '配额';
-  if (e.unit === 'points') return '积分';
-  return '积分';
+  return unitLabelOf(e.unit);
 }
 
 export interface PlatformRollup {
@@ -502,7 +560,9 @@ export function rollupByPlatform(accounts: Account[], now = Date.now()): Platfor
       const uniq = [...new Set(_pools)];
       rest.detail = uniq.length ? uniq.join(' / ') : '无可用积分池';
     } else if (platform === 'zcode') {
-      rest.detail = rest.known > 0 ? 'Token 计量，不计入积分' : '未查询到额度';
+      // 「不计入积分」这个说法在 2026-11-17 之后有歧义：Qoder / Raccoon 的展示名
+      // 也叫积分。这里要说的是**不可换算 / 不可相加**，不是「不算积分」。
+      rest.detail = rest.known > 0 ? 'Token 计量，不与各平台积分相加' : '未查询到额度';
     }
     out.push(rest);
   }

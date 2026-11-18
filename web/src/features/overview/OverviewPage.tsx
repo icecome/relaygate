@@ -5,13 +5,24 @@
  * 都是完整版本，发现异常请链接过去处理。
  *
  * 三个额度指标都可展开看构成（2026-11-09 需求）：
- *   - 可用额度 → 按平台各自的总额度（四套计量分别展示，不相加）
+ *   - 可用额度 → 按平台各自的总额度（四种口径分别展示，不相加）
  *   - 今日消耗 → 按平台 → 按账号
- *   - 即将到期 → 哪些账号、到期多少积分（可切 3 / 7 / 30 天窗口）
+ *   - 即将到期 → 哪些账号、到期多少额度（可切 3 / 7 / 30 天窗口）
  *
- * 「今日消耗」只覆盖积分口径。后端从 2026-10 起刻意不把 ZCode 的 token、
- * Qoder 的配额、Raccoon 的分池写进 credit_history（曾把今日消耗抬高 4 个数量级），
- * 所以这三类平台在这里标「未纳入统计」，而不是编一个 0 出来。
+ * 计量口径（2026-11-17 订正。此前本页与凭据池把 Qoder 标成「配额」、
+ * Raccoon 标成「points」，而同一行的说明又写「赠送 2,587」「奖励积分 / 每日积分」
+ * —— 一个数两个名字，读的人只能认为计量列在骗他）：
+ *   - 除 ZCode 按 Token 计量外，Trae / WorkBuddy / Qoder / Raccoon 的上游单位
+ *     **都是积分**，只是各平台积分价值不同、三类积分之间不可换算；
+ *   - 因此计量列统一写「积分」（ZCode 写「Token」），差别写在口径说明里；
+ *   - 所有过滤 / 分组 / 合计一律走内部口径键 `caliber`（credit / token / quota /
+ *     points），**不走展示名字符串**：三个「积分」若按名字分组，合计会把
+ *     不可相加的三类加成一个没有意义的数。
+ *
+ * 「今日消耗」只覆盖可累积积分（credit_history）。后端从 2026-10 起刻意不把
+ * ZCode 的 token、Qoder 的两段积分、Raccoon 的日清积分写进这张表
+ * （曾把今日消耗抬高 4 个数量级），所以这三类平台标「未纳入统计」，
+ * 而不是编一个 0 出来。
  *
  * 「即将到期」需要完整 packs，列表端点是 slim（只有聚合值），
  * 因此展开时才按账号拉详情（GET /v1/credentials/:id），并做并发上限。
@@ -26,6 +37,7 @@ import { useSummaryStore } from '../../shared/api/SummaryProvider';
 import { useAsyncData } from '../../shared/hooks/useAsyncData';
 import { useBalanceAutoRefresh } from '../../shared/hooks/useBalanceAutoRefresh';
 import { accountState, formatFixed, formatNumber } from '../../shared/lib/format';
+import { isCumulativeCredit } from '../../shared/lib/entitlement';
 import {
   amountByPlatform,
   creditShare,
@@ -116,13 +128,18 @@ export default function OverviewPage() {
 
   /* ---------- ① 可用额度：按平台 ---------- */
   const amountRows = useMemo(() => amountByPlatform(accounts), [accounts]);
-  /** 积分口径合计（唯一可相加的口径：Trae + WorkBuddy）。 */
+  /**
+   * 可累积积分合计（唯一可相加的口径：Trae + WorkBuddy）。
+   *
+   * 判据走 `caliber`，不走 `unit`：Qoder 与 Raccoon 的展示名同样是「积分」，
+   * 按名字筛会把它们加进来（2026-11-17 之前的写法是
+   * `unit === '积分' && platform !== 'raccoon'`，靠平台名兜住 Raccoon，
+   * 而 Qoder 一旦展示成「积分」就会被误并）。
+   */
   const creditTotal = useMemo(() => {
     let total = 0;
     for (const r of amountRows) {
-      if (r.unit !== '积分') continue;
-      // Raccoon 也是「积分」字样，但它是分池日清，单列一行、不并入
-      if (r.platform === 'raccoon') continue;
+      if (!isCumulativeCredit(r.caliber)) continue;
       total += r.amount ?? 0;
     }
     return Math.round(total * 100) / 100;
@@ -147,24 +164,37 @@ export default function OverviewPage() {
     // 但金额需要完整 packs，所以只在拿到明细后计算金额
     return expiringAccounts(full, expiryWindow);
   }, [expiryDetails.data, expiryWindow]);
-  const expiryTotalsByUnit = useMemo(() => expiringTotals(expiryRows), [expiryRows]);
+  const expiryTotalsByCaliber = useMemo(() => expiringTotals(expiryRows), [expiryRows]);
   /**
    * 到期卡的卡面读数。
    *
-   * 未展开时用 summary 的聚合值（后端按 3/7 日算好的积分额度），
+   * 未展开时用 summary 的聚合值（后端按 3/7 日算好的可累积积分额度），
    * 展开且已拉到明细后改用明细自己算的值——两者口径相同（都只算 remaining>0），
    * 但明细可以切 3/7/30 天，而 summary 只有 3 与 7。
    *
-   * 注意 summary.expiring7d 只统计**积分**口径；切到 30 天窗口时它不适用，
-   * 因此展开后的读数一律走明细。
+   * 读数只取 `caliber === 'credit'` 那一组（与 summary.expiring7d 同口径），
+   * 切到 30 天窗口时 summary 不适用，因此展开后的读数一律走明细。
+   * 其余口径（Qoder 两段积分 / ZCode Token）不进这个数：它们与 Trae 积分
+   * 不同值，加进卡面读数会让「到期」与「可用额度」两张卡的单位对不上。
    */
   const expiringHeadValue = useMemo(() => {
     if (expiryDetails.data) {
-      const credit = expiryTotalsByUnit.find((x) => x.unit === '积分');
+      const credit = expiryTotalsByCaliber.find((x) => x.caliber === 'credit');
       return formatNumber(credit?.amount ?? 0);
     }
     return formatNumber(summary?.expiring7d ?? 0);
-  }, [expiryDetails.data, expiryTotalsByUnit, summary?.expiring7d]);
+  }, [expiryDetails.data, expiryTotalsByCaliber, summary?.expiring7d]);
+  /**
+   * 到期卡读数之外的口径。
+   *
+   * 卡面那个数只取 credit 一组（与 summary.expiring7d 同口径）。若明细里还
+   * 出现了别的口径在到期，必须在副文案说出来 —— 否则「7 日内到期 X 积分」
+   * 会被读成「总共就这些要到期」，而下面表格里另有 Qoder 的两段积分在到期。
+   */
+  const expiringOtherCalibers = useMemo(
+    () => expiryTotalsByCaliber.filter((x) => x.caliber !== 'credit'),
+    [expiryTotalsByCaliber],
+  );
 
   /** 卡面副文案：未展开时提示最近一项还有多久，避免「0」被误读成没有额度。 */
   const expiringHint = useMemo(() => {
@@ -173,10 +203,15 @@ export default function OverviewPage() {
         return `当前 ${expiryWindow} 天窗口内没有到期的额度`;
       }
       const soonest = expiryRows[0];
-      return `最近一项：${soonest.label} 还有 ${soonest.days} 天（${formatNumber(soonest.amount)} ${soonest.unit}）`;
+      const others = expiringOtherCalibers.length
+        ? `；另有 ${expiringOtherCalibers
+            .map((x) => `${x.unit} ${formatNumber(x.amount)}`)
+            .join(' / ')} 到期，单列不并入`
+        : '';
+      return `最近一项：${soonest.label} 还有 ${soonest.days} 天（${formatNumber(soonest.amount)} ${soonest.unit}）${others}`;
     }
     return '点开可按 3 / 7 / 30 天查看具体账号';
-  }, [expiryDetails.data, expiryRows, expiryWindow]);
+  }, [expiryDetails.data, expiryRows, expiryWindow, expiringOtherCalibers]);
 
   /**
    * 需处理的异常：需重新登录、冷却中、已停用。
@@ -225,7 +260,7 @@ export default function OverviewPage() {
                   label="可用额度"
                   value={formatFixed(creditTotal, 2)}
                   unit="积分"
-                  hint="仅含可相加的 2 类计量"
+                  hint="只含 Trae + WorkBuddy 的可累积积分；Qoder / Raccoon 的积分不同值，ZCode 是 Token，均单列不相加"
                   panelId="overview-panel-credit"
                   open={openMetric === 'credit'}
                   onToggle={() => toggleMetric('credit')}
@@ -236,7 +271,7 @@ export default function OverviewPage() {
                   label="今日消耗"
                   value={credits.loading && !credits.data ? '—' : formatFixed(usageTotal, 2)}
                   unit="积分"
-                  hint="余额刷新时写入的快照差分"
+                  hint="只含可累积积分（credit_history 差分）"
                   panelId="overview-panel-usage"
                   open={openMetric === 'usage'}
                   onToggle={() => toggleMetric('usage')}
@@ -285,7 +320,7 @@ export default function OverviewPage() {
                 <MetricPanel
                   id="overview-panel-usage"
                   title="今日消耗 · 构成明细"
-                  sub="只覆盖积分口径（credit_history）"
+                  sub="只覆盖可累积积分（credit_history 只写 Trae / WorkBuddy）"
                   onClose={() => setOpenMetric(null)}
                 >
                   <DetailState
@@ -321,7 +356,7 @@ export default function OverviewPage() {
                                         <td className="col-name" title={m.accountId}>
                                           {m.label}
                                         </td>
-                                        <td className="col-unit">积分</td>
+                                        <td className="col-unit">{r.unit}</td>
                                         <td className="col-num">{formatFixed(m.amount, 2)}</td>
                                         <td className="col-note">
                                           {!m.covered && '本轮无快照'}
@@ -363,7 +398,7 @@ export default function OverviewPage() {
                     empty={expiryRows.length === 0}
                     emptyHint={`${expiryWindow} 日内没有到期的额度`}
                   >
-                    <ExpiryTable rows={expiryRows} totals={expiryTotalsByUnit} />
+                    <ExpiryTable rows={expiryRows} totals={expiryTotalsByCaliber} />
                   </DetailState>
                 </MetricPanel>
               )}
@@ -460,11 +495,15 @@ export default function OverviewPage() {
  * 三张展开区共用同一套骨架：名称 / 计量 / 数值 / 说明。
  * 之所以抽成表格而不是继续用原来的两栏 flex：
  *   1. 数值列定宽右对齐 + tabular-nums，五行数字才能纵向比较；
- *   2. 计量单独成列，「积分 / Token / 配额 / points」不再混在数值列里；
- *   3. 分组表头只写一次「不可相加」，替代原来每行重复的「不计入合计」。
+ *   2. 计量单独成列，单位不再混在数值列里；
+ *   3. 分组表头只写一次「不并入合计」的理由，替代原来每行重复的「不计入合计」。
+ *
+ * 计量列的取值规则（2026-11-17 订正）：除 ZCode 是 Token，四个平台上游都按
+ * 积分计量，因此这一列就写「积分」。**分组与合计不读这一列**，读 `caliber`
+ * 内部键 —— 「都是积分」不等于「可以相加」，各平台积分价值不同。
  */
 
-/** ① 可用额度：可相加的积分在上，其余计量归入分组表头之下。 */
+/** ① 可用额度：可相加的可累积积分在上，其余口径归入分组表头之下。 */
 function CreditTable({
   rows,
   creditTotal,
@@ -472,9 +511,8 @@ function CreditTable({
   rows: ReturnType<typeof amountByPlatform>;
   creditTotal: number;
 }) {
-  // 「积分」且非 raccoon 才参与合计，与 creditTotal 的算法同源
-  const isCredit = (r: (typeof rows)[number]) =>
-    r.unit === '积分' && r.platform !== 'raccoon';
+  // 与 creditTotal 同源：判据是 caliber，不是展示名
+  const isCredit = (r: (typeof rows)[number]) => isCumulativeCredit(r.caliber);
   const creditRows = rows.filter(isCredit);
   const otherRows = rows.filter((r) => !isCredit(r));
 
@@ -500,7 +538,9 @@ function CreditTable({
         {creditRows.map((r) => (
           <tr key={r.platform} className={r.known === 0 ? 'is-muted' : undefined}>
             <td className="col-name">{r.label}</td>
-            <td className="col-unit">{r.unit}</td>
+            <td className="col-unit" title={r.caliberNote}>
+              {r.unit}
+            </td>
             <td className="col-num">{r.amount == null ? '未查询' : formatFixed(r.amount, 2)}</td>
             <td className="col-note">
               {r.known}/{r.accounts} 个账号{r.detail ? ` · ${r.detail}` : ''}
@@ -511,23 +551,27 @@ function CreditTable({
           <td className="col-name">合计</td>
           <td className="col-unit">积分</td>
           <td className="col-num">{formatFixed(creditTotal, 2)}</td>
-          <td className="col-note">Trae + WorkBuddy 可相加</td>
+          <td className="col-note">Trae + WorkBuddy 同一单位，可相加</td>
         </tr>
 
         {otherRows.length > 0 && (
           <tr className="detail-group">
             <th colSpan={4} scope="colgroup">
-              以下为不可相加的计量，单列展示
+              以下口径不并入上方合计：同为积分但各平台价值不同，或与积分不同维
             </th>
           </tr>
         )}
         {otherRows.map((r) => (
           <tr key={r.platform} className={r.known === 0 ? 'is-muted' : undefined}>
             <td className="col-name">{r.label}</td>
-            <td className="col-unit">{r.unit}</td>
+            <td className="col-unit" title={r.caliberNote}>
+              {r.unit}
+            </td>
             <td className="col-num">{r.amount == null ? '未查询' : formatFixed(r.amount, 2)}</td>
             <td className="col-note">
-              {r.known}/{r.accounts} 个账号{r.detail ? ` · ${r.detail}` : ''}
+              <span style={{ color: 'var(--rg-text-secondary)' }}>{r.caliberNote}</span>
+              {` · ${r.known}/${r.accounts} 个账号`}
+              {r.detail ? ` · ${r.detail}` : ''}
             </td>
           </tr>
         ))}
@@ -566,7 +610,14 @@ function UsageTable({
         {rows.map((r) => (
           <tr key={r.platform} className={r.notTracked ? 'is-muted' : undefined}>
             <td className="col-name">{r.label}</td>
-            <td className="col-unit">积分</td>
+            {/*
+              计量列写该平台**自己的**单位，不再整列硬写「积分」：
+              ZCode 是 Token，硬标「积分」等于给一个没被统计的数贴错单位。
+              未纳入统计的行数值列本来就是「—」，单位标自己那个才自洽。
+            */}
+            <td className="col-unit" title={r.caliberNote}>
+              {r.unit}
+            </td>
             <td className="col-num">
               {r.notTracked ? '—' : formatFixed(r.amount, 2)}
             </td>
@@ -640,7 +691,9 @@ function ExpiryTable({
               {r.days <= 0 ? '今天' : `${r.days} 天后`}
             </td>
             <td className="col-note">{r.platformLabel}</td>
-            <td className="col-unit">{r.unit}</td>
+            <td className="col-unit" title={r.caliberNote}>
+              {r.unit}
+            </td>
             <td className="col-num">{formatFixed(r.amount, 2)}</td>
             <td
               className="col-note"
@@ -653,15 +706,22 @@ function ExpiryTable({
             </td>
           </tr>
         ))}
+        {/*
+          合计按 caliber 分组，一行一组。key 也必须用 caliber：
+          credit / quota 的展示名同为「积分」，用 t.unit 当 key 会撞出
+          两个相同 key 的 <tr>（React 直接报 duplicate key，且渲染顺序不稳）。
+        */}
         {totals.map((t) => (
-          <tr key={t.unit} className="detail-total">
+          <tr key={t.caliber} className="detail-total">
             <td className="col-name">合计</td>
             <td colSpan={2} className="col-note">
               只计仍未用尽的额度
             </td>
-            <td className="col-unit">{t.unit}</td>
+            <td className="col-unit" title={t.caliberNote}>
+              {t.unit}
+            </td>
             <td className="col-num">{formatFixed(t.amount, 2)}</td>
-            <td className="col-note" />
+            <td className="col-note">{t.caliberNote}</td>
           </tr>
         ))}
       </tbody>

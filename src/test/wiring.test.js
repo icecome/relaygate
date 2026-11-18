@@ -287,8 +287,62 @@ async function run() {
     `只扫到 ${frontPaths.length} 条`,
   );
 
+  /* ---------- W-09 模型池状态页（GET /v1/models/status）---------- */
+  /*
+   * 2026-11-17 缺陷：routes/models.js 的 /v1/models/status 里引用了
+   * `variant.isEdition(...)`，而 `variant` 只是 listModels() 函数体内的局部
+   * require，handler 作用域里没有 ⇒ ReferenceError: variant is not defined，
+   * 被外层 catch 转成 HTTP 500，「模型池状态」页整页请求失败。
+   *
+   * 为什么此前的用例全都没抓到：那行是 `list().some((a) => ... variant ...)`，
+   * **空池时回调根本不执行**，行被整体跳过 ⇒ 200。只有池里存在启用账号才会炸。
+   * W-02 恰好在本断言之前种入了一个启用的 workbuddy 账号，所以这里可以直接复用；
+   * 但为防「上游种号顺序变动导致本用例假通过」，这里显式再种一个 raccoon 账号，
+   * 并同时覆盖 raccoonEnabled / wbEnabled 两个判定分支。
+   *
+   * 断言只针对「不再抛 ReferenceError / 不再 500」，不依赖上游：目录拉取失败会
+   * 回退本地表，仍然是 200。
+   */
+  const seedRaccoon = store.add({
+    label: 'wiring-raccoon', edition: 'raccoon', token: 't-rc', userId: 'uid-wiring-rc',
+  }, 'raccoon');
+  const poolStatus = await req('GET', '/v1/models/status');
+  const poolErrMsg = String(poolStatus.json?.error?.message || '');
+  check(
+    '[W-09] 有启用账号时 GET /v1/models/status 返回 200（不再 variant is not defined ⇒ 500）',
+    poolStatus.status === 200,
+    `${poolStatus.status} ${poolErrMsg.slice(0, 160)}`,
+  );
+  check(
+    '[W-09] 响应体是模型行数组且每行有 status（前端 STATUS_META 依赖该字段）',
+    Array.isArray(poolStatus.json?.data) && poolStatus.json.data.length > 0
+      && poolStatus.json.data.every((m) => typeof m.status === 'string'),
+    `data=${Array.isArray(poolStatus.json?.data) ? poolStatus.json.data.length : typeof poolStatus.json?.data}`,
+  );
+  // 页面同时拉的两个伴生端点也要活（同一个 500 面：整页里任一请求失败即报错）
+  const catalogStatus = await req('GET', '/v1/admin/catalog/status');
+  const usageStatus = await req('GET', '/v1/admin/models/stats?days=7');
+  check(
+    '[W-09] 同页伴生端点 catalog/status 与 models/stats 均为 200',
+    catalogStatus.status === 200 && usageStatus.status === 200,
+    `catalog=${catalogStatus.status} stats=${usageStatus.status}`,
+  );
+  // 静态守卫：handler 作用域内不得引用未在本文件顶层 require 的标识符。
+  // 这类「局部 require 被别的 handler 复用」的缺陷，运行时只在特定数据分布下暴露。
+  {
+    const src = fs.readFileSync(path.join(ROOT, 'src', 'routes', 'models.js'), 'utf8');
+    const topRequire = /^\s*(?:const|let|var)\s+variant\s*=\s*require\(/m.test(src);
+    const localRequire = /(?:^|\s)(?:const|let|var)\s+variant\s*=\s*require\(/.test(src
+      .split('\n').filter((l) => /^\s/.test(l)).join('\n'));
+    check(
+      '[W-09] variant 在 models.js 顶层 require（单一绑定），不再有函数内局部副本',
+      topRequire && !localRequire,
+      `top=${topRequire} local=${localRequire}`,
+    );
+  }
+
   /* ---------- 清理 ---------- */
-  for (const a of [wb, noRefresh]) {
+  for (const a of [wb, noRefresh, seedRaccoon]) {
     try { store.remove(a.id); } catch { /* 忽略 */ }
   }
 }

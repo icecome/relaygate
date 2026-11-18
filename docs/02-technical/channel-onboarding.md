@@ -39,6 +39,13 @@ Qoder 双区域也都已登录，但**这些账号此前无法通过面板接入
 
 1. `src/platform/variant.js` 里加一项（`id` / `label` / `edition` / `capability` /
    `note` / `onboarding`，以及域名、路径、错误码、身份头）。
+   `capability.keepaliveMode` **必须显式声明**，三态之一（`scheduled` /
+   `not-needed` / `not-implemented`），它同时决定 `scheduler.keepaliveCandidates()`
+   覆不覆盖该平台、以及面板池卡片与渠道详情写哪句结论。判据与措辞同源，
+   见 `docs/01-architecture/entitlement-units.md` §2；漏声明时前端只能归到
+   「未纳入定时保活扫描」，说不清原因。
+   另外 `capability` 里额度相关的展示口径要同步 `web/src/shared/lib/entitlement.ts`
+   的 `UNIT_LABEL` / `UNIT_CALIBER`（若新平台的额度不是可累积积分）。
 2. 平台自己的模块目录（如 `src/<platform>/local.js` 负责本机凭据读取）。
 3. 平台自己的一组管理路由，挂到 `/v1/<platform>`（鉴权按路由注入 `authenticateAdmin`）。
 4. 若新增了「本机客户端」接入方式，在 `src/routes/admin-channels.js` 的 `localProbe()`

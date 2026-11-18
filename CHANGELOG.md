@@ -7,6 +7,37 @@
 
 ## Unreleased
 
+### 额度口径与保活结论统一（2026-11-17）
+
+- **计量列不再给同一个数字起两个名字**：除 ZCode 按 Token 计量外，Trae /
+  WorkBuddy / Qoder / Raccoon 的上游单位都是积分（Qoder 是 `userQuota` +
+  `addOnQuota` 两段 Credits，Raccoon 是 `points/v1/balance` 的 credit），
+  因此计量列统一显示「积分」。此前 Qoder 标「配额」、Raccoon 标「points」，
+  而同一行的说明写「赠送 2,587」「奖励积分 / 每日积分」，一个数两个名字。
+  口径差别改由悬停的限定语表达（可累积 / 分两段 / 分池日清 / Token）。
+- **合计判据从展示名改为内部键**：「可累积积分合计」（原「积分口径合计」）
+  现在按 `caliber === 'credit'` 筛，只含 Trae + WorkBuddy。展示名统一后，
+  任何按「积分」字符串筛的旧写法都会把 Qoder 与 Raccoon 误并进来
+  （实测数据下会得 5,030 而非 980），已由测试钉住。
+- **保活结论三态化，界面不再自相矛盾**：新增渠道能力位 `keepaliveMode`
+  （`scheduled` / `not-needed` / `not-implemented`）。池卡片与渠道详情同一措辞：
+  Trae / WorkBuddy / Raccoon 显示「参与定时保活」；ZCode 显示「无需保活」
+  （上游 JWT 无 exp、不发 refresh_token）；Qoder 显示「不保活 · 到期需手动更新」
+  （凭据 30 天会过期，但网关未实现其续期链路）。尾注逐态陈述，删掉了
+  「Token 仍会按需续期」这句对 Qoder / ZCode 都不成立的兜底话。
+  判据见 `docs/01-architecture/entitlement-units.md`，边界见 F15。
+- **按需续期现在也写「最近保活」**：此前只有每日保活轮写该列，15 分钟一轮的
+  临期扫描与请求前兜底续期成功却不写，导致凭据明明活着、面板却显示「尚无记录」。
+  三条链路统一写展示位（结果标「ok（按需续期）」），判据位 `lastRefreshAt`
+  的分工不变。
+- **到期列不再替缺记录的账号担保**：`expiredAt` 为空现在分两种说法——
+  ZCode 报「无 Token 到期概念」（上游确实不返回到期时间），其余平台报
+  「N 个账号到期时间未知」（多为手动导入未带到期时间，典型是 Qoder）。
+  此前一律报「长期有效 / Token 均 7 日以上」，与同池卡片上的
+  「不保活 · 到期需手动更新」互相打脸。
+- **验证**：`node src/test/channels.test.js`（54）/ `overview-detail.test.js`（25）/
+  `frontend-entitlement.test.js`（23）/ `unit.test.js`（324，含 3 条新增保活回归）。
+
 ### WorkBuddy 客户端 5.9.3 形状对齐（2026-11-10）
 
 - **11128 根因定位并修复（system 内容层 + 长度阈值）**：DSH 重启后用新 `wb`
