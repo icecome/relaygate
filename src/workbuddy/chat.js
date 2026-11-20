@@ -37,6 +37,11 @@ function normalizeBody(body) {
       if (prepared.relocated) {
         console.log(`[wb-chat] system relocate: ${prepared.movedChars} chars moved from system to first user message`);
       }
+      if (prepared.swapped > 0) {
+        // developer→system 归一（2026-11-19 根因）：reasoning 请求的 developer
+        // role 同样会被上游内容校验拦（11128），归一后才进同一条迁位链路。
+        console.log(`[wb-chat] developer role normalized: ${prepared.swapped} message(s) developer->system`);
+      }
       if (prepared.scrubbed) {
         console.log(`[wb-chat] identity scrub: ${prepared.scrubbed} identity sentence(s) neutralized in system prompt`);
       }

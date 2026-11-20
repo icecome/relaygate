@@ -187,13 +187,13 @@ const VARIANTS = {
     // resources/app.asar 里 main/server.js 的 buildVlmGatewayHeaders 与
     // applyGatewayHeaders（见 docs/05-incidents/workbuddy-channel-detection-2026-10-21.md）。
     identity: {
-      userAgent: 'WorkBuddy/5.9.3 WorkBuddy/5.9.3 CLI/2.165.0',
+      userAgent: 'WorkBuddy/5.11.3 WorkBuddy/5.11.3 CLI/2.176.0',
       productCode: 'workbuddy',
       product: 'SaaS',
       // 桌面端版本：X-IDE-Version 与 UA 的第一段都取它
-      appVersion: '5.9.3',
+      appVersion: '5.11.3',
       // 随包 CLI 版本：UA 末段，取自 cli/package.json 的 publishConfig.customPackage.version
-      cliVersion: '2.165.0',
+      cliVersion: '2.176.0',
       // 客户端固定带 X-Private-Data: true（关闭「隐私数据通道」）
       privateData: 'true',
       // X-IDE-Type / X-IDE-Name 恒为 WorkBuddy（桌面端写死）

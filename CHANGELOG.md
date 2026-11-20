@@ -7,6 +7,32 @@
 
 ## Unreleased
 
+### WorkBuddy 11128 复发修复：developer role 同步迁位（2026-11-19）
+
+- **复发根因**：11-13 / 11-19 各 2 条真实 11128（`wb/hy4free`、`wb/deepseek-v4.1-flash`），
+  但 11-10 的 system 迁位已在生效。时间对齐（`scripts/probes/wb-incident-join2.js`）显示
+  两条 11128 的 DSH 请求都带 `reasoningEffort=high`；全量相关性：effort=high 的
+  WB 请求 2/2 全 11128，effort 未设置 0/12。取证 DSH 适配层
+  （pi-ai `openai-completions.js#convertMessages`）确认：**reasoning 模型在通用
+  OpenAI 兼容 provider 上会把指令消息发成 `role: "developer"`**
+  （`instructionRole = model.reasoning && supportsDeveloperRole ? 'developer' : 'system'`，
+  未知 provider 的 supportsDeveloperRole 默认 true），而 11-10 的迁位只认
+  `role: "system"` —— developer 形状整条绕过迁位，被上游内容校验拦下。
+  真实上游复现：同一份 9.5KB system + 49 tools，`system` → 200、
+  `developer` → 11128（`wb-incident-replay.js` 形状 F）。
+- **修复**：`system-relocate` 把 developer 视为指令类 role——先归一成 system
+  （内容零改动，只换 role 字段），再走同一条迁位链路；`identity-scrub` 的句级
+  中和同样覆盖 developer。归一数量单独打日志
+  （`[wb-chat] developer role normalized: N message(s)`），迁位未触发时也不会漏观测。
+  真实上游验证：developer 长指令 + 49 工具 → 200（`wb-developer-fix-verify.js`）。
+- **运行实例生效方式**：网关服务需重启后加载新代码；当前实例内验证已由
+  进程内直打（`wb-direct-chat` 同路径）完成。
+- **顺手同步指纹衰减**：本机客户端已升 5.11.3 / CLI 2.176.0（11-13 安装），
+  `variant.js` 声明还停在 5.9.3。已 `check-wb-fingerprint.js --update` 并手动
+  同步 UA 模板（版本衰减是 10-22 那批 11128 的成因之一，不消除会叠加暴露面）。
+- **测试**：`unit.test.js` 327 全绿（+3：developer 迁位回归、短指令归一、
+  scrub 覆盖 developer）。
+
 ### 额度口径与保活结论统一（2026-11-17）
 
 - **计量列不再给同一个数字起两个名字**：除 ZCode 按 Token 计量外，Trae /

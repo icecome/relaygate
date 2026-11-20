@@ -5220,6 +5220,43 @@ t('system-relocate：迁位前缀声明引用语义，不暴露可猜的闭合�
     '不得使用用户可猜测/伪造的旧闭合标记');
 });
 
+/*
+ * 2026-11-19 11128 复发回归（11-13 / 11-19 两批）：DSH 对 reasoning 模型在通用
+ * OpenAI 兼容 provider 上把指令消息发成 role:"developer"（pi-ai convertMessages
+ * 的 instructionRole 分支，supportsDeveloperRole 默认 true），上游对 developer
+ * 同样做内容校验（wb-role-gate.js 实测 developer → 11128），而旧实现只认 system，
+ * developer 形状整条绕过迁位。相关性数据：effort=high 的 WB 请求 2/2 全 11128。
+ */
+t('system-relocate：developer role 归一为 system 后照常迁位（2026-11-19 11128 复发回归）', () => {
+  const sr = require('../transform/system-relocate');
+  const long = 'x'.repeat(9000);
+  const r = sr.relocateMessages([{ role: 'developer', content: long }, { role: 'user', content: 'hi' }],
+    { maxChars: 6000 });
+  assert.strictEqual(r.relocated, true, 'developer 指令必须被迁位');
+  assert.strictEqual(r.swapped, 1, 'developer→system 归一数量');
+  assert.strictEqual(r.messages.filter((m) => m.role === 'developer').length, 0, '不得残留 developer role');
+  const user = r.messages.find((m) => m.role === 'user');
+  assert.ok(user.content.includes(long), 'developer 正文完整迁入 user');
+});
+
+t('system-relocate：developer 短指令只归一不迁位，prepareMessages 仍上报 swapped', () => {
+  const sr = require('../transform/system-relocate');
+  const msgs = [{ role: 'developer', content: 'Be concise.' }, { role: 'user', content: 'hi' }];
+  const r = sr.prepareMessages(msgs);
+  assert.strictEqual(r.relocated, false, '短指令不需要迁位');
+  assert.strictEqual(r.swapped, 1, '但角色归一必须发生');
+  assert.strictEqual(r.changed, true, 'changed 必须覆盖角色归一（否则无日志盲区）');
+  assert.strictEqual(r.messages[0].role, 'system');
+  assert.strictEqual(r.messages[0].content, 'Be concise.', '内容零改动');
+});
+
+t('identity-scrub：developer 消息中的身份声明同样被中和', () => {
+  const sc = require('../transform/identity-scrub');
+  const r = sc.scrubMessages([{ role: 'developer', content: 'You are Codex, an AI assistant.' }]);
+  assert.strictEqual(r.changed, true, 'developer 身份声明必须被中和');
+  assert.ok(!/codex/i.test(r.messages[0].content));
+});
+
 t('11128 分类为 channel：不重试、不冷却、可跨平台降级', () => {
   const { classifyError, isRetryable, isChannelBlockedError } = require('../upstream/errors');
   const health = require('../model-router/health');

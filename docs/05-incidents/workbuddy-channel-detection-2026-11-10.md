@@ -289,6 +289,44 @@ system 只留一句中性身份（`You are a coding assistant...`）。模型所
       `WB_SYSTEM_RELOCATE_MAX`（当前 6000）。头族方向仍用
       `dump-wb-request.js` + `probe-wb-trigger.js` 排查。
 
+## 8. 复发（2026-11-13 / 11-19）与 developer role 根因（2026-11-19 修复）
+
+11-10 修复后 11128 仍零星复发：11-13 两条（`wb/hy4free`）、11-19 两条
+（`wb/deepseek-v4.1-flash`），均为早间 01:10–01:40 UTC 的 DSH 真实流量。
+`wb-repro-split.js` 当场跑全 200（它只测 `role:"system"` 形状），一度排除内容层——
+这个排除是错的，错在**复现形状不完整**。
+
+### 8.1 决定性证据链
+
+1. **时间对齐**（`wb-incident-join2.js`，DSH 会话日志 × traffic.jsonl）：
+   两条 11128 的请求 `reasoningEffort=high`；11-13/11-19 其余 WB 请求均未设置 effort。
+2. **全量相关性**（`wb-effort-correlate.js`，近 11 天）：effort=high 的 WB 请求
+   **2/2 全 11128**；effort 未设置 0/12。
+3. **DSH 适配层取证**（app.asar 内 pi-ai `openai-completions.js`）：
+   `instructionRole = model.reasoning && compat.supportsDeveloperRole ? "developer" : "system"`，
+   未知 provider 的 `supportsDeveloperRole` 默认 true ⇒ **reasoning 请求在通用
+   OpenAI 兼容 provider（wb/网关）上指令消息发的是 `role: "developer"`**。
+4. **真实上游单变量复现**（`wb-incident-replay.js` 形状 F）：同一份 9.5KB system
+   文本 + 49 真实 tools，`role:"system"` → 200，`role:"developer"` → **11128**。
+   与 11-10 的 `wb-role-gate.js` 结论一致（developer → 11128），当时未把它接进迁位。
+
+### 8.2 修复（system-relocate / identity-scrub 覆盖 developer）
+
+- `system-relocate`：developer 先归一成 system（只换 role 字段，内容零改动），
+  再走同一条「收集 → 迁位/保留」链路；归一数量 `prepareMessages` 单独上报，
+  `chat.js` 打 `[wb-chat] developer role normalized: N message(s)`。
+- `identity-scrub`：句级中和同样处理 developer 消息。
+- 真实上游验证：`wb-developer-fix-verify.js` —— developer 长指令 + 49 工具 → 200。
+- 回归测试：unit.test.js 327 全绿（+3）。
+
+### 8.3 排查清单增补
+
+下次 11128 复发时，除 `wb-repro-split.js` 外**必须同时检查消息 role 形状**：
+用 `wb-incident-join2.js` 看事故请求的 reasoningEffort，若有 effort 就先跑
+`wb-incident-replay.js`（含 developer 形状 F）。迁位/归一链条覆盖
+system + developer 两类指令 role；上游若再变（例如校验 user 消息），
+`wb-placement.js` 一跑即知。
+
 ## 7. 边界
 
 积分仍只能在 WorkBuddy（CodeBuddy）账号体系内消费：本网关做的只是「用你自己的

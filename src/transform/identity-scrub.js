@@ -14,7 +14,9 @@
  * 内容，与 RTK 同级处理：有总闸、有日志、有逐次观测字段。
  *
  * 不做的事：不隐藏「网关转发」这一事实本身（上游还能从 TLS/JA3、行为节奏
- * 识别）；不做翻译/摘要级改写；对非 system 消息一律不动（误伤面收敛到最小）。
+ * 识别）；不做翻译/摘要级改写；只动指令类消息（system / developer，2026-11-19
+ * 起 developer 同样纳入——reasoning 请求的指令 role，上游校验与 system 相同），
+ * 其余消息一律不动（误伤面收敛到最小）。
  */
 
 /** 句子切分：中英文句号/问叹号/分号/换行，保留分隔符。 */
@@ -167,8 +169,13 @@ function scrubText(text) {
 }
 
 /**
- * 中和 messages 数组里 system 消息的身份声明。
- * 只处理 role === 'system'（字符串 content）；其余消息原样返回同一引用，
+ * 中和 messages 数组里指令消息（system / developer）的身份声明。
+ *
+ * 2026-11-19：developer 同样纳入——reasoning 模型在通用 OpenAI 兼容 provider
+ * 上会把指令消息发成 role:"developer"（pi-ai convertMessages 的
+ * instructionRole 分支），上游对 developer 的内容校验与 system 相同，
+ * 只处理 system 会漏掉整类请求。
+ * 只处理字符串 content；其余消息原样返回同一引用，
  * 保证未命中时零拷贝、零行为差异。
  *
  * @param {Array} messages OpenAI 格式 messages
@@ -179,7 +186,7 @@ function scrubMessages(messages) {
   let hits = 0;
   let changed = false;
   const out = messages.map((m) => {
-    if (!m || m.role !== 'system') return m;
+    if (!m || (m.role !== 'system' && m.role !== 'developer')) return m;
     if (typeof m.content !== 'string' || !m.content) return m;
     /*
      * 判定顺序（m-03）：只按「该句是否命中身份声明」决定是否改写。

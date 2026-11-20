@@ -64,6 +64,35 @@ function textOf(content) {
 }
 
 /**
+ * 指令类 role：system 与 developer 同等对待。
+ *
+ * 2026-11-19 取证（11-13 / 11-19 两批 11128 复发的根因）：DSH 的 LLM 适配层
+ * （pi-ai openai-completions.js#convertMessages）对 reasoning 模型在通用
+ * OpenAI 兼容 provider 上把指令消息发成 role: "developer"
+ * （instructionRole = model.reasoning && supportsDeveloperRole ? 'developer' : 'system'，
+ * 而未知 provider 的 supportsDeveloperRole 默认 true）。上游渠道校验对
+ * developer 同样做内容校验（wb-role-gate.js 实测 developer → 11128），
+ * 而本模块此前只认 system —— developer 形状的请求整条绕过迁位。
+ * 相关性数据：effort=high 的 WB 请求 2/2 全 11128，effort 未设置 0/12。
+ */
+function isInstructionRole(m) {
+  return !!m && (m.role === 'system' || m.role === 'developer');
+}
+
+/** developer → system 角色归一（只换 role，内容零改动）。返回换写数量。 */
+function normalizeDeveloperRole(messages) {
+  let swapped = 0;
+  const out = messages.map((m) => {
+    if (m && m.role === 'developer') {
+      swapped += 1;
+      return { ...m, role: 'system' };
+    }
+    return m;
+  });
+  return { messages: out, swapped };
+}
+
+/**
  * 该 system 消息能否整条安全地迁走文本。
  *
  * `textOf` 对「文本块 + 图片块」混合消息只返回文本 —— 若按它判据删掉整条，
@@ -88,11 +117,12 @@ function isTextOnlySystem(m) {
  * @returns {{messages:Array, relocated:boolean, movedChars:number, systemChars:number}}
  */
 function relocateMessages(messages, opts = {}) {
+  const none = { swapped: 0 };
   if (!Array.isArray(messages) || !messages.length) {
-    return { messages, relocated: false, movedChars: 0, systemChars: 0 };
+    return { messages, relocated: false, movedChars: 0, systemChars: 0, ...none };
   }
   const limit = opts.maxChars != null ? opts.maxChars : maxSystemChars();
-  if (!limit) return { messages, relocated: false, movedChars: 0, systemChars: 0 };
+  if (!limit) return { messages, relocated: false, movedChars: 0, systemChars: 0, ...none };
 
   /*
    * 收集全部 system 文本（保持原顺序），并确认超限。
@@ -105,8 +135,12 @@ function relocateMessages(messages, opts = {}) {
   let total = 0;
   const sysTexts = [];
   const passthroughSystems = [];
+  // 先做 developer→system 角色归一：上游对 developer 同样做内容校验，
+  // 归一后走同一条迁位/保留逻辑（内容零改动，只换 role 字段）。
+  const norm = normalizeDeveloperRole(messages);
+  if (norm.swapped) messages = norm.messages;
   for (const m of messages) {
-    if (!m || m.role !== 'system') continue;
+    if (!m || !isInstructionRole(m)) continue;
     if (!isTextOnlySystem(m)) {
       passthroughSystems.push(m);
       continue;
@@ -120,12 +154,12 @@ function relocateMessages(messages, opts = {}) {
     sysTexts.push(t);
   }
   if (total === 0 || total <= limit) {
-    return { messages, relocated: false, movedChars: 0, systemChars: total };
+    return { messages, relocated: false, movedChars: 0, systemChars: total, swapped: norm.swapped };
   }
 
   const joined = sysTexts.join('\n\n');
-  // 只删除「确实被迁走文本」的 system；跳过者原样留在原位。
-  const out = messages.filter((m) => !(m && m.role === 'system' && isTextOnlySystem(m)));
+  // 只删除「确实被迁走文本」的 system/developer；跳过者原样留在原位。
+  const out = messages.filter((m) => !(m && isInstructionRole(m) && isTextOnlySystem(m)));
   // 迁位后的 system 短句放在最前（保持「系统提示在最前」的常规形状）
   out.unshift(...passthroughSystems, { role: 'system', content: NEUTRAL_SYSTEM });
 
@@ -157,7 +191,7 @@ function relocateMessages(messages, opts = {}) {
       out.splice(firstUser, 0, { role: 'user', content: prefix.trimEnd() });
     }
   }
-  return { messages: out, relocated: true, movedChars: joined.length, systemChars: total };
+  return { messages: out, relocated: true, movedChars: joined.length, systemChars: total, swapped: norm.swapped };
 }
 
 /**
@@ -177,13 +211,16 @@ function prepareMessages(messages, deps = {}) {
   }
   const rel = relocateEnabled()
     ? relocateMessages(out)
-    : { messages: out, relocated: false, movedChars: 0 };
+    : { messages: out, relocated: false, movedChars: 0, swapped: 0 };
   return {
     messages: rel.messages,
-    changed: scrubbed > 0 || rel.relocated,
+    changed: scrubbed > 0 || rel.relocated || rel.swapped > 0,
     relocated: rel.relocated,
     scrubbed,
     movedChars: rel.movedChars,
+    // developer→system 角色归一的数量（迁位未触发时也可能发生）。
+    // chat.js 据此单独打日志，避免「无迁位日志但有角色变化」的观测盲区。
+    swapped: rel.swapped || 0,
   };
 }
 
@@ -192,6 +229,7 @@ module.exports = {
   prepareMessages,
   relocateEnabled,
   maxSystemChars,
+  normalizeDeveloperRole,
   NEUTRAL_SYSTEM,
   DEFAULT_MAX_SYSTEM_CHARS,
 };
