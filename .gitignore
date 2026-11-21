@@ -41,6 +41,7 @@ __pycache__/
 *.pyc
 tmp-userdata/
 **/tmp-userdata/
+.memsearch/
 
 # ---------- 临时探针与调试输出（根目录）----------
 /_*.log

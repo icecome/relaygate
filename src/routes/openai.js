@@ -387,6 +387,9 @@ router.post('/v1/chat/completions', async (req, res) => {
     // 直连 WB 路径的 usage：非流式取聚合结果，流式需从 SSE 旁路提取。
     // 原实现两条路径都不写日志，导致 WB 直连请求的 token 恒为 0。
     let wbUsage = null;
+    // 失败时真实下发的状态码：此前 traffic 一律记 500，把 429（模型频控）与
+    // 400（上下文超限）都抹平成 500，事后按日志排查会把限流误读成上游故障。
+    let wbErrorStatus = 0;
     try {
       if (stream !== false) {
         res.setHeader('Content-Type', 'text/event-stream');
@@ -443,6 +446,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       }
     } catch (err) {
       requestError = err.message;
+      wbErrorStatus = err.status && err.status >= 400 ? err.status : 500;
       if (!res.writableEnded) {
         if (res.headersSent) {
           // SSE 头已下发：补错误帧后结束，避免 ERR_HTTP_HEADERS_SENT
@@ -467,7 +471,9 @@ router.post('/v1/chat/completions', async (req, res) => {
       logRequest({
         endpoint: '/v1/chat/completions', method: 'POST', model,
         account: req.accountId || null,
-        status: requestError ? 500 : 200,
+        // 记真实下发状态：429（模型频控）与 400（上下文超限）必须能与 5xx 区分，
+        // 否则事后按日志复盘会把限流/超限一律读成「上游故障」。
+        status: requestError ? (wbErrorStatus || 500) : 200,
         toolCalls: 0, toolsIn: tools ? tools.length : 0,
         durationMs: Date.now() - startedAt,
         error: requestError,

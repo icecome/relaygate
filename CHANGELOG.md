@@ -7,6 +7,32 @@
 
 ## Unreleased
 
+### 本机请求体超限不再伪装成「上游暂时不可用」（2026-11-22）
+
+- **现象**：客户端报 `500: {"message":"上游暂时不可用","type":"upstream_error"}`，
+  且网关日志里查不到这次请求。用户据此怀疑 WorkBuddy 风控封号。
+- **真实原因**：不是上游、不是账号、不是风控。cf-server 会话一轮贴了 5 张
+  2550×1243 截图（base64 后约 8.9MB）+ 39 个工具定义，JSON 转义后约 10.0MiB，
+  刚好越过网关 `express.json({limit:'10mb'})`。网关 **66ms 内**在本地拒收，
+  上游一个字节都没收到；但全局错误处理器为「不泄露上游报文」把状态强制改成
+  500，于是「本机拒收」被渲染成「上游故障」，DSH 按 SERVER 语义重试 5 次全撞同一堵墙。
+  而 handler 在路由之前返回，traffic.jsonl 里连一行记录都没有——「日志无记录」
+  又把排障方向进一步推向「上游异常」。
+- **修复**：
+  - 上限改为可配 `MAX_REQUEST_BODY_MB`（默认 **16**，范围 1–64）。
+    默认上调的理由：一张 2550×1243 PNG base64 后约 1.8MB，10MiB 只够 5 张，
+    而 agent 一轮贴 5–8 张截图是常态；
+  - 超限回 `413 + code=REQUEST_BODY_TOO_LARGE`，文案带「本机网关上限 / 实收字节 /
+    未发往任何上游 / 怎么调」，调用方不会再误判成风控；
+  - 非法 JSON 回 `400 INVALID_JSON_BODY`、不支持的 charset 回 `415 UNSUPPORTED_CHARSET`
+    （此前同样被渲染成 500）；
+  - 本机拒收的请求也落一行 traffic（`platform:'gateway'`、`rejectedBy:'gateway'`），
+    与真实上游失败在统计里可区分。
+- **顺带修**：直连 WorkBuddy 路径的 traffic 一律记 `status:500`，把 429（模型频控）
+  与 400（上下文超限）抹平成 500。现在记真实下发状态，事后复盘不会把限流读成故障。
+- **不做**：图片缩放（需要独立的图像预算链路，见 `known-limitations.md` F16）。
+- **测试**：`security.test.js` +5（413/400/415 三种本机拒收路径与文案断言）。
+
 ### WorkBuddy 11128 复发修复：developer role 同步迁位（2026-11-19）
 
 - **复发根因**：11-13 / 11-19 各 2 条真实 11128（`wb/hy4free`、`wb/deepseek-v4.1-flash`），

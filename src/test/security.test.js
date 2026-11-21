@@ -26,6 +26,9 @@ process.env.ADMIN_KEY = 'security-test-admin-key';
 process.env.PORT = String(19000 + (process.pid % 1000));
 process.env.HOST = '127.0.0.1';
 process.env.SCHEDULER_ENABLED = 'false';
+// 请求体上限压到 1MB：M-S5 用 2MB 请求验证「本机拒收」的状态码与文案，
+// 不必真的构造 10MB 载荷。上限本身由 MAX_REQUEST_BODY_MB 决定（可配）。
+process.env.MAX_REQUEST_BODY_MB = '1';
 require('./isolation-guard')('security');
 
 const app = require('../index.js');
@@ -141,6 +144,44 @@ async function run() {
   check('M-S5 /v1/chat/completions trae 受限模型被 403', r.status === 403, `-> ${r.status} ${r.body.slice(0, 90)}`);
   // 不传 authKey 的对照：说明 ACL 依赖路由层补参（与 M-S4 对照用例同口径）
   check('M-S5 不传 authKey 时平台 ACL 被跳过（对照）', canUseModel('trae', 'doubao-1-6').ok === true, '');
+
+  // M-S6：本机拒收的请求体必须回 4xx + 可行动文案，不得渲染成 500「上游暂时不可用」
+  //
+  // 现场（2026-11-22 03:06）：客户端一轮带 5 张 2550×1243 截图，base64 后约 8.9MB，
+  // 加 JSON 转义刚过 express.json 的 10MiB 上限。body-parser 抛 413，但全局错误
+  // 处理器把状态强制改成 500，于是「本机拒收」被客户端读成「上游风控」，
+  // 而 traffic.jsonl 里连一行记录都没有（handler 在路由之前就返回了）。
+  const raw = (method, p, rawBody, ctype = 'application/json') => new Promise((resolve) => {
+    const headers = { 'Content-Type': ctype, 'Content-Length': Buffer.byteLength(rawBody) };
+    const r = http.request(BASE + p, { method, headers }, (res) => {
+      let buf = '';
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: buf }));
+    });
+    r.on('error', (e) => resolve({ status: 0, headers: {}, body: e.message }));
+    r.write(rawBody);
+    r.end();
+  });
+
+  const oversize = JSON.stringify({ model: 'glm-5', messages: [{ role: 'user', content: 'a'.repeat(2 * 1024 * 1024) }] });
+  r = await raw('POST', '/v1/chat/completions', oversize);
+  check('M-S6 超上限请求体回 413（不再伪装成上游 500）', r.status === 413, `-> ${r.status} ${r.body.slice(0, 120)}`);
+  {
+    let j = null;
+    try { j = JSON.parse(r.body); } catch { /* 保留原文 */ }
+    check('M-S6 413 带可行动文案与结构化字段',
+      j?.error?.code === 'REQUEST_BODY_TOO_LARGE'
+      && /本机网关上限/.test(j?.error?.message || '')
+      && typeof j?.error?.limitBytes === 'number',
+      r.body.slice(0, 200));
+    check('M-S6 413 文案明确「未发往上游」，避免被误判成风控', /未发往任何上游/.test(j?.error?.message || ''), r.body.slice(0, 200));
+  }
+
+  r = await raw('POST', '/v1/chat/completions', '{bad json');
+  check('M-S6 非法 JSON 回 400 且带 INVALID_JSON_BODY', r.status === 400 && /INVALID_JSON_BODY/.test(r.body), `-> ${r.status} ${r.body.slice(0, 120)}`);
+
+  r = await raw('POST', '/v1/chat/completions', JSON.stringify({ model: 'glm-5', messages: [] }), 'application/json; charset=gbk');
+  check('M-S6 不支持的 charset 回 415（不再伪装成上游 500）', r.status === 415, `-> ${r.status} ${r.body.slice(0, 120)}`);
 
   // K-1：管理权限与转发权限分离
   // env API_KEY 在启动时已被 bootstrapFromEnv 写入库内 access key（引导种子的设计角色），

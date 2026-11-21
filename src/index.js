@@ -12,6 +12,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('./config');
 const { replyUpstreamError } = require('./lib/upstream-error');
+const { logRequest } = require('./log/traffic');
 
 const openai = require('./routes/openai');
 const anthropic = require('./routes/anthropic');
@@ -48,7 +49,66 @@ const app = express();
  * 一个字节都用不到。Express 官方提供了关闭开关，没有理由留着。
  */
 app.disable('x-powered-by');
-app.use(express.json({ limit: '10mb' }));
+/*
+ * 请求体上限 + 专属错误出口。
+ *
+ * 为什么不能只写 `express.json({limit:'10mb'})`：body-parser 抛的是
+ * `entity.too.large`（status 413），但本项目只挂了**一个**全局错误处理器，
+ * 而它为了不把上游报文漏给客户端，把状态强制改成 500 —— 于是「本机拒收」
+ * 被渲染成「上游暂时不可用」。2026-11-22 03:06 的现场就是这个：
+ * 客户端一轮带 5 张 2550×1243 截图（base64 约 8.9MB）+ 39 个工具定义，
+ * JSON 转义后刚过 10MiB，网关在 66ms 内拒收、上游零请求，
+ * 但调用方看到的是 500 上游错误，并据此判定「WorkBuddy 风控」。
+ *
+ * 所以这里做两件事：
+ *   1) 上限走 config.maxBodyBytes（MAX_REQUEST_BODY_MB 可调），不再硬编码；
+ *   2) 解析失败的错误在**进入**全局处理器之前就被翻译成 413 + 可行动文案
+ *      （告诉调用方超了多少、上限是多少、怎么调），而不是泛化成上游故障。
+ */
+app.use(express.json({ limit: config.maxBodyBytes }));
+app.use((err, req, res, next) => {
+  // 只接管 body-parser 的错误；其余交回全局处理器。
+  if (!err || err.type !== 'entity.too.large') return next(err);
+  const limit = Number(err.limit) || config.maxBodyBytes;
+  const got = Number(err.length) || 0;
+  const mb = (n) => `${(n / 1024 / 1024).toFixed(2)}MB`;
+  const message = got
+    ? `请求体 ${mb(got)} 超过本机网关上限 ${mb(limit)}：请求在网关侧就被拒收，未发往任何上游，与账号/模型/风控无关。`
+      + `请减少本轮的图片附件或历史长度，或用 MAX_REQUEST_BODY_MB 调高上限后重启。`
+    : `请求体超过本机网关上限 ${mb(limit)}：请求在网关侧就被拒收，未发往任何上游。`
+      + `请减少图片附件或历史长度，或用 MAX_REQUEST_BODY_MB 调高上限后重启。`;
+  console.error(`[relay-gate] body rejected: ${mb(got || 0)} > ${mb(limit)} ${req.method} ${req.path}`);
+  /*
+   * 必须落一行 traffic：本机拒收的请求此前在 logs/<date>/traffic.jsonl 里
+   * **完全不存在**（handler 在路由之前就返回了，没有任何 logRequest 调用点），
+   * 于是排障时看到的是「上游 500 但日志里查不到这次请求」，进一步把方向
+   * 引向「上游风控」。带上 rejectedBy:'gateway' 便于和真实上游失败区分。
+   */
+  try {
+    logRequest({
+      endpoint: req.path, method: req.method, model: null, account: null,
+      status: 413, toolCalls: 0, toolsIn: 0, durationMs: 0,
+      error: `body ${mb(got || 0)} > limit ${mb(limit)}`,
+      platform: 'gateway', rejectedBy: 'gateway', bodyLimitBytes: limit,
+      ...(got ? { bodyReceivedBytes: got } : {}),
+    });
+  } catch { /* 日志失败不影响响应 */ }
+  // 客户端可能已经开始发流（超限时 body-parser 只读到触发点），先断开读侧
+  if (!res.headersSent) {
+    res.setHeader('Connection', 'close');
+    res.status(413).json({
+      error: {
+        message,
+        type: 'invalid_request_error',
+        code: 'REQUEST_BODY_TOO_LARGE',
+        limitBytes: limit,
+        receivedBytes: got || null,
+      },
+    });
+  } else if (!res.writableEnded) {
+    res.end();
+  }
+});
 
 /**
  * 请求级上下文：为每次客户端请求生成一个**回合同** id，经 AsyncLocalStorage
@@ -244,9 +304,35 @@ app.use((req, res) => {
   res.status(404).json({ error: { message: `Not found: ${req.method} ${req.path}`, type: 'invalid_request_error' } });
 });
 
-// 统一错误处理：兜底路径同样不把 err.message 原样回给客户端。
+/*
+ * 统一错误处理：兜底路径同样不把 err.message 原样回给客户端。
+ *
+ * 但「不泄露上游报文」不等于「把所有错误都改写成 500 上游故障」。
+ * 2026-11-22 03:06 的事故就是这么来的：body-parser 的 JSON 解析失败
+ * （status 400 / 415，消息里没有上游内容）被这段强制改成 status 500，
+ * 客户端看到「上游暂时不可用」，于是把「客户端发了非法 JSON」误诊成
+ * 「WorkBuddy 风控」。上游报文才需要泛化；本机解析类错误必须如实回 4xx。
+ */
 app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
+  // 本机解析/协议类错误（body-parser 的 4xx）：message 是本机文案，不含上游内容，
+  // 可以直接给调用方，且状态码必须保留 4xx —— 否则调用方会按「上游故障」重试。
+  const s = Number(err && (err.status || err.statusCode));
+  if (err && err.type && s >= 400 && s < 500) {
+    const code = err.type === 'entity.parse.failed' ? 'INVALID_JSON_BODY'
+      : err.type === 'encoding.unsupported' ? 'UNSUPPORTED_CHARSET'
+        : err.type === 'charset.unsupported' ? 'UNSUPPORTED_CHARSET'
+          : 'BAD_REQUEST_BODY';
+    const hint = err.type === 'entity.parse.failed'
+      ? '请求体不是合法 JSON（本机解析失败，未发往上游）。'
+      : err.type === 'encoding.unsupported' || err.type === 'charset.unsupported'
+        ? '请求体编码不受支持：请用 UTF-8 且不要带 Content-Encoding（本机拒收，未发往上游）。'
+        : '请求体无法解析（本机拒收，未发往上游）。';
+    console.error(`[relay-gate] bad request body: type=${err.type} ${req.method} ${req.path} ${String(err.message).slice(0, 200)}`);
+    return res.status(s).json({
+      error: { message: `${hint} 原始原因：${String(err.message).slice(0, 300)}`, type: 'invalid_request_error', code },
+    });
+  }
   replyUpstreamError(res, { ...err, message: err.message, status: 500 }, { tag: 'unhandled' });
 });
 

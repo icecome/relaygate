@@ -200,6 +200,25 @@ const config = {
   localAnswerEnabled: process.env.LOCAL_ANSWER_ENABLED !== 'false',
   localAnswerDisabled: String(process.env.LOCAL_ANSWER_DISABLE || '')
     .split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
+  /**
+   * 请求体上限（字节）。默认 16 MiB，可用 MAX_REQUEST_BODY_MB 覆盖（1–64）。
+   *
+   * 为什么必须可配：这个值是**本机网关**的收包上限，与上游能力无关。
+   * 硬编码时它只会以一种方式暴露——客户端收到 500「上游暂时不可用」，
+   * 而上游一个字节都没收到（2026-11-22 03:06 现场：5 张 2550×1243 截图
+   * base64 后约 8.9MB + 39 个工具定义，JSON 转义后刚过 10MiB）。
+   * 调用方据此判断「上游被风控」，方向完全错了，还会白白重试 5 次。
+   *
+   * 默认值从 10MiB 提到 16MiB 的取舍：单张 2550×1243 截图 base64 后约
+   * 1.8MB，10MiB 只够 5 张——而 agent 一轮贴 5~8 张截图是常态，边界太近。
+   * 16MiB 覆盖 8 张图 + 正常文本；上限仍由 MAX_REQUEST_BODY_MB 收紧/放宽，
+   * 且转发面已有密钥级 RPM 限流（KEY_DEFAULT_RPM，默认 60）约束放大面。
+   */
+  maxBodyBytes: (() => {
+    const n = Number(process.env.MAX_REQUEST_BODY_MB || '16');
+    if (!Number.isFinite(n) || n <= 0) return 16 * 1024 * 1024;
+    return Math.round(Math.min(Math.max(n, 1), 64) * 1024 * 1024);
+  })(),
   workspaceDir: path.resolve(ROOT, process.env.WORKSPACE_DIR || 'output'),
   logLevel: process.env.LOG_LEVEL || 'info',
   // 是否写旧格式逐请求 JSON 文件（默认关；默认写 traffic.jsonl + 控制台一行）
@@ -349,6 +368,14 @@ config.reload = function reload() {
   config.maxContinues = Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0);
   config.markIncompleteToolArgs = process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true';
   config.statusPublic = process.env.STATUS_PUBLIC === 'true';
+  // 请求体上限：已挂载的 express.json 在启动时就把 limit 固化成常量，
+  // 热更只影响这里读到的值（供错误文案与面板展示），真正生效需重启。
+  {
+    const n = Number(process.env.MAX_REQUEST_BODY_MB || '16');
+    config.maxBodyBytes = (!Number.isFinite(n) || n <= 0)
+      ? 16 * 1024 * 1024
+      : Math.round(Math.min(Math.max(n, 1), 64) * 1024 * 1024);
+  }
   console.log(`[config] reloaded: ${Object.keys(freshModelConfig.models || {}).length} models, pool=${config.poolStrategy}`);
 };
 
