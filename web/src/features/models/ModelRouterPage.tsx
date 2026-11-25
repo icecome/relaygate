@@ -51,6 +51,10 @@ const REASON_TEXT: Record<string, string> = {
   provider_disabled: 'Provider 已停用',
   platform_denied: '密钥平台不匹配',
   rate_limited: '限流冷却中',
+  // 上游目录里已经没有这个模型 id（改名/下线）。2026-11-25 之前后端根本没有
+  // 这一项判据，于是旧名候选在面板上显示「可用」，而每个请求都 400。
+  // 处置：点「刷新」让候选池自动改名/禁用（见 /v1/raccoon/models/refresh）。
+  model_not_in_catalog: '模型已不在上游目录（需刷新）',
 };
 
 /** 倍率展示：0 显示为「免费」，避免被读成「无数据」。 */

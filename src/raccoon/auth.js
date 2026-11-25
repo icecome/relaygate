@@ -458,8 +458,21 @@ async function refreshAccount(acct) {
 /**
  * 拉取远端模型目录；任何失败都回退兜底表（**不抛错**）。
  *
- * 兜底表有 6 个实测模型，够面板显示与对话选模；远端目录提供精确倍率与窗口。
+ * 兜底表有实测模型，够面板显示与对话选模；远端目录提供精确倍率与窗口。
  * 远端失败时返回兜底并带上 `source: 'fallback'`，让面板能说明「倍率可能不是最新」。
+ *
+ * ## 2026-11-25 新增：漂移检测（`drift`）
+ *
+ * 上游改模型 id 是**静默**的，而本地兜底表是硬编码的。2026-11-25 那次事故
+ * 就是上游把 `sn-deepseek-v4-1-flash` 改成 `…-1017`、`sn-kimi-k3` 改成
+ * `…-1-pro`，本地没跟上 ⇒ 每个请求 400 `param model unsupport` ⇒ 被重试逻辑
+ * 放大成无效调用风暴 ⇒ 账号级风控（200108，3 小时不可用）。
+ *
+ * 所以只要成功拉到远端目录，就顺手比对一次并把结果带出去（`drift`）。
+ * 这里**只做检测不做改写**：把用户配错的模型静默换掉比报错更糟（上游对旧名
+ * 带 `X-Client-Name` 时会静默转成默认模型，计费口径全变）。
+ *
+ * @returns {Promise<{source:'remote'|'fallback', models:Array, drift?:object}>}
  */
 async function fetchModelCatalog(acct) {
   try {
@@ -473,7 +486,17 @@ async function fetchModelCatalog(acct) {
     // 解析器吃的是**原始信封**（它自己判 code 并取 data.categories）
     const models = product.parseModelCatalog(r.envelope.raw);
     if (!models.length) return { source: 'fallback', models: product.fallbackCatalog() };
-    return { source: 'remote', models };
+    const drift = product.detectCatalogDrift(models);
+    if (!drift.ok) {
+      // 只告警不抛错：远端目录可用时对话照常（用的是远端 id），
+      // 但兜底表已经过期 —— 一旦下次远端拉取失败就会退回错误的 id。
+      console.warn(
+        '[raccoon] 兜底模型表与远端目录不一致（兜底表已过期，远端拉取失败时会用到错的 id）：',
+        drift.missing.map((m) => `${m.id}${m.suggestion ? ` → ${m.suggestion}` : ''}`).join(', '),
+        drift.extra.length ? `；远端新增：${drift.extra.map((m) => m.id).join(', ')}` : '',
+      );
+    }
+    return { source: 'remote', models, drift };
   } catch {
     return { source: 'fallback', models: product.fallbackCatalog() };
   }

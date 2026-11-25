@@ -363,9 +363,59 @@ export interface RaccoonModel {
   multiplier: number | null;
 }
 
+/**
+ * 模型目录。
+ *
+ * `source` 三态（2026-11-25 起）：`remote`（本次真拉到）→ `snapshot`
+ * （远端暂时不可达，用上次落盘的快照）→ `fallback`（连快照都没有，用硬编码表）。
+ * 面板必须能区分这三者：`snapshot` 说明「数据是真的，只是不是此刻的」，
+ * 而 `fallback` 说明「这份名单可能已经过期」—— 两者的用户动作完全不同。
+ */
 export const raccoonModels = (key: string, signal?: AbortSignal) =>
-  api<{ object: string; source: 'remote' | 'fallback'; reason?: string; data: RaccoonModel[] }>(
+  api<{
+    object: string;
+    source: 'remote' | 'snapshot' | 'fallback';
+    syncedAt?: string | null;
+    reason?: string;
+    data: RaccoonModel[];
+  }>(
     '/v1/raccoon/models',
     { signal, timeoutMs: OPS_TIMEOUT_MS },
+    key,
+  );
+
+/** 对账结果里单个虚拟模型的变更。 */
+export interface RaccoonCatalogChange {
+  virtualId: string;
+  renamed: Array<{ id: string; from: string; to: string }>;
+  missing: Array<{ id: string; model: string; enabled: boolean }>;
+  available: Array<{ model: string }>;
+  applied: boolean;
+}
+
+export interface RaccoonCatalogRefreshResult {
+  object?: string;
+  ok: boolean;
+  /** remote = 本次真拉到；snapshot = 远端失败，用落盘快照对账 */
+  source: string;
+  syncedAt: string | null;
+  count: number;
+  error: string | null;
+  applied: boolean;
+  changes: RaccoonCatalogChange[];
+  totals: { renamed: number; disabled: number; available: number };
+}
+
+/**
+ * 刷新 Raccoon 目录并**对账候选池**（会写盘）。
+ *
+ * 这是把「模型列表」与「实际派发的候选池」接起来的那一步：上游改名后，
+ * 旧候选会被改写成现行名（语义等价），无法迁移的会被**禁用**（不删，可回滚），
+ * 上游新增的只上报不自动加（加进去会改变用户的路由行为，那是产品决策）。
+ */
+export const raccoonRefreshCatalog = (key: string, apply = true) =>
+  api<RaccoonCatalogRefreshResult>(
+    `/v1/raccoon/models/refresh${apply ? '' : '?apply=0'}`,
+    { method: 'POST', timeoutMs: OPS_TIMEOUT_MS },
     key,
   );

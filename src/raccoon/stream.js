@@ -85,7 +85,9 @@ function writeErrorFrame(res, message, extra = {}) {
  * @param {ReadableStream} body 上游 `resp.body`
  * @param {import('http').ServerResponse} res 客户端响应
  * @param {{onClose?:()=>void, signal?:AbortSignal, onDone?:(sink:object)=>void}} [opts]
- * @returns {Promise<{usage:any, finishReason:string|null, bytes:number, aborted:boolean}>}
+ * @returns {Promise<{usage:any, finishReason:string|null, bytes:number, aborted:boolean, timedOut:boolean}>}
+ *   `timedOut`：本轮是被本地 `RACCOON_TIMEOUT_MS` 掐断的（与「上游断流」区分）。
+ *   调用方据此把 traffic 日志记成超时而不是 200 —— 否则半截流会被统计成成功回合。
  */
 async function pipeToClient(body, res, opts = {}) {
   const sink = { usage: null, finishReason: null };
@@ -94,6 +96,7 @@ async function pipeToClient(body, res, opts = {}) {
   const dec = new TextDecoder();
   let bytes = 0;
   let aborted = false;
+  let streamTimedOut = false;
 
   // 客户端断开 → 立刻取消上游 reader。不这么做的话，用户点「停止」后
   // 上游还会把整轮 token 生成完，积分照扣。
@@ -119,12 +122,26 @@ async function pipeToClient(body, res, opts = {}) {
     if (!aborted) feeder.flush();
   } catch (err) {
     console.error('[raccoon] stream pipe error:', err && err.message ? err.message : err);
-    // 连接被上游掐断（ECONNRESET / aborted）不是「我们的错误」：
+    /*
+     * 区分三种「流断了」：
+     *   1. 客户端走了（aborted=true）→ 什么都不做，已经写的内容留着；
+     *   2. **超时**（AbortSignal.timeout 触发，err.name 为 'TimeoutError' 或
+     *      'AbortError' 且非客户端取消）→ 这轮跑太久被自己掐了；
+     *   3. 上游掐断（ECONNRESET 等）。
+     *
+     * 三者的用户可见文案应当不同：超时要说「本轮超时」，而不是含糊的
+     * 「上游流中断」—— 后者会让用户以为是上游的锅、去重试，而实际是
+     * 本地 `RACCOON_TIMEOUT_MS` 到了。这是 2026-11-25 之前 5.2% 坏回合里
+     * 最容易被误读的一类。
+     */
+    const name = err && err.name ? String(err.name) : '';
+    const timedOut = !aborted && (name === 'TimeoutError' || name === 'AbortError');
+    if (timedOut) streamTimedOut = true;
     // 已经下发的内容照常保留，只补一个错误帧让客户端知道这轮不完整。
     // 流中断只回泛化文案：err.message 可能含上游响应片段（ECONNRESET 细节等），
     // 详情留在服务端日志，不写进 SSE 错误帧。
     if (!aborted && !res.writableEnded) {
-      writeErrorFrame(res, '上游流中断，本轮回复不完整');
+      writeErrorFrame(res, timedOut ? '本轮回复超时，已中断（内容不完整）' : '上游流中断，本轮回复不完整');
     }
   } finally {
     res.removeListener('close', onClientGone);
@@ -135,7 +152,7 @@ async function pipeToClient(body, res, opts = {}) {
     try { res.end(); } catch { /* 已结束 */ }
   }
   if (typeof opts.onDone === 'function') opts.onDone(sink);
-  return { ...sink, bytes, aborted };
+  return { ...sink, bytes, aborted, timedOut: streamTimedOut };
 }
 
 module.exports = {

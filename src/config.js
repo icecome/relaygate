@@ -237,6 +237,12 @@ const config = {
   maxContinues: Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0),
   // 残缺工具参数是否注入 __incomplete 诊断标记（默认关闭，避免严格 schema 客户端不认）
   markIncompleteToolArgs: process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true',
+  // SSE 静默心跳间隔（毫秒）。0 = 关闭。见 lib/sse-heartbeat.js 的成因说明。
+  sseHeartbeatMs: parseInt(process.env.SSE_HEARTBEAT_MS || '15000', 10),
+  // HTTP keep-alive 空闲超时（毫秒）。必须大于客户端相邻请求的间隔分布，
+  // 否则服务端会单方面 FIN 掉连接池里的 socket，客户端在竞态窗口内写入即拿到
+  // 「无 HTTP 响应的连接重置」。见 index.js#tuneServerTimeouts。
+  keepAliveTimeoutMs: parseInt(process.env.KEEPALIVE_TIMEOUT_MS || '65000', 10),
 
   // 工具调用协议：'native'（默认）| 'text'
   // 注意：当前仅用于展示（/v1/admin/config 与运维面板的「工具协议」行），
@@ -367,6 +373,8 @@ config.reload = function reload() {
   config.autoContinue = process.env.AUTO_CONTINUE === 'true';
   config.maxContinues = Math.max(0, parseInt(process.env.MAX_CONTINUES || '5', 10) || 0);
   config.markIncompleteToolArgs = process.env.MARK_INCOMPLETE_TOOL_ARGS === 'true';
+  config.sseHeartbeatMs = parseInt(process.env.SSE_HEARTBEAT_MS || '15000', 10);
+  config.keepAliveTimeoutMs = parseInt(process.env.KEEPALIVE_TIMEOUT_MS || '65000', 10);
   config.statusPublic = process.env.STATUS_PUBLIC === 'true';
   // 请求体上限：已挂载的 express.json 在启动时就把 limit 固化成常量，
   // 热更只影响这里读到的值（供错误文案与面板展示），真正生效需重启。

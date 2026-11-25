@@ -58,6 +58,13 @@ function hashKey(plain) {
   return nodeCrypto.createHash('sha256').update(String(plain), 'utf8').digest('hex');
 }
 
+/** L-05：label 统一归一——字符串化、去控制字符、trim、限长，避免 10MB 字符串落库回显。 */
+function normalizeLabel(v) {
+  if (v == null) return null;
+  const s = String(v).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, 80);
+  return s || null;
+}
+
 function parseJsonArr(v, fallback) {
   if (v == null || v === '') return fallback;
   if (Array.isArray(v)) return v.map(String);
@@ -150,6 +157,7 @@ function createKey({
     // 登录密钥唯一：禁用旧的
     db().prepare("UPDATE api_keys SET enabled = 0 WHERE kind = 'login' AND enabled = 1").run();
   }
+  const labelNorm = normalizeLabel(label);
   const plain = plainKey || genPlainKey(kind === 'login' ? 'sk-admin' : 'sk');
   const id = genId(kind === 'login' ? 'login' : 'key');
   const createdAt = new Date().toISOString();
@@ -164,12 +172,12 @@ function createKey({
       (id, label, kind, platform, key_hash, key_enc, enabled, created_at, key_type, scopes, resources, expires_at, rpm_limit, rotated_from)
      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
-    id, label, kind, platform, hashKey(plain), cryptoLib.encrypt(plain), createdAt,
+    id, labelNorm, kind, platform, hashKey(plain), cryptoLib.encrypt(plain), createdAt,
     kType, JSON.stringify(scopeList), JSON.stringify(resList), exp, rpm, rotatedFrom,
   );
   return {
     ...rowToKey({
-      id, label, kind, platform, key_type: kType,
+      id, label: labelNorm, kind, platform, key_type: kType,
       scopes: JSON.stringify(scopeList), resources: JSON.stringify(resList),
       expires_at: exp, rpm_limit: rpm, rotated_from: rotatedFrom,
       enabled: 1, created_at: createdAt, last_used_at: null,
@@ -208,7 +216,7 @@ function getKey(id) {
 function updateKey(id, patch = {}) {
   const existing = db().prepare('SELECT * FROM api_keys WHERE id = ?').get(id);
   if (!existing) return null;
-  const label = patch.label !== undefined ? patch.label : existing.label;
+  const label = patch.label !== undefined ? normalizeLabel(patch.label) : existing.label;
   const enabled = patch.enabled !== undefined ? (patch.enabled ? 1 : 0) : existing.enabled;
   let scopes = existing.scopes;
   if (patch.scopes !== undefined) {

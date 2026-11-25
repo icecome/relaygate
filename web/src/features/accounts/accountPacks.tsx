@@ -211,9 +211,22 @@ export function keepaliveOf(account: Account, now = Date.now()): KeepaliveView {
   };
   const expiresMs = toMs(account.expiredAt);
   const refreshExpiresMs = toMs(account.refreshExpiredAt);
+  const lastRefreshMs = toMs(account.lastRefreshAt);
 
-  // refreshToken 已过期：无法再换新，保活流程终止
+  /*
+   * refreshToken 已过期 → 无法再换新。
+   *
+   * 但「这一列已过期」不等于「凭据真的死了」：该列在 WorkBuddy 渠道上曾长期
+   * 只在导入时写一次、续期链路从不更新（2026-11-25「7 个账号需重新登录」事故，
+   * 8 个号 billing 全 200、当日 1200+ 次转发 0 个 401）。判定必须能被
+   * 「之后的成功续期」反证：若最近一次成功续期晚于这个过期时刻，那一列就是
+   * 陈旧值，凭据是活的，此时只提示「记录陈旧」并要求刷新，不得要求重新登录。
+   */
   if (refreshExpiresMs != null && refreshExpiresMs <= now) {
+    const staleRecord = lastRefreshMs != null && lastRefreshMs > refreshExpiresMs;
+    if (staleRecord) {
+      return { expiresMs, refreshExpiresMs, days: null, label: '到期记录陈旧', tone: 'warn' };
+    }
     return { expiresMs, refreshExpiresMs, days: null, label: '需重新登录', tone: 'danger' };
   }
   // token 已过期：下一次请求会触发换票，可自愈

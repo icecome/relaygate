@@ -140,31 +140,80 @@ POST /v1/chat/completions             # 统一端点：sn-* 模型自动分派�
   本实现只在调用方**明确表达意图**时翻译：`reasoning_effort: 'none'` 或
   `thinking:{type:'disabled'}` → `disabled`；其余明确档位 → `enabled`；不说 → 一个字节都不改。
 
-### 限流：真正的成因与闸门设计（2026-11-09 实测）
+### 限流：真正的成因与闸门设计
 
-#### 报错原文与两种形态
+> **2026-11-25 重大更正**：本节原结论「墙在出站 IP 上」**已被实测推翻**。
+> 完整取证见
+> [incident-2026-11-25-raccoon-throttle-misdiagnosis.md](../../05-incidents/incident-2026-11-25-raccoon-throttle-misdiagnosis.md)。
+
+#### 上游的三种 429（处置完全不同）
 
 ```
+# 1) 账号被风控处置 —— 这是 2026-11-25 才认出来的那一种
+HTTP 429  retry-after: 10800
+{"error":{"code":200108,
+          "message":"系统检测到当前账号存在异常调用，模型调用功能已暂时受限。…",
+          "type":"rate_limit_error"}}
+
+# 2) 并发/额度用尽
 HTTP 429 {"error":{"code":"user_model_rate_limited",
           "message":"您的模型请求频率超限，请稍后重试","type":"rate_limit_error"}}
 
+# 3) 内部 limiter 排队超时（瞬时）
 HTTP 429 {"code":200103,"message":"limiter_request_error",
           "details":"request exceed max time, retry after:0s"}
 ```
 
-第一种是「并发额度用尽」，第二种是「排队超时」（`retry after: 0s`）。
+| 业务码 | 语义 | 作用域 | 恢复窗口 | 正确动作 | 判错的后果 |
+|---|---|---|---|---|---|
+| `200108` | **账号被风控处置** | 账号（该号全模型都拦） | **10800s = 3h**（`Retry-After`） | 按真值长冷 + 停手 | 冷 5 分钟 → 到点即撞 → 越撞越深 |
+| `user_model_rate_limited` | 并发/额度用尽 | 账号或出口 | 数分钟 | 长冷 + 停手 | 换号重试 → 一次撞墙放大成三次 |
+| `200103` | 排队超时（`retry after: 0s`） | 瞬时 | 秒级 | 短冷后重试 | 冷 5 分钟 = 纯可用性损失 |
 
-#### 实测事实（这五条推翻了直觉）
+#### 为什么「IP 墙」是错的
 
-| # | 事实 | 数据 | 推翻了什么 |
-|---|---|---|---|
-| 1 | 判据是**瞬时并发**，不是 RPM | 串行 15 次 / 43.8s **全通过** | 「按分钟计数」的令牌桶 |
-| 2 | 并发槽位约 **4** | 4 并发×3 轮稳过；5 并发出现 429；6/8 并发全挂 | 「多账号就能上并发」 |
-| 3 | 限流**跨账号** | 两个库内账号 + 本机客户端第三个账号**同时** 429 | 「换号可以绕过」 |
-| 4 | 限流**跨模型** | `sn-kimi-k3`/`sn-sensenova-6-8-flash`/`sn-glm-5-3` 同时 429 | 「按 (账号,模型) 冷却」 |
-| 5 | 恢复窗口 **> 10 分钟** | 每 15s 探一次，**625s** 仍未恢复；期间全部秒回 429（56-270ms） | 「20s 冷却就够」（`rateCooldownMs` 的默认值） |
+2026-11-25 的决定性对照（同机、同 IP、同 headers、间隔 400ms）：
 
-→ 结论：**墙在出站 IP 上**。这是本渠道最重要的一条运维事实。
+```
+账号 7651371  → 200
+账号 7651374  → 429 200108      ← 同 IP，一个通一个不通
+```
+
+若是 IP 墙，同 IP 的第二个号不可能通。原结论的错因是**共因误判**：
+11-09 那次「换号、换模型都 429」是真的，但当时几个号都在同一台机器用同一套
+请求形状高频调用 —— 真正被拦的是「这套行为」，不是 IP。
+
+其余被推翻的旧记载：
+
+| 旧记载 | 2026-11-25 实测 |
+|---|---|
+| 并发槽位约 4（4 稳 / 5 挂） | 6 并发连续 200，**没有**撞墙 —— 并发不是主因 |
+| 恢复窗口 > 10 分钟 | `200108` 是 **3 小时**（上游 `Retry-After: 10800` 明示） |
+| 限流跨账号 | **按账号**。跨模型是真的，但那是因为「整个账号被处置」 |
+
+#### 闸门设计：三级判定 + 撞墙即停手
+
+```
+                  ┌──────────────────────────────────────────┐
+  请求 ──▶ pickAccount ──▶ limiter.blockedFor ──▶ 拿并发令牌 ──▶ 上游
+                  │              │                        │
+                  │              ├─ 出口级冷却（本机部署事实）│
+                  │              ├─ 账号级冷却（含 200108 风控）│
+                  │              └─ 风控查询 riskCoolingReason │
+                  └─ 无号可用时区分 503（真没号）/ 429（冷却）/ 429+风控文案
+```
+
+- **账号级冷却**：写 `limiter.cooldowns` 与账号库 `coolUntil`
+  （后者让面板看得到、重启不丢）。
+- **出口级冷却**：**不再**因为「上游按 IP 判定」而存在 —— 它现在表达的是
+  **本机部署事实**：同机可能还有官方客户端在共用同一账号/出口，本进程
+  感知不到对方。`200108` 走 `scope:'account'`，**不**连带冻出口
+  （同机另一个健康号不该被无辜拖下水）。
+- **`200108` 不参与指数退避**：它的时长由上游 `Retry-After` 给定，
+  拿它去乘 2 或按 `RACCOON_COOLDOWN_MAX_MS`（30 分钟）封顶都会得到
+  与上游事实矛盾的数（3h 被砍成 30min ⇒ 到点即撞）。独立分支，上限 6h。
+- **撞墙后不再换号重试**（`MAX_ACCOUNT_SWITCHES` 3 → 2，且只有 `auth`
+  分支还会换号）。风控期间重试本身就是它判「异常调用」的特征。
 
 #### 闸门设计：两级冷却 + 不再换号重试
 
@@ -191,11 +240,11 @@ HTTP 429 {"code":200103,"message":"limiter_request_error",
 
 | 环境变量 | 默认 | 含义 |
 |---|---|---|
-| `RACCOON_MAX_CONCURRENT` | 3 | 每账号同时在上游的请求数（实测 4 稳、5 挂，留一格机动） |
-| `RACCOON_COOLDOWN_MS` | 300000 | 首次撞墙冷却（> 实测恢复下界） |
-| `RACCOON_COOLDOWN_MAX_MS` | 1800000 | 指数退避封顶 |
+| `RACCOON_MAX_CONCURRENT` | 3 | 每账号同时在上游的请求数（同机有官方客户端时降到 2） |
+| `RACCOON_COOLDOWN_MS` | 300000 | **并发限流**的首次冷却（不作用于 `200108`，那条由 `Retry-After` 决定） |
+| `RACCOON_COOLDOWN_MAX_MS` | 1800000 | 指数退避封顶（同样不作用于 `200108`） |
 | `RACCOON_MAX_QUEUE` | 64 | 并发满时的等待队列上限，超出直接 429 |
-| `RACCOON_TIMEOUT_MS` | 60000 | 单次对话超时 |
+| `RACCOON_TIMEOUT_MS` | **1200000** | 整条响应体读取的超时（**不是**首字节延迟）。对齐官方客户端的 1200s；旧值 60000 造成 5.2% 回合被砍断 |
 
 #### 自查与验证
 
@@ -213,13 +262,100 @@ node scripts/verify/verify-raccoon-proxy.js --key=<通用密钥> --safe
 
 #### 仍然存在的边界
 
-- **单机单出口**：闸门只能管本进程的并发。若同一台机器上官方客户端也在跑，
-  两者共享 IP 额度，本进程无法感知对方 —— 表现为「明明没发几个请求却被限流」。
-  缓解手段：把 `RACCOON_MAX_CONCURRENT` 降到 2，或错开使用。
+- **同机共享账号**：闸门只能管本进程。若同一台机器上官方客户端也在跑，
+  两者**很可能共用同一个上游账号**（实测网关账号的 JWT `sub` 与官方
+  `auth.json` 的 `sub` 完全相同）—— 网关把号撞进 3 小时风控，
+  官方客户端会**一起挂**。缓解：把 `RACCOON_MAX_CONCURRENT` 降到 2，或错开使用。
 - **多进程部署**：`limiter` 是进程内状态（与 `pool.js` 的 `inFlight` 同构）。
-  两个进程各开 3 并发 = 实际 6 并发，会撞墙。多进程请按进程数等比下调。
-- **出口 IP 变化**（换代理/重播宽带）：冷却不会自动解除，要等它到点。
-  这是保守的一侧 —— 宁可多等，也不要反复撞墙延长窗口。
+  两个进程各开 3 并发 = 实际 6 并发。多进程请按进程数等比下调。
+- **模型名漂移**：上游改模型 id 是静默的（无 changelog、无弃用期），
+  而兜底表是硬编码的。已加 `product.detectCatalogDrift`：拉到远端目录后
+  比对本地 id，不一致就告警（只告警不改写 —— 静默换模型会让计费口径全变）。
+- **风控阈值未知**：已知 `200108` 是账号级、3 小时、跨模型；未知是按
+  「无效调用占比」还是「单位时间 token 量」判定。**不要为了测这个去撞。**
+
+## 模型目录同步：为什么「刷新」曾经只刷了列表（2026-11-25 修复）
+
+### 两条链路，此前没有任何同步
+
+| 链路 | 数据源 | 新鲜度 | 谁读它 |
+|---|---|---|---|
+| **A. 模型列表** | 每次实时拉远端 `model_catalog` | 永远新鲜 | `GET /v1/models`、`available-models`、面板 |
+| **B. 派发候选池** | `model-router.json`（静态 JSON） | 可能是几个月前的 | `model-router` **真实派发** |
+
+上游把 `sn-deepseek-v4-1-flash` 改名成 `…-1017` 之后：
+
+- 链路 A 立刻显示新名字（它每次都真拉）；
+- 链路 B 仍然是旧名字（没人改它）；
+- 面板把旧名候选显示成 `usable: true`（`explainCandidates` 里**根本没有**
+  「这个模型上游还有没有」这一项判据）。
+
+于是「列表是新名字、派发是旧名字、面板一片绿色」三者可以同时为真 ——
+每个请求都吃 `400 param model unsupport`，被重试逻辑放大后触发账号风控。
+
+### 三处断点（已全部接上）
+
+**① `POST /v1/models/refresh` 只刷 Trae**
+```js
+// 改前：函数体里连 "raccoon" 这个词都没有
+const cat = await catalog.listWithStatus({ force: true });   // ← models/catalog.js，Trae 专用
+```
+现在额外调 `raccoon.refreshCatalog({ apply: true })`，并把对账结果放在返回的
+`raccoon` 字段里（前端据此提示「改名 N 个 / 禁用失联 M 个」）。
+Raccoon 失败不影响 Trae 的刷新结果（两个独立平台）。
+
+**② `autotier.syncAutoTiers` 只拉 trae + workbuddy**
+```js
+// fetchAllModels() 里只有这两个 provider，且只写 auto=true 的分层虚拟模型
+provider: 'trae'  /  provider: 'workbuddy'
+```
+`raccoon` / `vm/raccoon` 都是 `auto=false`，这个定时任务**根本不碰**。
+
+**③ `explainCandidates` 没有「模型不存在」这一项**
+```js
+// 改前只有五个理由
+candidate_disabled / provider_missing / provider_disabled / platform_denied / rate_limited
+```
+现在补 `model_not_in_catalog`：有目录快照且该模型不在其中时判不可用。
+没快照 = 不知道 = **不阻断**（宁可交给上游报错，也不要把未知当不存在）。
+
+### 新增的三件东西
+
+**`raccoon/catalog-store.js`** —— 持久化快照 + 对账
+- 快照落 `.trae-api/raccoon-catalog.json`，回退链变成 **远端 → 快照 → 兜底表**
+  （此前是「远端 → 硬编码表」，中间的「上次见到的真实目录」在进程里活不过一次请求）；
+- `reconcile()`：把上游现行目录与候选池比对，产出 `renamed` / `missing` / `available`；
+- `applyReconcile()`：可迁移的**改名**、无法迁移的**禁用**（不删 —— 删掉会丢
+  用户的权重/置顶/优先级，禁用可回滚）。
+
+**`POST /v1/raccoon/models/refresh`** —— 只刷 Raccoon（不碰 Trae，省一次上游往返）
+
+**`GET /v1/raccoon/models` 的 `source` 变三态**：`remote` / `snapshot` / `fallback`。
+面板必须能区分后两者：`snapshot` 是「数据是真的，只是不是此刻的」，
+`fallback` 是「这份名单可能已经过期」。
+
+### 为什么「上游新增模型」不自动入池
+
+改名与失联必须自动处置（前者语义等价，后者继续派发只会 400），但**新增不自动加**：
+加进去意味着用户的路由**行为**会因上游上新而改变（可能选到更贵/更弱的模型），
+那是产品决策不是同步。新增只在返回值里上报，由用户决定。
+
+### 验证
+
+```bash
+# 1) 看当前目录来源（remote / snapshot / fallback）
+curl -s http://127.0.0.1:19900/v1/raccoon/models -H "Authorization: Bearer <管理密钥>"   | python -c "import json,sys; d=json.load(sys.stdin); print(d['source'], d.get('syncedAt'), len(d['data']))"
+
+# 2) 刷新并对账（会写盘）
+curl -s -X POST http://127.0.0.1:19900/v1/raccoon/models/refresh -H "Authorization: Bearer <管理密钥>"
+#    返回 changes[] 逐虚拟模型列出 renamed / missing / available
+
+# 3) 只看不写
+curl -s -X POST "http://127.0.0.1:19900/v1/raccoon/models/refresh?apply=0" -H "Authorization: Bearer <管理密钥>"
+
+# 4) 面板候选表应显示「模型已不在上游目录（需刷新）」
+curl -s http://127.0.0.1:19900/v1/admin/model-router/route-check/raccoon -H "Authorization: Bearer <管理密钥>"
+```
 
 ## 模型目录与「新增虚拟模型」接线（2026-11-09 修复）
 

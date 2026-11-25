@@ -43,6 +43,16 @@ function keyRateLimit() {
       windows.set(id, arr);
       const retryAfter = Math.ceil((60_000 - (now - arr[0])) / 1000);
       res.setHeader('Retry-After', String(Math.max(1, retryAfter)));
+      // 拒收也落一行 traffic：限流是**本机**判定的，不是上游故障，
+      // 但客户端拿到的是 429，事后按日志排查时必须能查到这次请求。
+      // 此前这条路径不写日志，与 401 一样属于「客户端报错、网关无记录」的盲区。
+      try {
+        require('../log/traffic').logRejected(req, {
+          status: 429,
+          code: 'KEY_RPM_LIMIT',
+          message: `rate limit exceeded for key (rpm=${limit})`,
+        });
+      } catch { /* 日志失败不影响限流响应 */ }
       return res.status(429).json({
         error: {
           message: `rate limit exceeded for key (rpm=${limit})`,

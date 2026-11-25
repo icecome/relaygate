@@ -132,6 +132,18 @@ router.post('/import', admin, async (req, res) => {
       token: info.accessToken || null,
       refreshToken: info.refreshToken || null,
       expiredAt: info.expiresAtMs ? new Date(info.expiresAtMs).toISOString() : null,
+      /*
+       * refreshToken 自己的到期时间（2026-11-25 补）。
+       *
+       * 此前这条导入路径只写 expiredAt，refresh_expired_at 保持 null 或旧值。
+       * 前端 keepaliveOf() 判「需重新登录」读的正是这一列：null 时尚且只显示
+       * 「到期未知」，一旦某次导入把它写成一个固定时刻（旧脚本 / 旧版本写过），
+       * 之后就再没有任何链路更新它 —— 导入满 30 天即永久误报。
+       * 这里按 readAuthFile() 归一化后的绝对值写入，与真实凭据同源。
+       */
+      ...(info.refreshExpiresAtMs
+        ? { refreshExpiredAt: new Date(info.refreshExpiresAtMs).toISOString() }
+        : {}),
       userId,
       host: wbAuth.chatHost(info.region),
     };
@@ -239,8 +251,23 @@ router.post('/refresh', admin, async (req, res) => {
     const a = req.body && req.body.accountId && store.get(req.body.accountId);
     if (!a || !a.refreshToken) return res.status(404).json({ error: { message: '账号不存在或无 refreshToken', type: 'not_found' } });
     const r = await wbAuth.refresh(a.refreshToken);
-    store.update(a.id, { token: r.accessToken, refreshToken: r.refreshToken, expiredAt: r.expiresAt });
-    res.json({ ok: true, expiredAt: r.expiresAt, accessToken: maskToken(r.accessToken) });
+    /*
+     * 这是面板「刷新 Token」菜单的落点，也是用户手动自救的唯一入口。
+     * 必须连 refreshExpiredAt 一起滚：否则用户点了刷新、token 确实换新了，
+     * 「需重新登录」的红标却纹丝不动 —— 正是本次被报的「重新登录后提示不消失」。
+     */
+    store.update(a.id, {
+      token: r.accessToken,
+      refreshToken: r.refreshToken,
+      expiredAt: r.expiresAt,
+      ...(r.refreshExpiresAt ? { refreshExpiredAt: r.refreshExpiresAt } : {}),
+      lastRefreshAt: new Date().toISOString(),
+      lastKeepaliveAt: new Date().toISOString(),
+      lastKeepaliveResult: 'ok（手动刷新）',
+      errorCount: 0,
+      coolUntil: 0,
+    });
+    res.json({ ok: true, expiredAt: r.expiresAt, refreshExpiredAt: r.refreshExpiresAt, accessToken: maskToken(r.accessToken) });
   } catch (err) {
     res.status(502).json({ error: { message: err.message, type: 'upstream_error' } });
   }

@@ -107,26 +107,20 @@ function seedAccount(acct, opts = {}) {
 
 /** 取该 uid 最新的**权威骨架**。
  *
- *  优先级：解密明文缓存（logs/_wb-plain，字段最全：uin/sessionState/domain 等）
- *        → 客户端备份（排除 .seed. 与已被轮换污染的 bak-<uid8>）
+ *  唯一来源：客户端备份（排除 .seed. 与已被轮换污染的 bak-<uid8>）
  *        → null（回落到最小骨架）。
+ *
+ *  安全口径（H-04）：绝不再读 logs/_wb-plain/ 下的运维脚本明文缓存。
+ *  那份缓存含真实 accessToken/refreshToken 明文，生产代码反向依赖它既造成
+ *  凭据长期驻留磁盘，又让行为随"是否跑过某个脚本"而变。权威骨架应从
+ *  credentials 加密库派生或直接用客户端备份；此处保留客户端备份源。
  *
  *  踩过的坑：
  *   1) 把 .seed. 当骨架 → 字段越滚越少，客户端 hasAccessToken=false；
  *   2) 轮换时把当前 AUTH_FILE（可能正是种子）回写成 bak-<uid8>，污染了原始备份。
- *  所以骨架必须来自未经轮换写过的源，明文缓存是唯一稳定来源。
+ *  所以骨架必须来自未经轮换写过的源。
  */
 function pickSkeleton(uid) {
-  const plainDir = path.join(__dirname, '..', '..', 'logs', '_wb-plain');
-  try {
-    if (fs.existsSync(plainDir)) {
-      const hit = fs.readdirSync(plainDir).find((f) => f.includes(uid));
-      if (hit) {
-        const j = JSON.parse(fs.readFileSync(path.join(plainDir, hit), 'utf8'));
-        if (j && j.account && j.account.uid === uid) return j;
-      }
-    }
-  } catch { /* 明文缓存不可用则继续 */ }
   try {
     const candidates = [];
     for (const f of fs.readdirSync(AUTH_DIR)) {

@@ -20,6 +20,7 @@ const { exportAnthropic } = require('../transform/emitters');
 const { logRequest, rtkLogFields } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const { createLineFeeder } = require('../lib/sse-lines');
+const { attachSseHeartbeat } = require('../lib/sse-heartbeat');
 const { estimateRequestTokens } = require('../lib/token-estimate');
 const { sniffHead } = require('../lib/sse-sniff');
 const { countToolErrors } = require('../transform/request');
@@ -395,6 +396,9 @@ router.post('/v1/messages', async (req, res) => {
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
+  // 静默心跳：message_start 之后到首个上游事件之间同样可能静默数十秒，
+  // 成因与取值见 lib/sse-heartbeat.js。
+  const heartbeat = attachSseHeartbeat(res, { intervalMs: config.sseHeartbeatMs });
 
   // message_start
   res.write(`data: ${JSON.stringify({ type: 'message_start', message: { id: msgId, type: 'message', role: 'assistant', model, content: [], stop_reason: null, usage: { input_tokens: 0, output_tokens: 0 } } })}\n\n`);
@@ -495,11 +499,13 @@ router.post('/v1/messages', async (req, res) => {
         res.write(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: stopReason }, usage: { output_tokens: 0 } })}\n\n`);
       }
       res.write(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+      heartbeat.stop();
       res.end();
     }
   } catch (err) {
     requestError = err.message;
     requestStatus = err.status && err.status >= 400 ? err.status : 500;
+    heartbeat.stop();
     if (!res.writableEnded) {
       // SSE 头已下发，无法改 HTTP 状态码：用事件类型区分「过载可重试」与「服务错误」
       const type = err.status === 429 ? 'overloaded_error' : 'api_error';

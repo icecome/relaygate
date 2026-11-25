@@ -14,7 +14,9 @@ const auth = require('../auth');
 const { normalizeTraeMessages } = require('../transform/request');
 const { createStreamHandler } = require('../transform/sse');
 const { isTruncatedFinish } = require('../transform/finish');
-const { runWithContinuation } = require('../transform/continue');
+// 非流式分支仍用 runWithContinuation（客户端本来就要等整轮，无 TTFT 问题）；
+// 流式分支改为「首轮边收边发 + 仅 length 时追加」，见下方注释。
+const { runWithContinuation, buildContinueMessages, shouldContinue } = require('../transform/continue');
 const { exportOpenAI } = require('../transform/emitters');
 const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
@@ -30,6 +32,7 @@ const raccoonDispatch = require('../raccoon/dispatch');
 const raccoonStream = require('../raccoon/stream');
 const raccoonChat = require('../raccoon/chat');
 const { replyUpstreamError, clientMessage } = require('../lib/upstream-error');
+const { attachSseHeartbeat } = require('../lib/sse-heartbeat');
 
 const router = Router();
 
@@ -75,6 +78,10 @@ async function handleRaccoonChat(req, res, ctx) {
   let usedAccountId = null;
   let finishReason = null;
   let cooledInfo = null;
+  /** 上游业务码（200108 / 100004 / 200103…），供 traffic 日志按码聚合。 */
+  let upstreamCode = null;
+  /** 本轮是否被本地 `RACCOON_TIMEOUT_MS` 掐断（与上游失败区分）。 */
+  let timedOut = false;
 
 /*
  * 与 /v1/raccoon/chat/completions 完全相同的请求体：逐字透传调用方字段，
@@ -122,11 +129,20 @@ async function handleRaccoonChat(req, res, ctx) {
     } else {
       lastUsage = result.usage;
       finishReason = result.finishReason;
+      // 半截流：上游流被本地超时掐断（pipeToClient 打标）。这类回合 HTTP 头早已
+      // 下发（200），但内容不完整 —— 必须显式记成 timedOut，否则统计层会把它
+      // 当成一次成功回合（2026-11-25 实测有 8 次这样的记录，全部 finishReason=null）。
+      if (result.timedOut) timedOut = true;
     }
   } catch (err) {
     // traffic 日志记泛化摘要即可；上游原始报文由 replyUpstreamError 单独全量落 console.error。
     requestError = clientMessage(err);
     cooledInfo = err.raccoonCooldown || null;
+    // 上游业务码单独落一列：此前只能从 error 字符串里正则抠，且 6 位码会被
+    // 旧正则截断。现在分类器已回填 err.upstreamCode（见 upstream/errors.js），
+    // 直接记原值，面板与排障脚本都能按码聚合（200108 / 100004 / 200103 …）。
+    if (err && err.upstreamCode != null) upstreamCode = Number(err.upstreamCode);
+    if (err && err.timedOut) timedOut = true;
     // 客户端只拿泛化文案；上游原始报文（err.message / err.body）由
     // replyUpstreamError 写进服务端日志，限流分类仍读 err.body，不受影响。
     replyUpstreamError(res, err, {
@@ -144,13 +160,17 @@ async function handleRaccoonChat(req, res, ctx) {
     logRequest({
       endpoint: '/v1/chat/completions', method: 'POST', model,
       account: usedAccountId,
-      status: requestError ? (cooledInfo ? 429 : 502) : 200,
+      // 超时用 504（而不是 502）：它与「上游坏了」是两回事，运维看到 504
+      // 该去调 RACCOON_TIMEOUT_MS / 减少单轮输入，而不是去查上游状态。
+      status: requestError ? (timedOut ? 504 : (cooledInfo ? 429 : 502)) : 200,
       toolCalls: 0, toolsIn: tools ? tools.length : 0,
       durationMs: Date.now() - startedAt,
       error: requestError,
       platform: 'raccoon',
       pricedModel: model,
       routedTo: `raccoon/${model}`,
+      ...(upstreamCode != null ? { upstreamCode } : {}),
+      ...(timedOut ? { timedOut: true } : {}),
       ...(finishReason ? { finishReason } : {}),
       ...(cooledInfo ? { raccoonCooledForMs: cooledInfo.cooldownMs, raccoonCooldownStreak: cooledInfo.streak } : {}),
       ...usageFields,
@@ -390,12 +410,24 @@ router.post('/v1/chat/completions', async (req, res) => {
     // 失败时真实下发的状态码：此前 traffic 一律记 500，把 429（模型频控）与
     // 400（上下文超限）都抹平成 500，事后按日志排查会把限流误读成上游故障。
     let wbErrorStatus = 0;
+    // 流式心跳句柄（非流式分支为 null）；停表统一放在下方 finally。
+    let wbHeartbeat = null;
     try {
       if (stream !== false) {
         res.setHeader('Content-Type', 'text/event-stream');
         res.setHeader('Cache-Control', 'no-cache');
         res.setHeader('Connection', 'keep-alive');
         res.flushHeaders();
+        /*
+         * 静默心跳（与 Trae 直连路径同口径）。
+         *
+         * 这条路径的静默期比 Trae 短（WB 上游 TTFB 通常在秒级），但 flushHeaders
+         * 之后到首个 chunk 之间同样可能什么都不写：pool.run 可能排队等号、
+         * 上游可能慢。既有客户端用同一条隧道，就同样会被「无进展」判据牵连。
+         * 统一挂上，代价只是一条注释帧（有字节流动时一帧都不发）。
+         * 停表在下方 finally —— 成功与失败两条路都经过它。
+         */
+        wbHeartbeat = attachSseHeartbeat(res, { intervalMs: config.sseHeartbeatMs });
         await pool.run(async (accountId) => {
           const acct = await auth.ensureAuth(accountId);
           req.accountId = accountId;
@@ -460,6 +492,8 @@ router.post('/v1/chat/completions', async (req, res) => {
         }
       }
     } finally {
+      // 心跳停表：成功与失败两条路都经过这里，不必在每个出口各写一次。
+      if (wbHeartbeat) wbHeartbeat.stop();
       // 费率按真实模型 wbModel 计（model 可能是 WB 别名，费率表里没有条目）
       const wbUsageFields = usageToLogFields(wbUsage);
       const wbCost = wbUsageFields.totalTokens
@@ -527,6 +561,16 @@ router.post('/v1/chat/completions', async (req, res) => {
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
+    /*
+     * 静默心跳。
+     *
+     * 头已下发之后到首个上游事件之间一个字节都不写，而这段静默由上游决定：
+     * 实测 p90 = 19s、p99 = 45s、max = 110s。TraeWork 的自定义模型经
+     * cloud_agent + 本地 custom-model-proxy 隧道回传，隧道上的「无进展」判据
+     * 会先在这段静默里踩线并抛 4054。补 `: ping` 注释帧把静默切碎，
+     * 客户端解析器一律忽略注释行，不改任何语义。见 lib/sse-heartbeat.js。
+     */
+    const heartbeat = attachSseHeartbeat(res, { intervalMs: config.sseHeartbeatMs });
 
     const out = exportOpenAI();
     let finished = false;
@@ -542,8 +586,11 @@ router.post('/v1/chat/completions', async (req, res) => {
     };
 
     /**
-     * 单轮流式消费。emitBytes=true 时边收边发给客户端（原行为）；
-     * false 时只缓冲，供续写模式聚合后一次性下发。
+     * 单轮流式消费。emitBytes=true 时边收边发给客户端。
+     *
+     * emitBytes=false 只缓冲不下发——当前**没有调用点**使用它（续写已改为追加式，
+     * 见下方 while 循环）。保留该分支是为了让「先聚合再决定」这类需求将来能直接
+     * 复用同一份解析状态机，而不是另写一套 SSE 消费逻辑。
      */
     const runRound = async (roundMessages, accountId, emitBytes) => {
       let roundContent = '';
@@ -631,41 +678,53 @@ router.post('/v1/chat/completions', async (req, res) => {
         started = false;
         requestError = null;
 
-        // 续写模式需缓冲后再下发（已发出的半截内容无法撤回），故 emitBytes=false
-        const emitDuringRound = !continueEnabled;
-
         let finalContent = '';
         let finalToolCalls = [];
         let finalReason = null;
 
-        if (!continueEnabled) {
-          const r = await runRound(messages, accountId, emitDuringRound);
-          finalContent = r.content;
-          finalToolCalls = r.toolCalls;
-          finalReason = r.finishReason;
-          toolCalls = r.toolCalls.length;
-          continueCount = 0;
-        } else {
-          const agg = await runWithContinuation({
-            callOnce: (msgs) => runRound(msgs, accountId, false),
-            messages,
-            maxContinues: config.maxContinues,
-          });
-          finalContent = agg.content;
-          finalToolCalls = agg.toolCalls;
-          finalReason = agg.finishReason;
-          continueCount = agg.continues || 0;
+        /*
+         * 首轮**边收边发**（emitBytes=true），续写改为「追加」而不是「先全缓冲」。
+         *
+         * 原实现是 `emitDuringRound = !continueEnabled`：一旦打开 AUTO_CONTINUE，
+         * 整轮都要缓冲到结束才下发第一帧。代价是首字节延迟 = 整轮耗时——
+         * 实测这条路径 p50 4.9s / p90 19.1s / p99 45.5s，而它换来的收益接近于零
+         * （全库 Trae 通道 6315 条请求里 truncated 只有 1 条，0.02%）。
+         *
+         * 关键在于：**续写是「追加」，与流式并不冲突**。客户端看到的是一段连续
+         * 增长的正文，中途多一次上游调用它无从分辨；唯一必须推迟的是末帧
+         * `done`（不能在第一轮就告诉客户端「结束了」）。所以这里把首轮与续写轮
+         * 全部按 emitBytes=true 消费，只把 done 挪到最后。
+         *
+         * 关于「已发字节不可撤回」：这是流式出口的固有取舍，本改动不新增风险。
+         * pool.run 只在 auth / quota / rate_limit 三类错误上换号重试，而这三类都在
+         * `llmUtilsChat` 返回 HTTP 状态时抛出——那时响应体还没被消费，一个字节
+         * 都没下发。流中途的错误被标成 UPSTREAM_STREAM_ERROR，分类落到 other，
+         * 不重试、直接补错误帧（见下方 catch）。故不会出现「A 的半截 + B 的正文」。
+         */
+        const r = await runRound(messages, accountId, true);
+        finalContent = r.content;
+        finalToolCalls = r.toolCalls;
+        finalReason = r.finishReason;
+        toolCalls = r.toolCalls.length;
+        continueCount = 0;
+
+        // 续写条件与 transform/continue.js 同口径：仅 length 触发，有工具调用即停
+        // （残缺工具参数二次拼接风险高，交由客户端处置）。
+        while (continueEnabled
+          && shouldContinue(finalReason)
+          && finalToolCalls.length === 0
+          && continueCount < config.maxContinues) {
+          continueCount += 1;
+          const contMsgs = buildContinueMessages(messages, finalContent);
+          const r2 = await runRound(contMsgs, accountId, true);
+          if (r2.content) finalContent += r2.content;
+          finalToolCalls = finalToolCalls.concat(r2.toolCalls);
+          finalReason = r2.finishReason || finalReason;
+          toolCalls = finalToolCalls.length;
         }
 
         req.accountId = accountId;
         ensureStart();
-
-        if (continueEnabled) {
-          // 聚合结果一次性下发
-          if (finalContent) write(out.text(completionId, model, finalContent));
-          finalToolCalls.forEach((c, i) => write(out.toolCall(completionId, model, c, i)));
-          toolCalls = finalToolCalls.length;
-        }
 
         if (!finished) {
           const fr = finalFinish(finalReason);
@@ -673,6 +732,7 @@ router.post('/v1/chat/completions', async (req, res) => {
           write(out.done(completionId, model, fr));
           finished = true;
         }
+        heartbeat.stop();
         if (!res.writableEnded) res.end();
       }, runOpts);
       if (req.accountId && stickyKey) sticky.bind(stickyKey, req.accountId);
@@ -683,6 +743,7 @@ router.post('/v1/chat/completions', async (req, res) => {
       if (model && model !== 'auto' && isModelConfigError(err)) {
         availability.markUnavailable(model, err.message);
       }
+      heartbeat.stop();
       if (!res.writableEnded) {
         // SSE 头已下发，无法改状态码：code 传 429 让客户端识别为「过载可重试」
         write(out.error(completionId, model, err.upstreamCode ?? (err.status === 429 ? 429 : null), err.message));

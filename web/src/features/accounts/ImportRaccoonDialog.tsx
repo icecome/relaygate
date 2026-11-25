@@ -144,7 +144,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
   const [accounts, setAccounts] = useState<RaccoonAccount[] | null>(null);
-  const [models, setModels] = useState<{ source: string; count: number } | null>(null);
+  const [models, setModels] = useState<{ source: string; count: number; syncedAt?: string | null } | null>(null);
   /** 本机客户端预检（装了客户端就有值；为 null 表示还没探测或没装） */
   const [localPreview, setLocalPreview] = useState<RaccoonLocalPreview | null>(null);
   /** 选中账号的每日积分看板（点「每日积分」时加载） */
@@ -337,7 +337,7 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
       void startSession();
       if (key) {
         raccoonModels(key)
-          .then((m) => setModels({ source: m.source, count: m.data.length }))
+          .then((m) => setModels({ source: m.source, count: m.data.length, syncedAt: m.syncedAt ?? null }))
           .catch(() => setModels(null));
         raccoonStatus(key)
           .then((s) => setStatus({ unifiedEndpoint: s.chat.unifiedEndpoint, limiter: s.limiter }))
@@ -595,7 +595,12 @@ export function ImportRaccoonDialog({ open, onClose, onImported }: {
             <span>已接入账号 {accounts?.length ?? 0} 个</span>
             {models && (
               <span className="fg-3">
-                模型目录 {models.count} 个（{models.source === 'remote' ? '远端' : '内置静态表，倍率可能不是最新'}）
+                模型目录 {models.count} 个（
+                {models.source === 'remote'
+                  ? '远端'
+                  : models.source === 'snapshot'
+                    ? `上次拉取的快照${models.syncedAt ? ` · ${new Date(models.syncedAt).toLocaleString('zh-CN')}` : ''}`
+                    : '内置静态表，倍率可能不是最新'}）
               </span>
             )}
             <Button size="sm" onClick={loadAccounts}>

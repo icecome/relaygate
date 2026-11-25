@@ -55,6 +55,40 @@ function authDir() {
 /** 已处理文件的指纹（mtimeMs:size），避免重复解密。 */
 let lastFingerprint = null;
 
+/** 从 JWT 取 exp（毫秒）；非 JWT / 无 exp 返回 null。 */
+function jwtExpMs(token) {
+  try {
+    const seg = String(token || '').split('.')[1];
+    if (!seg) return null;
+    const payload = JSON.parse(Buffer.from(seg, 'base64url').toString('utf8'));
+    return payload && payload.exp ? payload.exp * 1000 : null;
+  } catch { return null; }
+}
+
+/**
+ * 从客户端 .info 的 auth 段推两个到期时刻（毫秒）。
+ *
+ * 优先级：绝对时间戳（expiresAt / refreshExpiresAt）→ JWT exp → 相对秒数兜底。
+ *
+ * 为什么不能直接用 expiresIn / refreshExpiresIn：它们是「写入那一刻起的剩余秒数」，
+ * 只有文件刚写出来时才等价于绝对时间。auth 目录里躺着 10 月 26 日写下的文件，
+ * 若拿它加 now，会把已经到期的凭据算成还有 700 多个小时 —— 本模块正是把这些
+ * 陈旧值同步进账号池的通道，所以必须优先认绝对时间。
+ */
+function expiryFromAuthFile(auth, accessToken, refreshToken) {
+  const num = (v) => (Number(v) > 0 ? Number(v) : null);
+  const accessMs = num(auth && auth.expiresAt)
+    || jwtExpMs(accessToken)
+    || (Number(auth && auth.expiresIn) > 0 ? Date.now() + Number(auth.expiresIn) * 1000 : null);
+  const refreshMs = num(auth && auth.refreshExpiresAt)
+    || jwtExpMs(refreshToken)
+    || (Number(auth && auth.refreshExpiresIn) > 0 ? Date.now() + Number(auth.refreshExpiresIn) * 1000 : null);
+  return {
+    accessIso: accessMs ? new Date(accessMs).toISOString() : null,
+    refreshIso: refreshMs ? new Date(refreshMs).toISOString() : null,
+  };
+}
+
 /**
  * 执行一次同步。返回 {updated, uid?, label?, reason?}。
  * 无变化、无密钥、已登出、文件不可读等情况一律安静返回，不抛错。
@@ -86,7 +120,7 @@ async function syncOnce(opts = {}) {
   const acct = store.list().find((a) => a.edition === 'workbuddy' && a.userId === uid);
   if (!acct) {
     // 池里没有这个号：客户端登录的是新账号 → 自动建号入池（一条龙，免手工导入）。
-    const expiresIn = Number(raw.auth && raw.auth.expiresIn) || 0;
+    const ex = expiryFromAuthFile(raw.auth || {}, token, refresh);
     const nickname = decryptValue(raw.account && raw.account.nickname, key);
     const phone = decryptValue(raw.account && raw.account.phoneNumber, key);
     const label = (phone && String(phone).trim()) || (nickname && String(nickname).trim()) || uid.slice(0, 8);
@@ -99,7 +133,10 @@ async function syncOnce(opts = {}) {
         userId: uid,
         host: 'https://copilot.tencent.com',
         userRegion: 'cn',
-        expiredAt: expiresIn > 0 ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
+        expiredAt: ex.accessIso,
+        // refreshToken 自己的到期也必须落库：前端「需重新登录」判的就是这一列。
+        // 建号时留空只会显示「到期未知」；写成相对值则会随文件变旧而失真。
+        refreshExpiredAt: ex.refreshIso,
         source: 'auth-sync',
         enabled: true,
         errorCount: 0,
@@ -135,12 +172,19 @@ async function syncOnce(opts = {}) {
     return { updated: false, reason: 'token_check_failed: ' + String(e.message || e).slice(0, 40), uid, label: acct.label };
   }
 
-  const expiresIn = Number(raw.auth && raw.auth.expiresIn) || 0;
+  const ex = expiryFromAuthFile(raw.auth || {}, token, refresh);
   try {
     store.update(acct.id, {
       token,
       ...(refresh ? { refreshToken: refresh } : {}),
-      ...(expiresIn > 0 ? { expiredAt: new Date(Date.now() + expiresIn * 1000).toISOString() } : {}),
+      ...(ex.accessIso ? { expiredAt: ex.accessIso } : {}),
+      /*
+       * 客户端每次续期都写出新的 refreshToken，它自己的到期时刻也一起变。
+       * 这条同步链路是「客户端续期 → 账号池」的唯一通道，必须把它带过来；
+       * 否则库里那一列永远停在最早导入的时刻，导入满 30 天后前端就报
+       * 「需重新登录」，而账号实际上每次续期都成功。
+       */
+      ...(ex.refreshIso ? { refreshExpiredAt: ex.refreshIso } : {}),
       lastRefreshAt: new Date().toISOString(),
       errorCount: 0,
       coolUntil: 0,

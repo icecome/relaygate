@@ -18,10 +18,14 @@
  *
  * 用法：
  *   set WB_ATREST_KEY=x0qv...QFU=
- *   node scripts/wb-decrypt-auth.js                 # 解全部，输出到 logs/_wb-plain
+ *   node scripts/wb-decrypt-auth.js                 # 解全部，输出到 output/.wb-decrypt（受 gitignore 保护）
  *   node scripts/wb-decrypt-auth.js --out <目录>
  * 输出为明文 .info 文件，可直接喂给 scripts/import-wb-auth.js（WB_AUTH_DIR 指向输出目录）。
- * 明文含真实 token，输出目录已在 .gitignore（logs/）内，勿提交。
+ *
+ * 安全口径（H-04）：明文含真实 token，默认不再写 logs/_wb-plain —— 生产代码
+ * 曾反向依赖该目录作为权威骨架来源，已移除。导入完成后请立即删除输出目录：
+ *   rmdir /s /q output\.wb-decrypt   （Windows） /  rm -rf output/.wb-decrypt
+ * 输出目录已在 .gitignore（output/）内，但"不进库"不等于"不泄露"。
  */
 const fs = require('fs');
 const path = require('path');
@@ -30,7 +34,7 @@ const crypto = require('crypto');
 const AUTH_DIR = process.env.WB_AUTH_DIR || path.join(process.env.LOCALAPPDATA || '', 'CodeBuddyExtension', 'Data', 'Public', 'auth');
 const OUT_DIR = (() => {
   const i = process.argv.indexOf('--out');
-  return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : path.join(__dirname, '..', 'logs', '_wb-plain');
+  return i >= 0 && process.argv[i + 1] ? path.resolve(process.argv[i + 1]) : path.join(__dirname, '..', 'output', '.wb-decrypt');
 })();
 
 const KEY_B64 = String(process.env.WB_ATREST_KEY || '').trim();

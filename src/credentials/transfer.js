@@ -37,6 +37,8 @@ const MAX_PASSWORD_LENGTH = 1024;
 /** 密码下限：与前端口径一致（前端拦 <4），避免「UI 过不了、直连 API 能过」。 */
 const MIN_PASSWORD_LENGTH = 4;
 const MAX_ITEMS = 2000;
+/** 解压后明文上限（M-03）：64 MiB，与 MAX_ITEMS 的实际体积量级匹配。 */
+const MAX_UNPACKED = 64 * 1024 * 1024;
 
 /**
  * 用户输入类错误：路由据此回 400，其余（SQLite 写失败等）回 500。
@@ -115,8 +117,13 @@ function openEncryptedExport(content, expectedKind, password) {
   }
   let payload;
   try {
-    payload = JSON.parse(zlib.gunzipSync(compressed).toString('utf8'));
-  } catch (_) {
+    // M-03：限制解压输出，避免高压缩比密文解出数 GB 触发 OOM（解压炸弹）。
+    // maxOutputLength 超限会抛 ERR_BUFFER_TOO_LARGE，下面单独归类。
+    payload = JSON.parse(zlib.gunzipSync(compressed, { maxOutputLength: MAX_UNPACKED }).toString('utf8'));
+  } catch (e) {
+    if (e && (e.code === 'ERR_BUFFER_TOO_LARGE' || /too large|maxOutputLength/i.test(String(e.message)))) {
+      throw new TransferInputError('导出数据超出体积上限');
+    }
     throw new TransferInputError('导出数据无法解析或已损坏');
   }
   if (!payload || payload.exportType !== 'RelayGate-' + expectedKind) throw new TransferInputError('导出文件类型不匹配');

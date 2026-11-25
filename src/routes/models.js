@@ -394,17 +394,59 @@ router.get('/v1/models/detail', admin, async (req, res) => {
   }
 });
 
-/** 强制刷新上游目录（运维/面板按钮用）。 */
+/**
+ * 强制刷新上游目录（运维/面板按钮用）。
+ *
+ * ## 2026-11-25：覆盖范围从「只有 Trae」扩到「Trae + Raccoon」
+ *
+ * 此前本端点只调 `catalog.listWithStatus()`（那是 Trae 的 `models/catalog.js`），
+ * 函数体里连 `raccoon` 这个词都没有 —— 于是面板上的「刷新」按钮**从不**更新
+ * Raccoon 的模型，而 Raccoon 的派发又依赖 `model-router.json` 里那份静态候选池。
+ * 上游改名后「列表是新名字、派发还是旧名字、面板一片绿色」，就是这么来的。
+ *
+ * 现在额外做一步 `raccoon.refreshCatalog()`：真拉远端 → 落快照 → 对账候选池
+ * （可迁移的旧名改写、失联的禁用、新增的上报）。Raccoon 失败**不影响** Trae
+ * 的刷新结果（两者独立平台，一个挂了不该让另一个的按钮报错）。
+ */
 router.post('/v1/models/refresh', admin, async (req, res) => {
   try {
     const cat = await catalog.listWithStatus({ force: true });
+
+    // Raccoon：拉目录 + 对账候选池。失败只记在 raccoon 字段里，不冒泡。
+    let raccoon = null;
+    try {
+      const raccoonMod = require('../raccoon');
+      if (raccoonMod.hasAccount()) raccoon = await raccoonMod.refreshCatalog({ apply: true });
+    } catch (e) {
+      raccoon = { ok: false, error: e && e.message ? e.message : String(e) };
+    }
+
     res.json({
       ok: true,
       source: cat.source,
       syncedAt: cat.syncedAt,
       count: cat.models.length,
       error: cat.error || null,
+      // 前端据此提示「Raccoon 改了几个候选 / 有几个已失联被禁用」
+      raccoon,
     });
+  } catch (err) {
+    res.status(500).json({ error: { message: err.message, type: 'internal_error' } });
+  }
+});
+
+/**
+ * 只刷 Raccoon 的目录与候选池（面板 Raccoon 卡片 / 运维脚本用）。
+ *
+ * 与上面那个端点的区别：不碰 Trae（Trae 目录刷新要打 `get_detail_param`，
+ * 在只想修 Raccoon 时没必要付那次上游往返）。
+ */
+router.post('/v1/raccoon/models/refresh', admin, async (req, res) => {
+  try {
+    const raccoonMod = require('../raccoon');
+    const apply = String(req.query.apply || '') !== '0' && req.body?.apply !== false;
+    const r = await raccoonMod.refreshCatalog({ apply });
+    res.json({ object: 'raccoon.catalog_refresh', ...r });
   } catch (err) {
     res.status(500).json({ error: { message: err.message, type: 'internal_error' } });
   }

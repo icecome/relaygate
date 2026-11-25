@@ -14,7 +14,7 @@
 function maskSecret(value) {
   if (value == null) return null;
   const s = String(value);
-  if (s.length <= 12) return '***';
+  if (s.length <= 24) return '***';
   return `${s.slice(0, 6)}…${s.slice(-4)}`;
 }
 

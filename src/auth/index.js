@@ -100,6 +100,19 @@ async function ensureAuth(accountId) {
           token: r.accessToken,
           refreshToken: r.refreshToken,
           expiredAt: r.expiresAt,
+          /*
+           * refreshToken 到期必须跟着一起滚（2026-11-25 修）。
+           *
+           * 每次续期上游都换发一个新的 refreshToken（30 天有效），旧值立刻作废。
+           * 此前这里只写 token / expiredAt，refresh_expired_at 停在导入那一刻，
+           * 于是导入满 30 天后该列必然 <= now，前端 keepaliveOf() 据此判
+           * tone==='danger' → 面板报「N 个账号需重新登录」，而账号其实活得好好的
+           * （实测 8 个号 billing 全部 200、当日 1200+ 次转发 0 个 401）。
+           *
+           * 续期响应不含 refreshExpiresAt，值由 wb.refresh() 从新 refreshToken 的
+           * JWT exp 推出；取不到时退化为「不覆盖」，避免把已有值抹成 null。
+           */
+          ...(r.refreshExpiresAt ? { refreshExpiredAt: r.refreshExpiresAt } : {}),
           // 判据位：只有**成功**刷新才写。周期续期（wbNeedsRefresh）读它，
           // 每日保活轮写的 lastKeepaliveAt 不会再来重置这个窗口。
           lastRefreshAt: new Date().toISOString(),

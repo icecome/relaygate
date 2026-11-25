@@ -5275,6 +5275,69 @@ t('11128 分类为 channel：不重试、不冷却、可跨平台降级', () => 
   health.clearAllCooldowns();
 });
 
+t('业务码正则不再截断 6 位码（2026-11-25：200108→20010 曾导致分类全失效）', () => {
+  const { classifyError } = require('../upstream/errors');
+  for (const code of [100004, 200103, 200108, 200003, 200035]) {
+    const e = new Error(`x: {"error":{"code":${code},"message":"m"}}`);
+    e.status = 400;
+    classifyError(e);
+    assert.strictEqual(e.upstreamCode, code, `6 位业务码 ${code} 被截断成 ${e.upstreamCode}`);
+  }
+  // 5 位 / 4 位码同样要能回填（Trae 4001、WorkBuddy 11128）
+  const wb = new Error('x: {"code":11128,"msg":"Illegal API invocation from an unapproved channel"}');
+  wb.status = 400;
+  assert.strictEqual(classifyError(wb), 'channel');
+  assert.strictEqual(wb.upstreamCode, 11128);
+});
+
+t('200108 归入 account_risk：先于泛化 429，且不可重试、不换号、不换候选', () => {
+  const { classifyError, isRetryable, isAccountSwitchHelpful, isAccountRiskControlledError } = require('../upstream/errors');
+  const health = require('../model-router/health');
+  const e = new Error('Raccoon 对话上游 HTTP 429: {"error":{"code":200108,"message":"系统检测到当前账号存在异常调用，模型调用功能已暂时受限。","type":"rate_limit_error"}}');
+  e.status = 429;
+  e.retryAfterMs = 10_800_000; // 上游实测 Retry-After: 10800
+  assert.strictEqual(classifyError(e), 'account_risk', '200108 不得落进 rate_limit（会去换模型撞同一堵墙）');
+  assert.strictEqual(isAccountRiskControlledError(e), true);
+  assert.strictEqual(isRetryable('account_risk'), false, '风控期间重试就是加深处置');
+  assert.strictEqual(isAccountSwitchHelpful('account_risk'), false, '同机同 IP 换号无效');
+  // 冷却取上游真值 3h，而不是本地 20s / 300s
+  const r = health.markFail('vm/__test-risk__', 'raccoon/x', 'account_risk', e, 20000);
+  assert.strictEqual(r.cooledForMs, 10_800_000, `风控冷却必须取 Retry-After 真值，实际 ${r.cooledForMs}ms`);
+  health.clearAllCooldowns();
+});
+
+t('100004 param model unsupport 归入 model（换模型有效，不换账号、不重试）', () => {
+  const { classifyError, isRetryable, isAccountSwitchHelpful } = require('../upstream/errors');
+  const e = new Error('Raccoon 对话上游 HTTP 400: {"error":{"code":100004,"message":"param model unsupport","param":null,"type":"invalid_request_error"}}');
+  e.status = 400;
+  assert.strictEqual(classifyError(e), 'model', '模型名过期是模型问题，落到 other 会被 switchOn 拿去重试');
+  assert.strictEqual(e.upstreamCode, 100004);
+  assert.strictEqual(isRetryable('model'), false, '同模型重试无意义');
+  assert.strictEqual(isAccountSwitchHelpful('model'), false, '换账号无效，要换模型');
+});
+
+t('本地超时（timedOut）归入 timeout：不可重试，且先于 5xx（504 不得落进可重试桶）', () => {
+  const { classifyError, isRetryable } = require('../upstream/errors');
+  const e = new Error('Raccoon 对话超时（1200s 未完成）');
+  e.status = 504;
+  e.timedOut = true;
+  assert.strictEqual(classifyError(e), 'timeout', '504 + timedOut 不得被 5xx 分支吃掉（5xx 是可重试的）');
+  assert.strictEqual(isRetryable('timeout'), false);
+});
+
+t('shouldSwitch：account_risk / timeout / other 一律不切换候选', () => {
+  const idx = require('../model-router/index');
+  // 通过 handleChat 的失败路径不易构造，这里直接校验源码契约：
+  // 三个 kind 必须在 shouldSwitch 里被显式拒绝（它们各自的理由见函数注释）。
+  const fs = require('fs');
+  const src = fs.readFileSync(path.join(__dirname, '..', 'model-router', 'index.js'), 'utf-8');
+  assert.ok(/if \(kind === 'account_risk'\) return false;/.test(src), 'account_risk 必须显式 return false');
+  assert.ok(/if \(kind === 'timeout'\) return false;/.test(src), 'timeout 必须显式 return false');
+  // 默认 switchOn 集合不得再含 'other'
+  assert.ok(!/\['rate_limit', 'model', '5xx', 'network', 'channel', 'other'\]/.test(src), '默认 switchOn 不得含 other');
+  assert.ok(typeof idx.handleChat === 'function');
+});
+
 t('switchOn 默认值含 channel（store 与 autotier 两处口径一致）', () => {
   const fs = require('fs');
   const storeSrc = fs.readFileSync(path.join(__dirname, '..', 'model-router', 'store.js'), 'utf-8');

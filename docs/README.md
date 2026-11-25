@@ -88,6 +88,7 @@
 | [raccoon-qr-login-repair-2026-10-18.md](05-incidents/raccoon-qr-login-repair-2026-10-18.md) | 扫码登录失败排查 | 已修复 |
 | [raccoon-daily-grant-upstream-2026-10-20.md](05-incidents/raccoon-daily-grant-upstream-2026-10-20.md) | 每日积分发放的上游行为变化 | 已适配 |
 | [raccoon-daily-grant-correction-2026-10-20.md](05-incidents/raccoon-daily-grant-correction-2026-10-20.md) | 上述变化的二次勘误 | 已适配 |
+| [incident-2026-11-25-traework-4054.md](05-incidents/incident-2026-11-25-traework-4054.md) | TraeWork 调自定义模型频繁报 `4054`：隧道断开 + 网关侧三个放大器（整轮缓冲、无心跳、keep-alive 5s） | 已修复：续写改流式追加、补 15s SSE 心跳、keepAlive 65s、补拒收日志 |
 
 ## 7. 06-deliverables — 交付成果
 

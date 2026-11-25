@@ -7,6 +7,154 @@
 
 ## Unreleased
 
+### WorkBuddy「7 个账号需重新登录」是误报：refreshToken 到期记录与凭据生命周期脱钩（2026-11-25）
+
+- **现象**：面板凭据池与总览同时报「7 个账号需重新登录」；按提示重新登录其中一个账号后，
+  该提示**没有消失**，那一行仍标红。
+- **结论：误报**。8 个 WorkBuddy 账号全部有效 —— 逐个打计费面全部 200（余额 2658~3581），
+  当日 1291 次转发 **0 个 401**。真正过期的是数据库里的 `refresh_expired_at` 这一列。
+- **根因**：该列只在**导入那一刻**写一次，之后所有续期链路都不回写它
+  （`ensureAuth` / `rotate-accounts` / `POST /refresh` / `auth-sync` 四处全部只写
+  `token` 与 `expired_at`）。而 refreshToken 每次续期都会滚动换发一个新的 30 天值，
+  于是导入满 30 天后这一列必然跨过 `now`，前端 `keepaliveOf()` 据此永久判
+  「需重新登录」—— 一个只增不减、永不自愈的错误状态。
+- **重登为何无效**：重登只更新 `token` / `expired_at`（这两列本来就对），
+  那一列错的没人碰。实测该账号 `last_refresh_at` 已更新到 01:14，
+  `refresh_expired_at` 仍是导入时的 `04:02:38`。
+- **两处读侧放大器**：
+  1. `readAuthFile()` 只读 `refreshExpiresIn`（相对秒数），忽略客户端文件里现成的
+     绝对时间戳 `refreshExpiresAt` —— 拿 10 月 26 日文件里的「剩余 716 小时」加 `now`，
+     会把已到期的凭据算到 2027 年；
+  2. 上游续期响应只返回 `{accessToken, refreshToken, expiresAt}`，**不含**
+     `refreshExpiresAt`，写侧即使想补也没有字段可取。
+- **修复**（四层，缺一层都会复发）：
+  - 写侧：`workbuddy/auth.js#refresh()` 从新 refreshToken 的 JWT `exp` 推出
+    `refreshExpiresAt` 并返回；`auth/index.js`、`routes/workbuddy.js`（`/refresh` 与
+    `/import`）、`jobs/rotate-accounts.js`（两处）、`jobs/auth-sync.js` 五个回写点全部补上。
+  - 读侧：`readAuthFile()` 与 `auth-sync` 改认**绝对时间戳 → JWT exp → 相对秒数**三级优先。
+  - 存量：新增 `credentials/refresh-expiry.js#repairWorkbuddyRefreshExpiry()`，启动时
+    按 JWT exp 校正偏差超 1 小时的行，**两个方向都纠**（既修「已过期却还活着」，
+    也修「记录比真值更晚」——后者会让到期告警被推迟，更危险）。幂等。
+  - 判据：`keepaliveOf()` 与总览 `issues` 增加反证条件 ——
+    `lastRefreshAt > refreshExpiredAt` 时判「到期记录陈旧」(warn) 而非「需重新登录」(danger)，
+    界面上单独计数，文案指向「刷新 Token」而非「重新登录」。
+- **效果**：`needRelogin` 7 → **0**；库内 8 行 `refreshExpiredAt` 与 JWT exp 偏差
+  从 -700~-720h 收敛到 **0.0h**；新增契约测试 `src/test/wb-refresh-expiry.test.js`（16 项）。
+- 完整取证：[SRC-01 WorkBuddy账号池需重新登录误报.md](审计报告/RelayGate/SRC-01%20WorkBuddy账号池需重新登录误报.md)
+
+### Raccoon 限流误判修复：「IP 出口限流」结论被推翻，四因叠加才是真因（2026-11-25）
+
+- **现象**：用官方客户端跑同一项目代码审计，11:29 起连续 40 分 42 秒 / 182 次调用
+  全程无中断；而外接 API（本网关 `sn-*` 通道）通常十几分钟就被限流。
+- **此前结论（已推翻）**：`raccoon/limiter.js` 头部曾论证「上游按**出站公网 IP**
+  计并发」。决定性反证：同机同 IP 的两个账号，一个 429 一个 200 —— IP 假说当场证伪。
+  真正的错误码是 **`200108`「系统检测到当前账号存在异常调用」**，即**账号级风控**。
+- **四个叠加真因**：
+  1. **模型名过期**：上游把 `sn-deepseek-v4-1-flash` 改成 `…-1017`、`sn-kimi-k3`
+     改成 `…-1-pro`，而兜底表是硬编码的 ⇒ 每个请求 400 `param model unsupport`。
+     （更隐蔽：旧名带 `X-Client-Name` 头时上游不报错，而是静默改写成默认模型
+     `raccoon-090dd3` —— 计费与能力全变，日志里看起来一切正常。）
+  2. **业务码正则只吃 3~5 位**，而小浣熊是 6 位码 ⇒ `200108` 被截成 `20010`、
+     `100004` 被截成 `10000`，所有分类器失效，400 全落进 `'other'`，
+     而 `'other'` 在默认 `switchOn` 里 ⇒ 每个请求放大成最多 **9 次**上游调用。
+  3. **`200108` 未被识别**，只冷 300 秒，而上游 `Retry-After` 明示 **10800 秒（3 小时）**；
+     且 `lib/upstream-error.js` 是 `cooldownMs || retryAfterMs`（本地优先），
+     把上游真值覆盖成 5 分钟 ⇒ 冷却到点即撞 ⇒ 越撞越深。
+  4. **60 秒硬超时砍断长回合**：`AbortSignal.timeout` 管的是**整条响应体读取**，
+     不只是拿头。官方客户端自己的超时是 **1200 秒**。历史 324 条记录里
+     **17 条（5.2%）** 回合是坏的（9 次 500 timeout 全落在 60020~60568ms；
+     8 次 200 但 `finishReason=null` 的半截流）。且超时 abort 不带标记 ⇒
+     被判成 `'other'` ⇒ **再触发一次换号重试**，成本翻倍再付一次。
+- **修复**：
+  - `upstream/errors.js` 业务码正则 `(\d{3,5})` → `(\d{4,9})`；新增
+    `account_risk`（200108）分类，先于泛化 429；`100004` 归入 `model`；
+    本地超时归入 `timeout`（先于 5xx，不可重试）。
+  - `raccoon/product.js` 兜底表改用现行模型名；新增 `detectCatalogDrift`
+    —— 拉到远端目录后比对本地 id，不一致就告警（只告警不改写）。
+  - `raccoon/limiter.js` 识别 `200108` 并**采用上游 `Retry-After` 真值**；
+    `account_risk` 不参与指数退避（否则 3h 会被 30min 封顶砍短）；
+    新增 `riskCoolingReason()` 供面板/脚本区分「风控 3 小时」与「并发 5 分钟」；
+    删掉「IP 出口限流」那节错误结论。
+  - `lib/upstream-error.js` `Retry-After` 改为取 `max(本地, 上游)`。
+  - `raccoon/dispatch.js` `MAX_ACCOUNT_SWITCHES` 3 → 2，且只有 `auth` 还会换号；
+    `200108` 走 `scope:'account'`（不连带冻出口 —— 同机健康号不该被拖下水）。
+  - `model-router` 默认 `switchOn` 去掉 `other`；`shouldSwitch` 显式拒绝
+    `account_risk` / `timeout`；`health.markFail` 为 `account_risk` 单开分支，
+    冷却取 `Retry-After`（上限 6h）。
+  - `RACCOON_TIMEOUT_MS` 默认 60000 → **1200000**（对齐官方客户端）。
+  - traffic 日志新增 `upstreamCode` / `timedOut` 字段；超时记 504 而非 502。
+- **注意**：网关账号与官方客户端**很可能共用同一个上游账号**（实测 JWT `sub`
+  完全相同）—— 网关把号撞进 3 小时风控，官方客户端会一起挂。
+- 完整取证：[incident-2026-11-25-raccoon-throttle-misdiagnosis.md](docs/05-incidents/incident-2026-11-25-raccoon-throttle-misdiagnosis.md)
+
+### 模型目录同步：「刷新」此前只刷了列表，没同步到派发候选池（2026-11-25）
+
+- **根因追问**：上面那条「模型名过期」不是「本地忘了改名」，而是**架构上缺一条链路**：
+  - **链路 A（列表）**：每次实时拉远端 `model_catalog` —— 永远新鲜；
+  - **链路 B（派发）**：`model-router.json` 里的静态候选池 —— 可能是几个月前的；
+  - A 与 B 之间**没有任何同步机制**，而真实请求走的是 B。
+- **三处断点**：
+  1. `POST /v1/models/refresh`（面板「刷新」按钮）只调 Trae 的
+     `models/catalog.js`，函数体里连 `raccoon` 这个词都没有；
+  2. `autotier.syncAutoTiers` 只拉 `trae` + `workbuddy`，且只写 `auto=true`
+     的分层虚拟模型 —— `raccoon` / `vm/raccoon` 都是 `auto=false`，它根本不碰；
+  3. `explainCandidates` 的不可用理由里**没有**「这个模型上游已不存在」，
+     于是旧名候选在面板上一直显示「可用」。
+- **修复**：
+  - 新增 `raccoon/catalog-store.js`：远端目录**持久化快照**
+    （`.trae-api/raccoon-catalog.json`）+ 漂移对账 + 候选重写。
+    回退链从「远端 → 硬编码表」变成「**远端 → 快照 → 硬编码表**」。
+  - 对账处置：可迁移的旧 id **改名**（只认显式迁移表，语义等价）；
+    无法迁移的**禁用而非删除**（保留权重/置顶/优先级，可回滚）；
+    上游新增的**只上报不自动入池**（加进去会改变用户的路由行为，那是产品决策）。
+  - `POST /v1/models/refresh` 现在同时刷 Raccoon 并对账候选池，
+    返回 `raccoon.totals = {renamed, disabled, available}`；前端 toast 会说出来。
+  - 新增 `POST /v1/raccoon/models/refresh`（只刷 Raccoon，`?apply=0` 只看不写）。
+  - `GET /v1/raccoon/models` 的 `source` 变三态 `remote` / `snapshot` / `fallback`，
+    面板据此区分「数据是真的只是不是此刻的」与「这份名单可能已过期」。
+  - `explainCandidates` 新增 `model_not_in_catalog` 不可用理由（有快照才判定，
+    没快照=不知道=不阻断）。
+- 文档：[raccoon-integration.md · 模型目录同步](docs/02-technical/channels/raccoon-integration.md)
+
+### TraeWork 调自定义模型频繁报 4054：补心跳、改续写为流式、放宽 keep-alive（2026-11-25）
+
+- **现象**：TraeWork CN 3.4.24 以自定义模型方式指向本网关，长回合对话经常弹
+  「模型请求失败，请稍后重试。(4054)」，整轮作废需重发；同机 DSH 直连同一网关
+  几乎不出现。
+- **真实原因**：`4054` 是 Trae 客户端 `CUSTOM_MODEL_INTERNAL_ERROR` 的 catch-all，
+  文案是「Custom model internal error occurred. Please check the proxy response for
+  details.」。自定义模型走 `cloud_agent` 编排 + 本地 `custom-model-proxy` WebSocket
+  隧道回传，**隧道中途断开**即触发。取证：6 次 4054 的当时网关都没有 Trae 请求在飞，
+  当轮全部 200 —— 失败不在网关，在云端 ↔ 本地 harness 的隧道。DSH 是直连
+  `localhost:19900`，不经隧道，所以从架构上产生不出该码。
+- **但网关有三个放大器**（本次修复对象）：
+  1. `AUTO_CONTINUE=true` 时 `emitDuringRound=false`，**整轮缓冲**到结束才发第一帧，
+     首字节延迟 = 整轮耗时（实测 p50 4.9s / p90 19.1s / p99 45.5s / max 110s），
+     而收益接近于零（6315 条 Trae 请求里 truncated 仅 1 条，0.02%）；
+  2. 直连路径**完全没有 SSE 心跳**（心跳只在虚拟模型路径生效），于是「头已发 +
+     零字节 + 最长 110 秒无流量」；
+  3. `keepAliveTimeout` 走 Node 默认 **5000ms**，而客户端相邻请求间隔
+     p50 11.5s / p90 35.3s，**57.6% 超过 5s** —— 一半以上的连接复用发生在
+     服务端已 FIN 的 socket 上，写入落在竞态窗口就是「连接重置、无 HTTP 响应」。
+- **修复**：
+  - 续写改为「首轮边收边发 + 仅 `finish_reason=length` 时追加」，只把末帧 `done`
+    挪到最后。续写是追加，与流式不冲突；`pool.run` 只在 auth/quota/rate_limit 上
+    换号重试，那三类都在响应体被消费前抛出，故不会拼接两个候选的正文；
+  - 新增 SSE 静默心跳（`SSE_HEARTBEAT_MS`，默认 15000，0=关闭），接入
+    `/v1/chat/completions`、`/v1/messages`、`/v1/responses`。只在静默超期时补
+    `: ping` 注释帧，**有字节流动时一帧都不发**；
+  - `keepAliveTimeout` 默认 65000（`KEEPALIVE_TIMEOUT_MS` 可调），`headersTimeout`
+    自动取 +5000（Node 要求前者严格更大，故不暴露第二个旋钮）；
+  - **顺带修观测盲区**：401/403/429 此前完全不进 traffic 日志（实测：无效密钥 →
+    401 → jsonl 行数 delta=0），现在落一行 `platform:'gateway'` +
+    `rejectedBy:'gateway'` + `rejectCode`，与真实上游失败可区分。
+- **不做**：不改客户端；不保证云端不掐断隧道（外部依赖的固有边界）。
+- **测试**：新增 `sse-heartbeat.test.js`（17 项，已进 `npm test`），覆盖「有流量时
+  零额外帧」「静默才补帧」「end 后不写」「write 契约透传」「headers > keepAlive」
+  与「默认值覆盖实测 p90」。端到端探针 `scripts/probes/verify-sse-heartbeat.js`
+  与 `verify-continue-streaming.js` 走真实路由 + 真实 fetch 读 SSE 字节，全绿。
+- **复盘**：[docs/05-incidents/incident-2026-11-25-traework-4054.md](docs/05-incidents/incident-2026-11-25-traework-4054.md)
+
 ### 本机请求体超限不再伪装成「上游暂时不可用」（2026-11-22）
 
 - **现象**：客户端报 `500: {"message":"上游暂时不可用","type":"upstream_error"}`，

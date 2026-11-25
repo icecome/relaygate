@@ -89,6 +89,13 @@
 | `wb-asar.js` | WorkBuddy `app.asar` 只读探针（list / cat / dump / grep） |
 | `probe-raccoon-api.js` / `capture_raccoon.py` | Raccoon 运营面请求复放 / mitmproxy 抓包 addon |
 | `zcode-probe-now.js` / `zcode-credit-impact.js` / `zcode-verify-credit-isolation.js` / `zcode-e2e.js` | ZCode 套餐探测、积分口径影响分析、口径隔离回归、端到端 |
+| `verify-sse-heartbeat.js` | Trae 直连路径的静默心跳（结论见 `docs/05-incidents/incident-2026-11-25-traework-4054.md`） |
+| `verify-heartbeat-all-endpoints.js` | `/v1/chat/completions`、`/v1/messages`、`/v1/responses` 三出口心跳覆盖 |
+| `verify-heartbeat-wb-path.js` | 直连 WorkBuddy 分支的静默心跳（与 Trae 直连是两条独立分支） |
+| `verify-continue-streaming.js` | 续写不再整轮缓冲：首轮正文必须早于末帧到达 |
+
+> 上述四个心跳/续写探针**全部用 mock 上游**，不打真实上游、不消耗积分，
+> 可随时复跑（与 `probes/` 里那些一次性取证探针不同，它们属于常驻回归）。
 
 ### 探针的运行约定
 

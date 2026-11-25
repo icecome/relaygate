@@ -328,9 +328,16 @@ app.use((err, req, res, next) => {
       : err.type === 'encoding.unsupported' || err.type === 'charset.unsupported'
         ? '请求体编码不受支持：请用 UTF-8 且不要带 Content-Encoding（本机拒收，未发往上游）。'
         : '请求体无法解析（本机拒收，未发往上游）。';
+    // L-03/M-07：服务端日志保留完整 err.message（含位置）用于排障，但客户端
+    // 只回语法错误的**位置**而非内容片段——body-parser 的 message 会带出
+    // 请求体前缀（如 Unexpected token 'S', "SUPER_SECR"...），经日志/反代扩散即泄露。
     console.error(`[relay-gate] bad request body: type=${err.type} ${req.method} ${req.path} ${String(err.message).slice(0, 200)}`);
+    const pos = String(err.message).match(/at position (\d+)/);
+    const detail = err.type === 'entity.parse.failed'
+      ? (pos ? `JSON 语法错误（位置 ${pos[1]}）` : 'JSON 语法错误')
+      : '请求体无法解析';
     return res.status(s).json({
-      error: { message: `${hint} 原始原因：${String(err.message).slice(0, 300)}`, type: 'invalid_request_error', code },
+      error: { message: `${hint} ${detail}`, type: 'invalid_request_error', code },
     });
   }
   replyUpstreamError(res, { ...err, message: err.message, status: 500 }, { tag: 'unhandled' });
@@ -340,8 +347,30 @@ function isPortBusy(err) {
   return err && (err.code === 'EADDRINUSE' || err.code === 'EACCES');
 }
 
+/**
+ * 调整 Node HTTP server 的空闲连接回收参数（实现见 lib/server-timeouts.js）。
+ *
+ * Node 默认 keepAliveTimeout = 5000ms，而本服务的调用方是同一个客户端进程反复
+ * 发请求：Trae 通道实测相邻请求间隔 p50 = 11.5s、p90 = 35.3s，**57.6% 的间隔
+ * 超过 5s**。客户端连接池里的 socket 于是有一半以上的概率在复用时早已被服务端
+ * FIN，写入落在竞态窗口就得到「连接重置、无 HTTP 响应」——即 TraeWork 侧
+ * `4054 (CUSTOM_MODEL_INTERNAL_ERROR)` 文案里「check the proxy response」那类失败。
+ *
+ * @param {import('http').Server} server
+ */
+function tuneServerTimeouts(server) {
+  const applied = require('./lib/server-timeouts').tuneServerTimeouts(server, {
+    keepAliveTimeoutMs: config.keepAliveTimeoutMs,
+  });
+  if (!applied) return;
+  console.log(`[relay-gate] keep-alive: idle=${applied.keepAliveTimeout}ms`
+    + ` headers=${applied.headersTimeout}ms (Node 默认 5000ms，客户端请求间隔 p50 11.5s / p90 35.3s)`);
+}
+
 function listen(port, host, fallbacks = []) {
   const server = app.listen(port, host, () => {
+    // 必须在开始接受流量前生效：空闲连接回收参数只在 server 实例上，越早设置越好。
+    tuneServerTimeouts(server);
     const shown = host === '0.0.0.0' || host === '::' ? 'localhost' : host;
     console.log(`[relay-gate] 服务已启动: http://${shown}:${port} (bind=${host})`);
     console.log(`[relay-gate] 管理面板: http://${shown}:${port}/`);

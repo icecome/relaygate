@@ -74,6 +74,25 @@ function plainToken(v) {
   return (typeof v === 'string' && v && !v.startsWith('[object')) ? v : null;
 }
 
+/**
+ * 从 JWT 里取 exp（毫秒）。WorkBuddy 的 accessToken / refreshToken 都是标准 JWT，
+ * payload.exp 是**上游签发时写死的绝对时刻**，不受「什么时候读到它」影响，
+ * 因此是唯一可离线推导的权威到期时间。
+ *
+ * 为什么必须靠它：续期响应（POST /v2/plugin/auth/token/refresh）实测只返回
+ * {accessToken, refreshToken, expiresAt}，**不返回 refreshExpiresAt / refreshExpiresIn**；
+ * 而桌面端 .info 文件里的 refreshExpiresIn 是「相对写入那一刻的剩余秒数」，
+ * 文件放旧了再拿它加 now 会把到期时间算到未来去。
+ */
+function jwtExpMs(token) {
+  try {
+    const seg = String(token || '').split('.')[1];
+    if (!seg) return null;
+    const payload = JSON.parse(Buffer.from(seg, 'base64url').toString('utf8'));
+    return payload && payload.exp ? payload.exp * 1000 : null;
+  } catch { return null; }
+}
+
 function readAuthFile(filePath) {
   const file = filePath || locateAuthFile();
   if (!file || !fs.existsSync(file)) return null;
@@ -83,6 +102,20 @@ function readAuthFile(filePath) {
   const accessToken = plainToken(auth.accessToken);
   const refreshToken = plainToken(auth.refreshToken);
   if (!accessToken && !refreshToken) return null;
+  /*
+   * 到期时间的取值优先级（2026-11-25 修正）：
+   *   1) 文件里的**绝对**时间戳 expiresAt / refreshExpiresAt（客户端自己算好的）；
+   *   2) JWT 的 exp（上游签发时刻，同样绝对）；
+   *   3) 最后才用 refreshExpiresIn / expiresIn 相对秒数兜底。
+   *
+   * 之前只看 (1) 的 expiresAt 和 (3) 的 refreshExpiresIn：
+   *   - 客户端其实一直写着 refreshExpiresAt（绝对毫秒），代码却只读 refreshExpiresIn，
+   *     于是「10 月 26 日写下的文件」被当成「从现在起还有 716 小时」，
+   *     到期时间被算到 2027 年去；反过来，账号库里存的那份又因为只在导入时写一次，
+   *     导入满 30 天后就永远显示「已过期」。两边都是同一个病根：不认绝对时间。
+   */
+  const absAccess = Number(auth.expiresAt) > 0 ? Number(auth.expiresAt) : null;
+  const absRefresh = Number(auth.refreshExpiresAt) > 0 ? Number(auth.refreshExpiresAt) : null;
   return {
     file,
     uid: acc.uid || null,
@@ -91,8 +124,12 @@ function readAuthFile(filePath) {
     uin: acc.uin || null,
     accessToken,
     refreshToken,
-    expiresAtMs: auth.expiresAt || (auth.expiresIn ? Date.now() + auth.expiresIn * 1000 : null),
-    refreshExpiresAtMs: auth.refreshExpiresIn ? Date.now() + auth.refreshExpiresIn * 1000 : null,
+    expiresAtMs: absAccess
+      || jwtExpMs(accessToken)
+      || (auth.expiresIn ? Date.now() + Number(auth.expiresIn) * 1000 : null),
+    refreshExpiresAtMs: absRefresh
+      || jwtExpMs(refreshToken)
+      || (auth.refreshExpiresIn ? Date.now() + Number(auth.refreshExpiresIn) * 1000 : null),
     region: regionOf(auth.domain),
   };
 }
@@ -289,11 +326,24 @@ async function refresh(refreshToken) {
     throw new Error(`刷新失败 HTTP ${r.status} ${msg}`.trim());
   }
   const accessToken = data.accessToken || data.access_token;
+  const nextRefreshToken = data.refreshToken || data.refresh_token || refreshToken;
   const expiresIn = Number(data.expiresIn) || 5184000;
+  /*
+   * 续期响应实测字段：{accessToken, refreshToken, expiresAt}——**没有**
+   * refreshExpiresAt / refreshExpiresIn（2026-11-25 对本机账号实测，见
+   * output/_diag_wb_refresh_probe.js）。而 refreshToken 每次续期都换发新的
+   * 30 天有效期，所以「新的 refreshToken 何时过期」只能从它自己的 JWT exp 取。
+   *
+   * 这也是「7 个账号需重新登录」的直接病根：调用方此前不写 refreshExpiredAt，
+   * 库里那一列永远停在导入时的那一刻，导入满 30 天后就永久判为已过期。
+   */
+  const refreshExpiresAtMs = jwtExpMs(nextRefreshToken)
+    || (data.refreshExpiresAt ? Number(data.refreshExpiresAt) : null);
   return {
     accessToken,
-    refreshToken: data.refreshToken || data.refresh_token || refreshToken,
+    refreshToken: nextRefreshToken,
     expiresAt: new Date(Date.now() + expiresIn * 1000).toISOString(),
+    refreshExpiresAt: refreshExpiresAtMs ? new Date(refreshExpiresAtMs).toISOString() : null,
   };
 }
 

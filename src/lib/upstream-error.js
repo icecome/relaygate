@@ -119,8 +119,22 @@ function replyUpstreamError(res, err, opts = {}) {
   const status = Number(err && err.status) >= 400 && Number(err && err.status) < 600
     ? Number(err.status) : 502;
   const cooldownMs = err && err.raccoonCooldown && err.raccoonCooldown.cooldownMs;
-  // 与旧出口保持一致：冷却值优先，其次 err.retryAfterMs，429 无值时兜底 60s。
-  const retryMs = cooldownMs || (err && err.retryAfterMs)
+  /*
+   * 回给客户端的 Retry-After 取值链。
+   *
+   * ⚠️ **曾经是 `cooldownMs || retryAfterMs`（本地优先）**，2026-11-25 证实那是错的：
+   *
+   * 小浣熊的 `200108`（账号风控）上游发 `Retry-After: 10800`（3 小时），
+   * 而本地冷却算出来是 300s。本地优先 ⇒ 回给客户端 300s ⇒ 客户端 5 分钟后
+   * 准时重试 ⇒ 撞墙 ⇒ 再被处置。**客户端是被我们的错值指挥着去撞墙的。**
+   *
+   * 现在改为取**两者较大值**：上游给的是权威恢复时刻，本地算的是保守下界，
+   * 取 max 意味着「宁可让客户端多等，也不要让它提前撞墙」。
+   * 这也符合 HTTP 语义：Retry-After 是服务端对客户端的承诺，不应被本地值缩短。
+   */
+  const upstreamRetry = Number(err && err.retryAfterMs) || 0;
+  const localRetry = Number(cooldownMs) || 0;
+  const retryMs = Math.max(upstreamRetry, localRetry)
     || (status === 429 ? 60_000 : 0);
   if (retryMs > 0) {
     res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryMs / 1000))));

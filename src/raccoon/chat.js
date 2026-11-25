@@ -120,6 +120,16 @@ function chatHeaders(acct) {
  * `signal`（可选）：调用方传客户端断开信号。**必须透传**——否则用户按了停止，
  * 上游仍会把整轮 token 生成完，积分照扣。与请求自带的超时信号用 `any` 合并，
  * 任一触发都中止。
+ *
+ * ## 超时与「调用方取消」必须能区分（2026-11-25）
+ *
+ * 两者都会让 fetch 抛 AbortError，但处置完全相反：
+ *   - 调用方取消 → `aborted=true`、499，**不冷却、不换号、不重试**（用户主动停的）；
+ *   - 超时 → `timedOut=true`，它是**上游/链路问题**，必须让上层知道
+ *     「这轮跑了很久但没跑完」，而不是当成普通网络错误去换号重试。
+ *
+ * 此前超时走的是普通 catch，既不带 `aborted` 也不带任何标记 ⇒ `dispatch` 判成
+ * `'other'` ⇒ **换号重试** ⇒ 一个已经跑了整轮超时的回合，成本翻倍再付一次。
  */
 async function chatStream(acct, body, opts = {}) {
   const url = client.urlFor('chat');
@@ -142,6 +152,18 @@ async function chatStream(acct, body, opts = {}) {
       const err = new RaccoonChatError('raccoon 请求已被调用方取消', { model: body && body.model });
       err.status = 499;
       err.aborted = true;
+      throw err;
+    }
+    // 超时（`AbortSignal.timeout` 触发）：必须与「网络失败」区分开。
+    // `timeout.aborted` 为真且调用方没取消 ⇒ 就是超时。
+    if (timeout.aborted) {
+      const err = new RaccoonChatError(
+        `Raccoon 对话超时（${Math.round(product.REQUEST_TIMEOUT_MS / 1000)}s 未完成）`,
+        { model: body && body.model },
+      );
+      err.status = 504;
+      err.timedOut = true;
+      err.timeoutMs = product.REQUEST_TIMEOUT_MS;
       throw err;
     }
     throw new RaccoonChatError(`Raccoon 网络请求失败: ${e.message}`, { model: body && body.model });

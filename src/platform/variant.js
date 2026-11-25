@@ -594,6 +594,47 @@ const VARIANTS = {
       refreshExpired: 200003,
       // 授权码不存在/过期/已消费
       authCodeInvalid: 200035,
+
+      /* ---------- 对话面业务码（2026-11-25 实测，改代码前先读） ---------- */
+
+      /**
+       * 模型名不受支持。HTTP 400，
+       * `{"error":{"code":100004,"message":"param model unsupport"}}`。
+       *
+       * 语义是**模型 id 过期/拼错**，不是账号或额度问题：换账号无效、
+       * 换模型有效。2026-11-25 实测：`sn-deepseek-v4-1-flash` 回本码，
+       * 而现行目录里叫 `sn-deepseek-v4-1-flash-1017` —— 上游改名后旧 id
+       * 直接失效。这条码曾经因为下面的 `errors.js` 正则只吃 3~5 位数字
+       * （本码 6 位）而被截成 10000，导致分类器认不出、把 400 当可重试错误
+       * 去逐个候选撞墙。
+       */
+      modelUnsupported: 100004,
+
+      /**
+       * **账号级异常调用风控**（不是并发限流，不是配额）。HTTP 429 + `Retry-After`，
+       * ```
+       * retry-after: 10800
+       * {"error":{"code":200108,
+       *           "message":"系统检测到当前账号存在异常调用，模型调用功能已暂时受限。…",
+       *           "type":"rate_limit_error"}}
+       * ```
+       *
+       * 三条与「并发限流」的决定性差异（2026-11-25 实测）：
+       *   1. **按账号**：同机同 IP 的两个账号，一个 429 一个 200 —— IP 假说当场证伪；
+       *   2. **跨模型**：该账号下 7 个模型全部 429（因为整个账号被处置，不是某模型超并发）；
+       *   3. **恢复窗口 3 小时**（`retry-after: 10800`），远大于任何并发限流的 5~10 分钟。
+       *
+       * 处置方式：**长冷却到上游给的时刻 + 不换模型重试 + 不换账号重试**。
+       * 反复重试本身就是「异常调用」的典型特征，会加深风控。
+       */
+      accountRiskControlled: 200108,
+
+      /**
+       * 内部 limiter 排队超时（瞬时拥塞）。HTTP 429，
+       * `{"code":200103,"message":"limiter_request_error","details":"request exceed max time, retry after:0s"}`。
+       * 与 `accountRiskControlled` 相反：这是**真·瞬时**，短冷却即可。
+       */
+      limiterRequestError: 200103,
     },
   },
 };

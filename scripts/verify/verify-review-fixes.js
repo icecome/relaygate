@@ -91,7 +91,8 @@ async function ok(name, fn) {
   await ok('PUT /accounts/:id/password-login 返回 200 configured=true', async () => {
     userInfoShouldFail = false;
     const r = await req('PUT', `/v1/raccoon/accounts/${acct.id}/password-login`,
-      { phone: '18630893389', password: 'SuperSecret123' });
+      // 仅用于本地校验入参格式，不对应任何真实账号（L-04）
+      { phone: '13800000000', password: 'test-only-fake-pw' });
     assert.strictEqual(r.status, 200, `HTTP ${r.status}: ${r.text.slice(0, 200)}`);
     assert.strictEqual(r.json.configured, true);
     assert.ok(!/not defined/.test(r.text), '不得再出现 not defined');
@@ -102,30 +103,30 @@ async function ok(name, fn) {
     const r = await req('GET', `/v1/credentials/${acct.id}`);
     assert.strictEqual(r.status, 200);
     assert.ok(!r.text.includes('SuperSecret123'), '密码泄漏');
-    assert.ok(!r.text.includes('18630893389'), '手机号泄漏');
+    assert.ok(!r.text.includes('13800000000'), '手机号泄漏');
     assert.strictEqual(r.json.hasPasswordLogin, true);
   });
   await ok('PATCH /v1/credentials/:id 不含密码/手机号', async () => {
     const r = await req('PATCH', `/v1/credentials/${acct.id}`, { label: 'revfix-2' });
     assert.strictEqual(r.status, 200);
     assert.ok(!r.text.includes('SuperSecret123'), '密码泄漏');
-    assert.ok(!r.text.includes('18630893389'), '手机号泄漏');
+    assert.ok(!r.text.includes('13800000000'), '手机号泄漏');
   });
   await ok('GET /v1/credentials 列表不含密码/手机号', async () => {
     const r = await req('GET', '/v1/credentials');
     assert.ok(!r.text.includes('SuperSecret123'));
-    assert.ok(!r.text.includes('18630893389'));
+    assert.ok(!r.text.includes('13800000000'));
   });
   await ok('POST /raccoon/accounts/:id/balance 不含密码/手机号', async () => {
     const r = await req('POST', `/v1/raccoon/accounts/${acct.id}/balance`);
     assert.strictEqual(r.status, 200, r.text.slice(0, 200));
     assert.ok(!r.text.includes('SuperSecret123'), '密码泄漏');
-    assert.ok(!r.text.includes('18630893389'), '手机号泄漏');
+    assert.ok(!r.text.includes('13800000000'), '手机号泄漏');
   });
   await ok('GET /v1/raccoon/accounts 含 hasPasswordLogin 但不含明文', async () => {
     const r = await req('GET', '/v1/raccoon/accounts');
     assert.ok(!r.text.includes('SuperSecret123'));
-    assert.ok(!r.text.includes('18630893389'));
+    assert.ok(!r.text.includes('13800000000'));
     assert.ok(r.text.includes('hasPasswordLogin'));
   });
 
@@ -170,7 +171,7 @@ async function ok(name, fn) {
     const before = store.list().filter((a) => a.edition === 'raccoon').length;
     for (let i = 0; i < 3; i += 1) {
       // eslint-disable-next-line no-await-in-loop
-      await loginWithPassword({ phone: '18630893389', password: 'pw' });
+      await loginWithPassword({ phone: '13800000000', password: 'pw' });
     }
     const after = store.list().filter((a) => a.edition === 'raccoon').length;
     assert.strictEqual(after, before, `账号数从 ${before} 变成 ${after}`);

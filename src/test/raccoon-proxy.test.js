@@ -92,6 +92,68 @@ t('classifyThrottle：上游改码后退路仍能识别（文案命中）', () =
   assert.strictEqual(r2.limited, true);
 });
 
+/* ---------- 1b. 账号级风控（200108）与 Retry-After（2026-11-25 新增） ---------- */
+
+t('classifyThrottle：200108 账号风控 → kind=account_risk，冷到上游 Retry-After（3h）而不是 5 分钟', () => {
+  const body = JSON.stringify({
+    error: {
+      code: 200108,
+      message: '系统检测到当前账号存在异常调用，模型调用功能已暂时受限。请稍后重试；如仍未恢复，或你认为是误判，请点击左下角头像，选择「问题反馈」提交说明。',
+      type: 'rate_limit_error',
+    },
+  });
+  // 上游实测每次都带 Retry-After: 10800
+  const withHeader = classifyThrottle({ status: 429, body, retryAfterMs: 10_800_000 });
+  assert.strictEqual(withHeader.limited, true);
+  assert.strictEqual(withHeader.kind, 'account_risk', '200108 是账号风控，不能归成并发/未知');
+  assert.strictEqual(withHeader.cooldownMs, 10_800_000, '必须用上游 Retry-After 真值');
+
+  // 上游不发 Retry-After 时兜底 3h（而不是 5 分钟）
+  const noHeader = classifyThrottle({ status: 429, body });
+  assert.strictEqual(noHeader.kind, 'account_risk');
+  assert.strictEqual(noHeader.cooldownMs, 3 * 3600_000, '没有真值也要兜底 3h，不能退回 5 分钟');
+});
+
+t('classifyThrottle：200108 的文案兜底（上游换码时仍能识别）', () => {
+  const r = classifyThrottle({ status: 429, body: JSON.stringify({ message: '系统检测到当前账号存在异常调用' }) });
+  assert.strictEqual(r.kind, 'account_risk');
+});
+
+t('AccountLimiter：account_risk 不参与指数退避，连续两次仍是 3h（不能被 30min 封顶砍短）', () => {
+  const lim = new AccountLimiter({ cooldownMs: 300_000 });
+  const r1 = lim.throttle('acct_x', { kind: 'account_risk', cooldownMs: 10_800_000, scope: 'account' });
+  const r2 = lim.throttle('acct_x', { kind: 'account_risk', cooldownMs: 10_800_000, scope: 'account' });
+  // cooldownMs 是 `until - Date.now()` 的差值，跨毫秒边界会掉 1~2ms，用容差断言。
+  const near = (actual, expected) => Math.abs(actual - expected) <= 50;
+  assert.ok(near(r1.cooldownMs, 10_800_000), `首次应约 3h，实际 ${r1.cooldownMs}`);
+  // 若走指数退避会被 cooldownMaxMs（30min）封顶砍成 1800000 —— 必须不是
+  assert.ok(near(r2.cooldownMs, 10_800_000), `风控时长由上游给定，不得被本地封顶砍短；实际 ${r2.cooldownMs}`);
+  assert.strictEqual(r2.scope, 'account', '风控是账号级事实，不该连带冻住出口');
+});
+
+t('AccountLimiter：riskCoolingReason 能回答「有号正被风控、还剩多久」', () => {
+  const lim = new AccountLimiter({ cooldownMs: 300_000 });
+  assert.strictEqual(lim.riskCoolingReason(), null);
+  lim.throttle('acct_r', { kind: 'account_risk', cooldownMs: 10_800_000, scope: 'account' });
+  const risk = lim.riskCoolingReason();
+  assert.ok(risk, '必须能查到风控中的账号');
+  assert.strictEqual(risk.accountId, 'acct_r');
+  assert.ok(risk.msLeft > 10_000_000, `剩余应接近 3h，实际 ${risk.msLeft}`);
+});
+
+t('failureKind：200108 → account_risk（不是 throttled），超时 → timeout（不是 other）', () => {
+  const dispatch = require('../raccoon/dispatch');
+  const risk = dispatch.failureKind({
+    status: 429,
+    body: JSON.stringify({ error: { code: 200108, message: '系统检测到当前账号存在异常调用' } }),
+  });
+  assert.strictEqual(risk, 'account_risk');
+  const to = dispatch.failureKind(Object.assign(new Error('Raccoon 对话超时（1200s 未完成）'), { status: 504, timedOut: true }));
+  assert.strictEqual(to, 'timeout', '超时不能被判成 other（other 曾是可切换的）');
+  const limited = dispatch.failureKind({ status: 429, body: JSON.stringify({ error: { code: 'user_model_rate_limited' } }) });
+  assert.strictEqual(limited, 'throttled');
+});
+
 /* ---------- 2. 并发闸门 ---------- */
 
 t('并发闸门：上限内直接通过，超出后排队而不是并发冲上去', async () => {
@@ -227,18 +289,21 @@ t('出口级冷却：scope=account 时只冷该账号（凭据类问题用）', 
 
 t('冷却：连续撞墙按次翻倍，且封顶 cooldownMaxMs', () => {
   const lim = new AccountLimiter({ cooldownMs: 1000, cooldownMaxMs: 5000 });
+  // cooldownMs 返回的是 `until - Date.now()`，跨毫秒边界会掉 1~2ms ——
+  // 之前用 strictEqual 会随机失败（实测 3999 !== 4000）。这里只断言量级。
+  const near = (actual, expected) => Math.abs(actual - expected) <= 50;
   const r1 = lim.throttle('acct_a', { cooldownMs: 1000 });
   assert.strictEqual(r1.streak, 1);
-  assert.strictEqual(r1.cooldownMs, 1000);
+  assert.ok(near(r1.cooldownMs, 1000), `实际 ${r1.cooldownMs}`);
   const r2 = lim.throttle('acct_a', { cooldownMs: 1000 });
   assert.strictEqual(r2.streak, 2);
-  assert.strictEqual(r2.cooldownMs, 2000);
+  assert.ok(near(r2.cooldownMs, 2000), `实际 ${r2.cooldownMs}`);
   const r3 = lim.throttle('acct_a', { cooldownMs: 1000 });
-  assert.strictEqual(r3.cooldownMs, 4000);
+  assert.ok(near(r3.cooldownMs, 4000), `实际 ${r3.cooldownMs}`);
   const r4 = lim.throttle('acct_a', { cooldownMs: 1000 });
-  assert.strictEqual(r4.cooldownMs, 5000, '必须封顶');
+  assert.ok(near(r4.cooldownMs, 5000), `必须封顶；实际 ${r4.cooldownMs}`);
   const r9 = lim.throttle('acct_a', { cooldownMs: 1000 });
-  assert.strictEqual(r9.cooldownMs, 5000, '继续撞墙也不超过封顶');
+  assert.ok(near(r9.cooldownMs, 5000), `继续撞墙也不超过封顶；实际 ${r9.cooldownMs}`);
 });
 
 t('冷却：一次成功清掉账号级冷却，但**不**清出口级（一次成功不代表墙没了）', async () => {
@@ -426,6 +491,13 @@ t('流泵：断流时补错误帧（不静默结束，客户端能知道这轮�
 });
 
 /* ---------- 7. 环境变量覆盖 ---------- */
+
+t('超时默认 1200s（对齐官方客户端），而不是 60s', () => {
+  const product = require('../raccoon/product');
+  // 60s 会把 p99=127s / max=150s 的长回合全部砍断（实测 17/324 = 5.2% 坏回合）。
+  // 官方客户端自己的 timeout 是 1200 秒，本网关必须同口径。
+  assert.strictEqual(product.REQUEST_TIMEOUT_MS, 1_200_000, `默认超时应为 1200s，实际 ${product.REQUEST_TIMEOUT_MS}`);
+});
 
 t('参数可经环境变量覆盖（部署侧调参不必改代码）', () => {
   const old = { ...process.env };

@@ -32,6 +32,7 @@ const localClient = require('../qoder/local');
 const manualImport = require('../qoder/manual');
 const qoderJobs = require('../jobs/qoder-rewards');
 const { authenticateAdmin, authenticate } = require('../middleware/auth');
+const { keyRateLimit } = require('../middleware/rate-limit');
 const { logRequest, usageToLogFields } = require('../log/traffic');
 const { estimateCost } = require('../models/rates');
 const { createLineFeeder } = require('../lib/sse-lines');
@@ -411,11 +412,13 @@ function chatError(res, status, message, code) {
 /**
  * POST /v1/qoder/chat/completions — 国际版对话转发。
  *
- * 鉴权：转发面访问密钥（authenticate）。模型权限走 canUseModel：
+ * 鉴权：转发面访问密钥（authenticate）+ keyRateLimit（与 /v1/chat/completions、
+ * /v1/raccoon/chat/completions 同构，防止无限速烧穿真实账号积分）。
+ * 模型权限走 canUseModel：
  * 通用密钥（all）可调；trae/workbuddy 平台密钥一律拒绝——
  * Qoder 是独立平台，不让平台密钥越界调用。
  */
-router.post('/chat/completions', authenticate, async (req, res) => {
+router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) => {
   const body = req.body || {};
   const {
     model = 'auto',

@@ -217,6 +217,20 @@ function orderCandidates(virtualId, vm, keyPlatform = 'all') {
 function explainCandidates(virtualId, keyPlatform = 'all') {
   const vm = store.getVirtual(virtualId);
   if (!vm) return [];
+  // 「这个候选的模型上游还有没有」——此前这里**完全没有**这一项，
+  // 于是上游下线/改名后，面板依然把旧名候选显示成 `usable: true`。
+  // 2026-11-25 事故里「面板一片绿色但每个请求都 400」正是这么来的。
+  //
+  // 判据取自 Raccoon 目录快照（`catalog-store`）：只有**有快照**时才判定，
+  // 没快照 = 不知道 = 不阻断（宁可交给上游报错，也不要把未知当不存在）。
+  let raccoonCatalog = null;
+  try {
+    raccoonCatalog = require('../raccoon/catalog-store').readSnapshot();
+  } catch { /* 目录快照不可用不影响其他理由 */ }
+  const raccoonIds = raccoonCatalog && Array.isArray(raccoonCatalog.models)
+    ? new Set(raccoonCatalog.models.map((m) => m && m.id).filter(Boolean))
+    : null;
+
   return (vm.candidates || []).map((c) => {
     const p = store.getProvider(c.provider);
     const reasons = [];
@@ -225,6 +239,10 @@ function explainCandidates(virtualId, keyPlatform = 'all') {
     else if (!p.enabled) reasons.push('provider_disabled');
     if (p && !providerAllowedForKey(p, keyPlatform)) reasons.push('platform_denied');
     if (health.isCooling(virtualId, c.id)) reasons.push('rate_limited');
+    // 模型已不在上游目录里（仅对有快照的平台判定）
+    if (raccoonIds && p && p.builtin === 'raccoon' && !raccoonIds.has(c.model)) {
+      reasons.push('model_not_in_catalog');
+    }
     return {
       ...c,
       providerType: p ? p.type : null,
@@ -240,6 +258,17 @@ function shouldSwitch(kind, vm) {
   // 上下文超限属终端错误：换候选/冷却账号都解决不了窗口问题，绝不切换
   // （否则会把每个候选都撞一遍同一天花板，并错误冷却健康的低窗口模型）。
   if (kind === 'context_length') return false;
+  // 账号级异常调用风控（小浣熊 200108）：**绝不切换**。
+  //
+  // 这条与 'rate_limit' 的区别是本文件最容易写错的地方，2026-11-25 事故就是
+  // 把它当 rate_limit 处理的后果：
+  //   - rate_limit 是「这个模型/这条链路此刻挤」，换个候选确实可能通；
+  //   - account_risk 是「这个账号被上游风控处置」，上游给了明确解禁时刻
+  //     （实测 Retry-After: 10800s = 3h），期间该账号**全模型**都拦。
+  //     换候选只是换个模型名撞同一面墙，而「反复撞墙」本身就是它判定的
+  //     「异常调用」特征 —— 每撞一次都在加深处置。
+  // 正确动作：按 Retry-After 冷却到点，然后把错误交还客户端让它退避。
+  if (kind === 'account_risk') return false;
   // 账号受限（11140）：账号级处置，同平台换候选通常=换门牌撞同一面墙（同账号
   // 被多个候选引用时），但不禁止——同平台其他账号仍可用，故放行走通用 failover
   // 白名单逻辑；'account' 不在默认 switchOn 里时由这里的显式放行兜底。
@@ -247,7 +276,23 @@ function shouldSwitch(kind, vm) {
   // 渠道校验：同平台换候选无效（请求形状相同），但**允许跨平台**降级。
   // 真正的平台级熔断在 handleChat 的 blockedProviders 里做，这里只放行。
   if (kind === 'channel') return true;
-  const set = new Set((vm.failover && vm.failover.switchOn) || ['rate_limit', 'model', '5xx', 'network', 'channel', 'other']);
+  // 模型名不受支持（小浣熊 100004 `param model unsupport` / WB 11102/11103）：
+  // 换候选**有效**（下一个候选是另一个模型 id，可能就是对的），
+  // 但必须是「换模型」而不是「同一模型换账号」—— 后者由 dispatch 层保证。
+  if (kind === 'model') return true;
+  // 本地超时（`err.timedOut`）：**绝不切换**。换候选的期望收益是 0 —— 同样的
+  // 输入量、同样的长回合，换一个候选大概率还是跑不完；成本是整轮 token 再付一次。
+  // 2026-11-25 之前它落到 `other`，而 `other` 在默认 switchOn 里 ⇒ 每个超时都
+  // 被重试一次（实测 9 次 60s 超时全部伴随一次重试）。
+  if (kind === 'timeout') return false;
+  const set = new Set((vm.failover && vm.failover.switchOn) || ['rate_limit', 'model', '5xx', 'network', 'channel']);
+  // `other` 是「没分类出来的错误」的兜底桶。把它当可切换会把**参数错误**
+  // （400 请求体非法、字段名拼错）也拿去逐个候选重试 —— 每个候选都会同样失败，
+  // 白白放大 N 倍调用量。2026-11-25 的无效调用风暴有一半是这条造成的
+  // （6 位业务码被正则截断后 400 全落到 'other'）。
+  //
+  // 故**默认不放行 `other`**（默认集合已剔除）；只有用户在虚拟模型里显式写进
+  // switchOn 才放行 —— 那是知情选择，而不是被默认值悄悄带进去。
   return set.has(kind);
 }
 

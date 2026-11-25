@@ -6,7 +6,7 @@
  * 记录：成功率、平均延迟、连续失败、冷却截止、最近错误。
  */
 
-/** @typedef {{ok:number, fail:number, totalMs:number, lastError:string|null, lastStatus:number|null, coolUntil:number, lastRateLimitAt:number|null, lastChannelBlockAt:number|null, lastAccountRestrictedAt:number|null}} Entry */
+/** @typedef {{ok:number, fail:number, totalMs:number, lastError:string|null, lastStatus:number|null, coolUntil:number, lastRateLimitAt:number|null, lastChannelBlockAt:number|null, lastAccountRestrictedAt:number|null, lastAccountRiskAt:number|null}} Entry */
 
 /** @type {Map<string, Entry>} */
 const stats = new Map();
@@ -17,6 +17,19 @@ const stats = new Map();
  * 临时限制（限流升级形态），2h 后放一次探测请求，成功即由 markOk 清零。
  */
 const ACCOUNT_RESTRICT_COOLDOWN_MS = 2 * 3600_000;
+
+/**
+ * 账号级异常调用风控（小浣熊 200108）的**兜底**冷却时长。
+ *
+ * 实测上游每次都带 `Retry-After: 10800`（3 小时），所以正常路径会走
+ * {@link resolveRiskControlCooldownMs} 读到真值；这个常量只在「上游忽然
+ * 不发 Retry-After」时兜底。取 3 小时而不是更短：200108 是**账号被处置**，
+ * 冷 5 分钟就到期等于到期即撞，而反复撞墙正是它判「异常调用」的特征。
+ */
+const ACCOUNT_RISK_COOLDOWN_MS = 3 * 3600_000;
+
+/** 风控冷却上限（6h）：防止上游发出异常大的 Retry-After 把候选永久排掉。 */
+const ACCOUNT_RISK_COOLDOWN_MAX_MS = 6 * 3600_000;
 
 /** 本地 maxRpm 滑窗：key → number[]（请求起点时间戳） */
 const rpmWindow = new Map();
@@ -39,6 +52,7 @@ function entry(virtualId, candidateId) {
       lastRateLimitAt: null,
       lastChannelBlockAt: null,
       lastAccountRestrictedAt: null,
+      lastAccountRiskAt: null,
     };
     stats.set(k, e);
   }
@@ -70,6 +84,17 @@ function markFail(virtualId, candidateId, kind, err, cooldownMs) {
     e.lastRateLimitAt = Date.now();
     const ms = resolveCooldownMs(err, cooldownMs);
     e.coolUntil = Date.now() + ms;
+    return { cooledForMs: ms };
+  }
+  // 账号级异常调用风控（小浣熊 200108）：冷却到上游给的解禁时刻，**不能短**。
+  //
+  // 与下面 'account'（11140，2h 固定）的区别：200108 上游明确给了 `Retry-After`
+  // （实测 10800s = 3h）。冷 5 分钟就到期 = 到期即撞 = 再被处置，而「反复撞墙」
+  // 正是上游判「异常调用」的特征。故这里优先用上游真值，解析不到才用 3h 兜底。
+  if (kind === 'account_risk') {
+    const ms = resolveRiskControlCooldownMs(err);
+    e.coolUntil = Date.now() + ms;
+    e.lastAccountRiskAt = Date.now();
     return { cooledForMs: ms };
   }
   // 账号受限（11140）：账号被上游风控处置。短冷却会在到期后反复撞墙（每撞一次
@@ -106,6 +131,27 @@ function resolveCooldownMs(err, fallbackMs) {
     } catch { /* 解析失败则用最后手段 */ }
   }
   return fb;
+}
+
+/**
+ * 账号级风控（200108）的冷却时长：**优先取上游 `Retry-After` 真值**。
+ *
+ * 为什么不能沿用 {@link resolveCooldownMs}：那个函数解析的是 WorkBuddy 那种
+ * 「将在 2026-09-29 20:16:21 UTC+8 重置」的**文案**，而小浣熊把解禁时刻放在
+ * HTTP 头 `Retry-After`（秒数）里。文案里没有时刻，解析必然失败并回落到
+ * 配置的 cooldownMs（20s~300s）—— 那是本次事故的核心错配：
+ * **上游说 3 小时，网关冷 5 分钟，到点即撞，越撞越深。**
+ *
+ * 取值链：`err.retryAfterMs`（raccoon/chat.js 已从头解析）→ 兜底 3h。
+ * 上限 6h 防上游异常值；下限 60s 防「0」把冷却写没。
+ *
+ * @param {{retryAfterMs?:number}} err
+ * @returns {number} 毫秒
+ */
+function resolveRiskControlCooldownMs(err) {
+  const raw = Number(err && err.retryAfterMs);
+  const base = Number.isFinite(raw) && raw > 0 ? raw : ACCOUNT_RISK_COOLDOWN_MS;
+  return Math.min(Math.max(base, 60_000), ACCOUNT_RISK_COOLDOWN_MAX_MS);
 }
 
 function isCooling(virtualId, candidateId) {
@@ -179,4 +225,6 @@ module.exports = {
   allowRpm,
   snapshot,
   resolveCooldownMs,
+  resolveRiskControlCooldownMs,
+  ACCOUNT_RISK_COOLDOWN_MS,
 };

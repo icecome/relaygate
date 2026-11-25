@@ -148,11 +148,19 @@ async function httpTests() {
   const after = await req('GET', `/v1/raccoon/login/session/${s.json.sessionId}`, { token: ADMIN });
   assert.strictEqual(after.status, 404);
 
-  // 无账号时模型目录回退兜底表，并如实给出原因
+  // 无账号时模型目录回退兜底表，并如实给出原因。
+  //
+  // ⚠️ 2026-11-25 起回退链多了一级「持久化快照」（远端 → 快照 → 兜底表）。
+  // 同一测试进程里前面的 catalog-store 用例会写快照，那会让这里拿到 snapshot
+  // 而不是 fallback —— 本条要验的是**最底层**的兜底表，所以先清掉快照。
+  const csMod = require('../raccoon/catalog-store');
+  csMod.clearCache();
+  try { require('node:fs').rmSync(csMod.snapshotPath(), { force: true }); } catch { /* 不存在即已满足 */ }
   const m = await req('GET', '/v1/raccoon/models', { token: ADMIN });
   assert.strictEqual(m.status, 200);
   assert.strictEqual(m.json.source, 'fallback');
-  assert.strictEqual(m.json.data.length, 6);
+  // 数量不硬编码（上游上下架会变），改为断言「非空 + 结构不变量」。
+  assert.ok(m.json.data.length >= 5, `兜底目录至少 5 个模型，实际 ${m.json.data.length}`);
   assert.ok(m.json.reason, '回退时必须说明原因，不能静默');
   assert.ok(m.json.data.every((x) => x.maxTokens > 0 && x.contextWindow > 0), '兜底表必须带真实窗口与上限');
   assert.ok(!m.json.data.some((x) => /raccoon-auto/i.test(x.id)), 'Raccoon-Auto 不是远端模型，绝不能出现在列表里');
@@ -542,8 +550,11 @@ async function run() {
   });
 
   t('supportsImage：白名单覆盖 + tags 三种写法', () => {
-    // tags 里没有 vision、但实测能看图的模型必须在白名单里
-    assert.strictEqual(product.supportsImage('sn-deepseek-v4-1-flash', []), true);
+    // tags 里没有 vision、但实测能看图的模型必须在白名单里。
+    // ⚠️ 白名单用的是**现行 id**（`…-1017`）。旧 id `sn-deepseek-v4-1-flash`
+    // 已于 2026-11-25 被上游下线，白名单跟着改名 —— 否则远端 `tags` 缺 vision
+    // 时会把能看图的现行模型判成不支持。
+    assert.strictEqual(product.supportsImage('sn-deepseek-v4-1-flash-1017', []), true);
     assert.strictEqual(product.supportsImage('sn-glm-5-3-flash', []), true);
     assert.strictEqual(product.supportsImage('sn-glm-5-3', ['vision']), true);
     assert.strictEqual(product.supportsImage('sn-x', ['image']), true);
@@ -552,13 +563,158 @@ async function run() {
     assert.strictEqual(product.supportsImage('sn-x', null), false);
   });
 
-  t('兜底表：6 个模型、都带真实窗口与上限、不含 Raccoon-Auto、1 倍也显示倍率', () => {
+  t('兜底表：覆盖上游现行目录、都带真实窗口与上限、不含 Raccoon-Auto、1 倍也显示倍率', () => {
     const fb = product.fallbackCatalog();
-    assert.strictEqual(fb.length, 6);
+    // 数量不再是硬断言（上游上新/下架会变），改为断言**结构不变量**：
+    // 每个条目都有真实窗口与上限、都不含 Raccoon-Auto（那是 i18n 条目，发出去 404）。
+    assert.ok(fb.length >= 5, `兜底表至少 5 个模型，实际 ${fb.length}`);
     assert.ok(fb.every((m) => m.contextWindow > 0 && m.maxTokens > 0));
     assert.ok(fb.every((m) => m.name.length > 0));
     assert.ok(!fb.some((m) => /auto/i.test(m.id)));
-    assert.ok(fb.find((m) => m.id === 'sn-kimi-k3').name.includes('x1'), '1 倍也要显示倍率（用户报障）');
+    const kimi = fb.find((m) => m.id === 'sn-kimi-k3-1-pro');
+    assert.ok(kimi && kimi.name.includes('x1'), '1 倍也要显示倍率（用户报障）');
+  });
+
+  t('兜底表：不含已下线的旧模型名（2026-11-25 上游改名事故回归）', () => {
+    // 上游把 sn-deepseek-v4-1-flash 改成 …-1017、sn-kimi-k3 改成 …-1-pro。
+    // 旧名现在回 400 {"code":100004,"message":"param model unsupport"}，
+    // 而兜底表是硬编码的 —— 一旦它写着旧名，远端目录拉失败时网关就会
+    // 稳定地把请求发到不存在的模型上，进而触发重试风暴与账号风控。
+    const ids = product.fallbackCatalog().map((m) => m.id);
+    assert.ok(!ids.includes('sn-deepseek-v4-1-flash'), '旧名 sn-deepseek-v4-1-flash 必须已从兜底表移除');
+    assert.ok(!ids.includes('sn-kimi-k3'), '旧名 sn-kimi-k3 必须已从兜底表移除');
+    assert.ok(ids.includes('sn-deepseek-v4-1-flash-1017'));
+    assert.ok(ids.includes('sn-kimi-k3-1-pro'));
+  });
+
+  t('detectCatalogDrift：本地有远端没有 = 已过期（含迁移建议）；远端有本地没有 = 新增', () => {
+    const remote = [
+      { id: 'sn-glm-5-3' },
+      { id: 'sn-deepseek-v4-1-flash-1017' },
+      { id: 'sn-brand-new' },
+    ];
+    const local = [
+      { id: 'sn-glm-5-3' },
+      { id: 'sn-deepseek-v4-1-flash' },
+      { id: 'sn-kimi-k3' },
+    ];
+    const d = product.detectCatalogDrift(remote, local);
+    assert.strictEqual(d.ok, false);
+    const missingIds = d.missing.map((m) => m.id).sort();
+    assert.deepStrictEqual(missingIds, ['sn-deepseek-v4-1-flash', 'sn-kimi-k3']);
+    // 迁移表给出可执行建议（不自动改写请求，只提示）
+    assert.strictEqual(d.missing.find((m) => m.id === 'sn-deepseek-v4-1-flash').suggestion, 'sn-deepseek-v4-1-flash-1017');
+    assert.strictEqual(d.missing.find((m) => m.id === 'sn-kimi-k3').suggestion, 'sn-kimi-k3-1-pro');
+    // extra = 远端有、本地没有。`sn-deepseek-v4-1-flash-1017` 也在里面：
+    // 本用例的 local 刻意只放了旧名（模拟「兜底表没跟上」的真实状态），
+    // 所以现行名对本地来说就是「新增」。
+    assert.deepStrictEqual(d.extra.map((m) => m.id).sort(), ['sn-brand-new', 'sn-deepseek-v4-1-flash-1017']);
+  });
+
+  // ===== catalog-store：持久化快照 + 对账（2026-11-25 新增）=====
+  t('catalog-store：快照落盘后能读回，且 isFresh 按 TTL 判定', () => {
+    const cs = require('../raccoon/catalog-store');
+    cs.clearCache();
+    const w = cs.writeSnapshot({
+      models: [{ id: 'sn-glm-5-3' }, { id: 'sn-deepseek-v4-1-flash-1017' }],
+      source: 'remote',
+    });
+    assert.ok(w && w.syncedAt, '写入必须返回带 syncedAt 的快照');
+    cs.clearCache();
+    const r = cs.readSnapshot();
+    assert.deepStrictEqual(r.models.map((m) => m.id), ['sn-glm-5-3', 'sn-deepseek-v4-1-flash-1017']);
+    assert.strictEqual(r.source, 'remote');
+    assert.strictEqual(cs.isFresh(r), true, '刚写的快照必须在 TTL 内');
+    assert.strictEqual(cs.isFresh({ at: Date.now() - cs.SNAPSHOT_TTL_MS - 1 }), false);
+    assert.strictEqual(cs.isFresh(null), false);
+  });
+
+  t('catalog-store：空模型 / 坏文件不写不炸（快照是可重建的派生数据）', () => {
+    const cs = require('../raccoon/catalog-store');
+    assert.strictEqual(cs.writeSnapshot({ models: [] }), null, '空目录不该覆盖既有快照');
+    assert.strictEqual(cs.writeSnapshot({}), null);
+  });
+
+  t('catalog-store.reconcile：可迁移的改名、无迁移记录的报缺失、新增的只上报', () => {
+    const cs = require('../raccoon/catalog-store');
+    const remote = [{ id: 'sn-glm-5-3' }, { id: 'sn-deepseek-v4-1-flash-1017' }, { id: 'sn-kimi-k3-1-pro' }, { id: 'sn-new' }];
+    const cands = [
+      { id: 'raccoon:sn-deepseek-v4-1-flash', provider: 'raccoon', model: 'sn-deepseek-v4-1-flash', enabled: true },
+      { id: 'raccoon:sn-kimi-k3', provider: 'raccoon', model: 'sn-kimi-k3', enabled: true },
+      { id: 'raccoon:sn-glm-5-3', provider: 'raccoon', model: 'sn-glm-5-3', enabled: true },
+      { id: 'raccoon:sn-unknown', provider: 'raccoon', model: 'sn-unknown', enabled: true },
+    ];
+    const plan = cs.reconcile(remote, cands);
+    assert.strictEqual(plan.ok, false);
+    assert.deepStrictEqual(plan.renamed.map((r) => r.to).sort(), ['sn-deepseek-v4-1-flash-1017', 'sn-kimi-k3-1-pro']);
+    assert.deepStrictEqual(plan.missing.map((m) => m.model), ['sn-unknown'], '无迁移记录的不能猜，只能报缺失');
+    assert.deepStrictEqual(plan.available.map((m) => m.model), ['sn-new'], '上游新增只上报，不自动入池');
+  });
+
+  t('catalog-store.reconcile：迁移目标本身不在远端时，不得改名（防猜错）', () => {
+    const cs = require('../raccoon/catalog-store');
+    const plan = cs.reconcile(
+      [{ id: 'sn-glm-5-3' }],
+      [{ id: 'raccoon:sn-kimi-k3', provider: 'raccoon', model: 'sn-kimi-k3', enabled: true }],
+    );
+    assert.deepStrictEqual(plan.renamed, []);
+    assert.deepStrictEqual(plan.missing.map((m) => m.model), ['sn-kimi-k3']);
+  });
+
+  t('catalog-store.reconcile：没有任何 raccoon 候选时不报 available（避免噪声）', () => {
+    const cs = require('../raccoon/catalog-store');
+    const plan = cs.reconcile([{ id: 'sn-glm-5-3' }], [{ provider: 'trae', model: 'glm-5.3' }]);
+    assert.deepStrictEqual(plan.available, []);
+    assert.strictEqual(plan.ok, true);
+  });
+
+  t('catalog-store.applyReconcile：改名跟 id、失联禁用但保留权重与置顶（可回滚）', () => {
+    const cs = require('../raccoon/catalog-store');
+    const cands = [
+      { id: 'raccoon:sn-deepseek-v4-1-flash', provider: 'raccoon', model: 'sn-deepseek-v4-1-flash', enabled: true, weight: 8 },
+      { id: 'custom-id', provider: 'raccoon', model: 'sn-kimi-k3', enabled: true },
+      { id: 'raccoon:sn-gone', provider: 'raccoon', model: 'sn-gone', enabled: true, pinned: true, weight: 5 },
+      { id: 'wb-glm53', provider: 'workbuddy', model: 'glm-5.3', enabled: true },
+    ];
+    const plan = cs.reconcile(
+      [{ id: 'sn-deepseek-v4-1-flash-1017' }, { id: 'sn-kimi-k3-1-pro' }],
+      cands,
+    );
+    const r = cs.applyReconcile(cands, plan);
+    assert.strictEqual(r.changed, true);
+    assert.strictEqual(r.renamedCount, 2);
+    assert.strictEqual(r.disabledCount, 1);
+    const byModel = Object.fromEntries(r.candidates.map((c) => [c.model, c]));
+    // 默认派生 id 跟着改
+    assert.strictEqual(byModel['sn-deepseek-v4-1-flash-1017'].id, 'raccoon:sn-deepseek-v4-1-flash-1017');
+    assert.strictEqual(byModel['sn-deepseek-v4-1-flash-1017'].weight, 8, '权重必须保留');
+    // 用户自定义 id 不动
+    assert.strictEqual(byModel['sn-kimi-k3-1-pro'].id, 'custom-id', '自定义 id 不该被覆盖');
+    // 失联：禁用但保留 pinned/weight
+    assert.strictEqual(byModel['sn-gone'].enabled, false);
+    assert.strictEqual(byModel['sn-gone'].pinned, true);
+    assert.strictEqual(byModel['sn-gone'].weight, 5);
+    // 其他 provider 原样
+    assert.strictEqual(byModel['glm-5.3'].enabled, true);
+  });
+
+  t('catalog-store.applyReconcile：无变化时 changed=false（幂等，不写盘）', () => {
+    const cs = require('../raccoon/catalog-store');
+    const cands = [{ id: 'raccoon:sn-glm-5-3', provider: 'raccoon', model: 'sn-glm-5-3', enabled: true }];
+    const plan = cs.reconcile([{ id: 'sn-glm-5-3' }], cands);
+    const r = cs.applyReconcile(cands, plan);
+    assert.strictEqual(r.changed, false);
+    assert.deepStrictEqual(r.candidates, cands);
+  });
+
+  t('detectCatalogDrift：本地与远端一致时 ok=true 且两个列表都空', () => {
+    const local = product.fallbackCatalog().map((m) => ({ id: m.id }));
+    const d = product.detectCatalogDrift(local, local);
+    assert.strictEqual(d.ok, true);
+    assert.deepStrictEqual(d.missing, []);
+    assert.deepStrictEqual(d.extra, []);
+    // 异常输入不抛错
+    assert.deepStrictEqual(product.detectCatalogDrift(null, []).missing, []);
   });
 
   // ===== product：每日积分运营视图（2026-10-15 抓包新增）=====

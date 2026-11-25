@@ -275,7 +275,16 @@ export default function ModelPoolPage() {
     try {
       const r = await refreshModels(key);
       if (r.ok) {
-        toast(`已拉取上游模型：${r.count ?? 0} 个`, 'ok');
+        // Raccoon 的对账结果要单独说：它改的是**真正决定请求发去哪里的候选池**，
+        // 只报「拉取了 N 个模型」会让用户以为刷新只是刷新列表（2026-11-25 事故的认知根源）。
+        const rc = r.raccoon;
+        const rcNote = rc && rc.ok && rc.totals
+          ? `；Raccoon：${rc.totals.renamed ? `改名 ${rc.totals.renamed} 个` : ''}`
+            + `${rc.totals.disabled ? `${rc.totals.renamed ? '、' : ''}禁用失联 ${rc.totals.disabled} 个` : ''}`
+            + `${!rc.totals.renamed && !rc.totals.disabled ? '候选池无变化' : ''}`
+            + `${rc.totals.available ? `，上游新增 ${rc.totals.available} 个未自动加入` : ''}`
+          : (rc && rc.error ? `；Raccoon 刷新失败：${rc.error}` : '');
+        toast(`已拉取上游模型：${r.count ?? 0} 个${rcNote}`, rc && rc.error ? 'err' : 'ok');
         status_.reload();
         catalog.reload();
       } else {

@@ -301,15 +301,26 @@ function listBackups() {
 
 /** 校验某备份文件的完整性（比对 manifest 内校验和与内容重算值）。 */
 function verifyBackup(filePath) {
+  // 闸门内聚：所有文件访问都必须先经过路径校验，不能依赖调用方自觉。
+  // 否则就会像本函数修复前那样，inspect/restore 都走了闸门，唯独这里漏掉，
+  // 使 /v1/admin/backup/verify 成为任意文件读取入口（H-01）。
+  // inspectBackup 传入的是已解析的绝对路径，仍在备份目录内，可重复通过闸门。
+  let full;
   try {
-    const manifest = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    full = resolveBackupPath(filePath);
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+  try {
+    const manifest = JSON.parse(fs.readFileSync(full, 'utf-8'));
     if (!manifest || !manifest.encrypted || !manifest.checksum) {
       return { ok: false, reason: '文件缺少 encrypted/checksum 字段' };
     }
     const actual = checksumOf(manifest.encrypted.data);
     return { ok: actual === manifest.checksum, reason: actual === manifest.checksum ? '校验和一致' : `校验和不一致（期望 ${manifest.checksum.slice(0, 12)}…，实际 ${actual.slice(0, 12)}…）` };
-  } catch (e) {
-    return { ok: false, reason: '解析失败: ' + e.message };
+  } catch (_) {
+    // 不回显 e.message：JSON.parse 的错误会带出文件内容前缀，fs 错误会带出绝对路径（H-01）。
+    return { ok: false, reason: '解析失败或文件损坏' };
   }
 }
 

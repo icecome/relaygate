@@ -100,6 +100,15 @@ export interface Account {
   /** 最近一次保活（token 刷新）的时刻与结果；保活任务逐账号写入 */
   lastKeepaliveAt?: string | null;
   lastKeepaliveResult?: string | null;
+  /**
+   * 最近一次**成功**续期的时刻（判据位，与 lastKeepaliveAt 展示位分离）。
+   *
+   * 前端用它做一道自相矛盾检测：若 `refreshExpiredAt <= now` 但
+   * `lastRefreshAt > refreshExpiredAt`，说明「记着已过期」之后又成功续过期，
+   * 那一列必然是陈旧值（2026-11-25「7 个账号需重新登录」事故即此形态），
+   * 此时不能直接判死，应提示去刷新而非要求重新登录。
+   */
+  lastRefreshAt?: string | null;
   priority?: number;
   group?: string | null;
   /** 成本分层（0=免费额度包，1=未知/默认，2=收费），越小越优先消耗；见 pool.js。 */

@@ -3,7 +3,7 @@
  * 后端语义：明文 key 仅在创建、轮换、重置、reveal 时返回一次，列表接口只返回掩码。
  * 页面据此设计：列表恒用掩码，明文只出现在「最近生成」区域，避免长期暴露在屏幕上。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { setKey, useAuth } from '../../shared/api/auth';
 import { getClientConfig } from '../../shared/api/admin';
@@ -60,12 +60,27 @@ function statusLabel(status: string | undefined): string {
 }
 
 /**
- * 密钥明文块。访问密钥与登录密钥两处展示完全一致，此前逐字复制过两份。
- * select-all 让用户点一次就能整段选中，复制按钮失败时仍有手动兜底。
+ * 密钥明文块（M-04）：默认掩码，点击「显示」后才揭示，并在 30 秒后自动回掩码。
+ * 明文不长期驻留 DOM —— 防肩窥、截图与浏览器扩展读取。
+ * 复制走父组件的按钮（复制的是完整值，不依赖这里是否展开）。
  */
+const REVEAL_MS = 30_000;
 function SecretBox({ value }: { value: string }) {
+  const [shown, setShown] = useState(false);
+  useEffect(() => {
+    if (!shown) return;
+    const t = window.setTimeout(() => setShown(false), REVEAL_MS);
+    return () => window.clearTimeout(t);
+  }, [shown, value]);
   return (
-    <div className="code-block select-all text-[13px]">{value}</div>
+    <div>
+      <div className="code-block select-all text-[13px]">
+        {shown ? value : '••••••••••••••••••••••••（点击「显示明文」查看，30 秒后自动隐藏）'}
+      </div>
+      <Button size="sm" variant="ghost" className="mt-2" onClick={() => setShown((s) => !s)}>
+        {shown ? '隐藏明文' : '显示明文'}
+      </Button>
+    </div>
   );
 }
 
@@ -104,10 +119,19 @@ export default function AccessKeysPage() {
   /** 正在编辑权限与配额的密钥；null = 关闭。 */
   const [policyTarget, setPolicyTarget] = useState<ApiKeyRow | null>(null);
 
-  /** 明文只在此处短暂展示，切换页面前应清空。 */
+  /** 明文只在此处短暂展示，30 秒后自动清空（M-04），切换页面也应清空。 */
   function revealFresh(c: CreatedKey | null) {
     setFresh(c);
+    // 每次设置明文都重置定时器；null 时无需定时器。
   }
+  useEffect(() => {
+    if (!fresh && !loginFresh) return;
+    const t = window.setTimeout(() => {
+      setFresh(null);
+      setLoginFresh(null);
+    }, REVEAL_MS);
+    return () => window.clearTimeout(t);
+  }, [fresh, loginFresh]);
 
   async function run(id: string, label: string, fn: () => Promise<unknown>, msg: string) {
     setBusyId(id);
@@ -181,6 +205,12 @@ export default function AccessKeysPage() {
   }
 
   async function reveal(id: string) {
+    const ok = await prompt({
+      title: '查看密钥明文？',
+      message: '该操作会记入审计日志，明文仅在屏幕上显示 30 秒。请确认周围无人窥视。',
+      okText: '确认查看',
+    });
+    if (ok !== true) return;
     setBusyId(id);
     try {
       const r = await revealAccessKey(id, key);
@@ -235,6 +265,12 @@ export default function AccessKeysPage() {
       toast('尚未配置登录密钥', 'err');
       return;
     }
+    const ok = await prompt({
+      title: '查看登录密钥明文？',
+      message: '登录密钥用于打开管理面板。该操作会记入审计日志，明文仅显示 30 秒，请确认周围无人窥视。',
+      okText: '确认查看',
+    });
+    if (ok !== true) return;
     setBusyId('__reveal_login__');
     try {
       const r = await revealAccessKey(id, key);

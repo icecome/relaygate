@@ -42,8 +42,19 @@ function existingKeyFile() {
 }
 
 function normalizeKey(key) {
-  if (key.length < 64) key = key.padEnd(64, '0');
-  return Buffer.from(key.substring(0, 64), 'hex');
+  // 严格校验：约定就是 64 位十六进制（32 字节）。此前用 padEnd 补零 +
+  // Buffer.from(...,'hex') 静默截断，会把 'short' / 'zzz...' 折成 0 字节，
+  // 或在启动时抛不带语义的 Invalid key length（M-01）。静默降级比明确失败危险，
+  // 这里把配置错误变成可行动的错误信息。
+  const s = String(key == null ? '' : key).trim();
+  if (!/^[0-9a-fA-F]{64}$/.test(s)) {
+    throw new Error(
+      `${KEY_ENV_VAR} 必须是 64 位十六进制（32 字节），当前长度 ${s.length}` +
+      `、${/[^0-9a-fA-F]/.test(s) ? '含非法字符' : '位数不足或过长'}；` +
+      `可执行 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))" 生成`,
+    );
+  }
+  return Buffer.from(s, 'hex');
 }
 
 function getEncryptionKey() {

@@ -58,8 +58,38 @@ const PHONE_CIPHER_SECRET = 'senseraccoon2023';
  */
 const TOKEN_REFRESH_WINDOW_SECONDS = 300;
 
-/** 请求超时（毫秒）。 */
-const REQUEST_TIMEOUT_MS = Number(process.env.RACCOON_TIMEOUT_MS || 60_000);
+/**
+ * 对话请求的整体超时（毫秒）。
+ *
+ * ## P0，2026-11-25：默认值从 60_000 提到 1_200_000（对齐官方客户端）
+ *
+ * 这个超时**不是「拿到响应头」的时限，而是整条响应体读取过程的时限** ——
+ * `chat.js` 把它直接挂到 `fetch()` 的 `signal` 上，而 `AbortSignal.timeout`
+ * 一旦触发就会掐断**正在进行的流式读取**。已用本地 mock 复现：
+ *
+ * ```
+ * chunk at 2447ms → ABORTED at 2509ms (TimeoutError)
+ * ```
+ *
+ * 也就是说：一个正常在流式输出的长回答，只要**总时长超过 60 秒就会被砍断**，
+ * 哪怕它一直在吐字。而小浣熊单轮 p99 实测 127s、max 150s（官方客户端同口径），
+ * 官方客户端自己的超时设置是 **1200 秒**（`~/.box-agent/config/model-profiles.json`
+ * 的 `timeout: 1200`）。
+ *
+ * 60 秒的真实代价（本仓库 `traffic.jsonl` 历史统计，324 条 Raccoon 记录）：
+ *   - **9 次** `500 The operation was aborted due to timeout`，durationMs 全部
+ *     落在 60020~60568 ms；
+ *   - **8 次** `200` 但 `finishReason` 为 null、durationMs 62~88 s（半截流：
+ *     有 token 计量、无收尾帧）；
+ *   - 合计 **17/324 = 5.2% 的回合是坏的**。
+ *
+ * 而且超时 abort 不带 `aborted` 标记，`dispatch` 会把它判成 `'other'`
+ * 进而**换号重试** —— 一个已经跑了 60 秒的回合，成本翻倍再付一次。
+ *
+ * 取 1200s 而不是「去掉超时」：无上限会让死连接永久占着并发槽位。
+ * 1200s 与官方客户端一致，且远大于 p99（127s），不会误伤正常长回合。
+ */
+const REQUEST_TIMEOUT_MS = Number(process.env.RACCOON_TIMEOUT_MS || 1_200_000);
 
 /** 扫码轮询间隔（毫秒）。与客户端一致；面板按此时长轮询后端。 */
 const QR_POLL_INTERVAL_MS = 2_000;
@@ -209,15 +239,87 @@ function summarizeDailyPoints(input = {}) {
  *
  * ⚠️ **不含 `Raccoon-Auto`**：它是客户端 i18n 条目，不是远端模型 ——
  * 直接把该名字发给 `chat/completions` 会 404。
+ *
+ * ## P0，2026-11-25：上游改名事故（改这张表之前必读）
+ *
+ * 这张表此前写着 `sn-deepseek-v4-1-flash` 与 `sn-kimi-k3`，而上游在某个时点
+ * 把这两个 id 改成了 `sn-deepseek-v4-1-flash-1017` 与 `sn-kimi-k3-1-pro`。
+ * 旧 id 现在回：
+ *
+ * ```
+ * HTTP 400 {"error":{"code":100004,"message":"param model unsupport"}}
+ * ```
+ *
+ * 而兜底表是**硬编码**的，远端目录拉失败时它就成了「唯一真相」，于是网关
+ * 稳定地把请求发到一个不存在的模型上 —— 每个用户请求都 400，再被重试逻辑
+ * 放大成一场无效调用风暴，最终触发账号级风控（200108，3 小时）。
+ *
+ * 更隐蔽的一层：旧 id 若带上 `X-Client-Name: Raccoon` 头，上游**不报错**，
+ * 而是把它当别名改写成默认模型 `raccoon-090dd3` 返回 200 —— 你以为在跑
+ * DeepSeek-V4.1-Flash（x0.25），实际在跑默认模型（x1）。计费与能力全变，
+ * 而日志里看起来一切正常。所以「400」反而是幸运的那种失败。
+ *
+ * 结论：**这张表不能只靠人记得改**。已配 {@link detectCatalogDrift}：
+ * 拉到远端目录后比对本地 id，不在远端列表里的立刻告警（见 auth.fetchModelCatalog
+ * 与 routes/models 的调用点）。
  */
 const FALLBACK_MODELS = Object.freeze([
   { id: 'sn-sensenova-6-8-flash', name: 'SenseNova-6.8-Flash · 免费', contextWindow: 256000, maxTokens: 63999, supportsImage: true },
   { id: 'sn-sensenova-6-8-flash-lite', name: 'SenseNova-6.8-Flash-Lite · 免费', contextWindow: 256000, maxTokens: 63999, supportsImage: true },
+  { id: 'sn-qwen4-max', name: 'Qwen4-Max · x0.75', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
   { id: 'sn-glm-5-3', name: 'GLM-5-3 · x0.75', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
-  { id: 'sn-kimi-k3', name: 'Kimi-K3 · x1', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
-  { id: 'sn-glm-5-3-flash', name: 'GLM-5-3-Flash · x0.2→x0.1', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
-  { id: 'sn-deepseek-v4-1-flash', name: 'DeepSeek-V4.1-Flash · x0.25', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-kimi-k3-1-pro', name: 'Kimi-K3.1-Pro · x1', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-glm-5-3-flash', name: 'GLM-5-3-Flash · x0.2', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
+  { id: 'sn-deepseek-v4-1-flash-1017', name: 'DeepSeek-V4.1-Flash-1017 · x0.25', contextWindow: 1000000, maxTokens: 100000, supportsImage: true },
 ]);
+
+/**
+ * 旧 id → 现行 id 的**迁移表**（仅在收到 100004 时用于给用户可执行的提示，
+ * **不用于静默改写请求**）。
+ *
+ * 为什么不自动改写：改写的后果比报错更糟（见 {@link FALLBACK_MODELS} 注释里
+ * 「带 X-Client-Name 时上游静默转默认模型」那段）。用户配错了模型，必须让他
+ * 看见「这个模型不存在，应该是 X」，而不是偷偷替他换一个便宜/贵的模型。
+ */
+const LEGACY_MODEL_ALIASES = Object.freeze({
+  'sn-deepseek-v4-1-flash': 'sn-deepseek-v4-1-flash-1017',
+  'sn-kimi-k3': 'sn-kimi-k3-1-pro',
+});
+
+/**
+ * 远端目录 vs 本地兜底表的**漂移检测**。
+ *
+ * 上游改模型 id 是**静默**的（没有 changelog、没有弃用期），而本地兜底表是
+ * 硬编码的 —— 两者一旦漂移，网关会稳定地把请求发到不存在的模型上，
+ * 表现为「每个请求都 400」或「请求成功但跑的其实是另一个模型」。
+ *
+ * 本函数不做任何网络 IO，只做集合差；调用点负责告警与展示。
+ *
+ * @param {Array<{id:string}>} remoteModels 远端目录解析结果
+ * @param {Array<{id:string}>} [localModels] 默认取兜底表
+ * @returns {{missing:Array<{id:string,suggestion:string|null}>, extra:Array<{id:string}>, ok:boolean}}
+ *   - `missing`：本地有、远端没有 ⇒ **本地已过期**，这些 id 发出去必失败
+ *   - `extra`：远端有、本地没有 ⇒ 上游上了新模型，兜底表没跟上（不致命）
+ */
+function detectCatalogDrift(remoteModels, localModels) {
+  const remote = new Set(
+    (Array.isArray(remoteModels) ? remoteModels : [])
+      .map((m) => (m && typeof m.id === 'string' ? m.id : ''))
+      .filter(Boolean),
+  );
+  const local = Array.isArray(localModels) ? localModels : FALLBACK_MODELS;
+  const missing = [];
+  const extra = [];
+  for (const m of local) {
+    const id = m && typeof m.id === 'string' ? m.id : '';
+    if (!id || remote.has(id)) continue;
+    missing.push({ id, suggestion: LEGACY_MODEL_ALIASES[id] || null });
+  }
+  for (const id of remote) {
+    if (!local.some((m) => m && m.id === id)) extra.push({ id });
+  }
+  return { missing, extra, ok: missing.length === 0 };
+}
 
 /**
  * 远端 `tags` 缺 `vision`、但**实测能看图**的模型（显式白名单）。
@@ -230,7 +332,7 @@ const FALLBACK_MODELS = Object.freeze([
  * 若改成「该家恒支持」，将来上架纯文本模型时会把图放行、让上游回一个更难懂的 400。
  */
 const IMAGE_CAPABILITY_OVERRIDES = new Set([
-  'sn-deepseek-v4-1-flash',
+  'sn-deepseek-v4-1-flash-1017',
   'sn-glm-5-3-flash',
 ]);
 
@@ -651,6 +753,8 @@ module.exports = {
   DAILY_EXPIRE_BIZ_TYPE,
   summarizeDailyPoints,
   FALLBACK_MODELS,
+  LEGACY_MODEL_ALIASES,
+  detectCatalogDrift,
   IMAGE_CAPABILITY_OVERRIDES,
   decodeJwtExpMs,
   credentialExpiresAtMs,

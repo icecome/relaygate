@@ -90,6 +90,25 @@ function initCredentials() {
   } catch (e) {
     console.error(`[credentials] backfill trae exchange defaults failed: ${e.message}`);
   }
+  /*
+   * WorkBuddy refreshToken 到期列存量修复（2026-11-25）。
+   *
+   * 该列此前只在导入时写一次，续期链路从不更新，导入满 30 天后前端必然报
+   * 「N 个账号需重新登录」而账号其实健在。修好写入链路只解决增量，
+   * 存量仍会带着错误的过期值继续误报，所以启动时按 JWT exp 校正一次。
+   * 幂等：只改「库内已过期、但 token 自己还没过期」这一种自相矛盾的行。
+   */
+  try {
+    const fixed = require('../credentials/refresh-expiry').repairWorkbuddyRefreshExpiry();
+    if (fixed.repaired) {
+      console.log(`[credentials] repaired workbuddy refreshExpiredAt for ${fixed.repaired}/${fixed.scanned} accounts`);
+      for (const it of fixed.items) {
+        console.log(`  · ${it.label || it.id}: ${it.from} → ${it.to}`);
+      }
+    }
+  } catch (e) {
+    console.error(`[credentials] repair workbuddy refresh expiry failed: ${e.message}`);
+  }
 }
 
 // 列出账号（已脱敏）

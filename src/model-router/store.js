@@ -159,11 +159,15 @@ function normalizeVirtual(id, vm) {
       ? vm.contextWindow
       : null,
     candidates,
+    // 默认 switchOn 集合**不含 `other`**（2026-11-25）：'other' 是「没分类出来的
+    // 错误」兜底桶，把参数错误（400 请求体非法、模型名拼错）也拿去逐个候选重试
+    // 会让一次失败放大成 N 次上游调用 —— 那是无效调用风暴的直接来源。
+    // 用户确实想让 'other' 也 failover 时，在虚拟模型里显式写进 switchOn。
     failover: {
       maxAttempts: Number(failover.maxAttempts) > 0 ? Number(failover.maxAttempts) : 3,
       switchOn: Array.isArray(failover.switchOn) && failover.switchOn.length
         ? failover.switchOn.map(String)
-        : ['rate_limit', 'model', '5xx', 'network', 'channel', 'other'],
+        : ['rate_limit', 'model', '5xx', 'network', 'channel'],
       cooldownMs: Number(failover.cooldownMs) > 0 ? Number(failover.cooldownMs) : 20000,
     },
   };

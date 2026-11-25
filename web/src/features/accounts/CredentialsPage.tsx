@@ -292,13 +292,16 @@ export default function CredentialsPage() {
     let cooling = 0;
     let off = 0;
     let needRelogin = 0;
+    let staleRecord = 0;
     for (const a of allAccounts) {
       const st = accountState(a);
       if (st === 'cool') cooling += 1;
       else if (st === 'off') off += 1;
-      if (keepaliveOf(a).tone === 'danger') needRelogin += 1;
+      const k = keepaliveOf(a);
+      if (k.tone === 'danger') needRelogin += 1;
+      else if (k.label === '到期记录陈旧') staleRecord += 1;
     }
-    return { cooling, off, needRelogin };
+    return { cooling, off, needRelogin, staleRecord };
   }, [allAccounts]);
 
   const workbuddyCount = useMemo(
@@ -658,6 +661,11 @@ export default function CredentialsPage() {
             allAccounts.length > 0 && (
               <span style={{ color: 'var(--rg-text-tertiary)' }}>登录态正常</span>
             )
+          )}
+          {stats.staleRecord > 0 && (
+            <Chip tone="warn" dot="dot-cool" title="本地记录的 refreshToken 到期时刻早于最近一次成功续期：凭据仍有效，点该行「刷新 Token」即可刷新记录，无需重新登录。">
+              {stats.staleRecord} 个账号到期记录陈旧
+            </Chip>
           )}
         </div>
 

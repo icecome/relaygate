@@ -219,19 +219,37 @@ export default function OverviewPage() {
    * 「需重新登录」与凭据池同一判据：refreshToken 已过期（账号无法自愈）。
    * 这里直接读 `refreshExpiredAt` 而不是 `keepaliveOf().tone === 'danger'`，
    * 因为后者还要走一遍 pack 解析，而本页对每个账号都要算，没必要。
+   *
+   * ⚠️ 判据必须带上「之后的成功续期」这一反证（2026-11-25）：
+   * refresh_expired_at 在 WorkBuddy 上曾长期只在导入时写一次、续期不更新，
+   * 导入满 30 天后必然跨过 now，于是总览和凭据池一起报「7 个账号需重新登录」，
+   * 而 8 个号的 billing 全部 200、当日 1200+ 次转发 0 个 401。
+   * 若 `lastRefreshAt > refreshExpiredAt`，说明这一列是陈旧记录而非真到期，
+   * 计入 needLogin 只会误导用户去重登一堆活得好好的账号。
    */
   const issues = useMemo(() => {
     const now = Date.now();
     let needLogin = 0;
+    let staleRecord = 0;
     let cooling = 0;
     let disabled = 0;
     for (const a of accounts) {
       const st = accountState(a);
       if (st === 'cool') cooling += 1;
       else if (st === 'off') disabled += 1;
-      if (a.refreshExpiredAt && new Date(a.refreshExpiredAt).getTime() <= now) needLogin += 1;
+      const rt = a.refreshExpiredAt ? new Date(a.refreshExpiredAt).getTime() : NaN;
+      if (!Number.isFinite(rt) || rt > now) continue;
+      const lr = a.lastRefreshAt ? new Date(a.lastRefreshAt).getTime() : NaN;
+      if (Number.isFinite(lr) && lr > rt) staleRecord += 1;
+      else needLogin += 1;
     }
-    return { needLogin, cooling, disabled, total: needLogin + cooling + disabled };
+    return {
+      needLogin,
+      staleRecord,
+      cooling,
+      disabled,
+      total: needLogin + staleRecord + cooling + disabled,
+    };
   }, [accounts]);
 
   return (
@@ -425,6 +443,11 @@ export default function OverviewPage() {
                     {issues.needLogin} 个账号需重新登录
                   </Chip>
                 )}
+                {issues.staleRecord > 0 && (
+                  <Chip tone="warn" dot="dot-cool">
+                    {issues.staleRecord} 个账号到期记录陈旧
+                  </Chip>
+                )}
                 {issues.cooling > 0 && (
                   <Chip tone="warn" dot="dot-cool">
                     {issues.cooling} 个账号冷却中
@@ -450,6 +473,13 @@ export default function OverviewPage() {
               <div className="text-aux fg-2">
                 「需重新登录」的账号无法自动恢复，需要重新导入凭据或重新登录；
                 冷却中的账号会在冷却结束后自动回到调度池。
+                {issues.staleRecord > 0 && (
+                  <>
+                    {' '}
+                    「到期记录陈旧」表示 refreshToken 到期时刻的本地记录早于最近一次成功续期
+                    （凭据本身仍有效），到凭据池点「刷新 Token」即可刷新该记录，无需重新登录。
+                  </>
+                )}
               </div>
             )}
           </Panel>

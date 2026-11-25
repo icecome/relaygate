@@ -41,8 +41,21 @@ const { shared: limiter, classifyThrottle } = require('./limiter');
 
 const V = variant.variantOf(variant.RACCOON);
 
-/** 最多尝试几个账号（换号次数）。小浣熊是独立小池，3 个足够覆盖「主号在冷却」。 */
-const MAX_ACCOUNT_SWITCHES = 3;
+/**
+ * 最多尝试几个账号（换号次数）。
+ *
+ * ## 2026-11-25：3 → 2，且只在 `auth` 分支真的换号
+ *
+ * 原值 3 的前提是「换号能绕开限流」，而那个前提已被推翻：`200108` 是**账号级
+ * 风控**，撞墙后换号只会换个号撞同一堵墙，并把「异常调用」特征做实。
+ * 现在 `throttled` / `account_risk` 分支都**立刻上抛**（不 continue），
+ * 唯一还会走到下一轮的是 `auth`（登录态失效，另一个号确实可能健康）。
+ *
+ * 保留 2 而不是降到 1：池里通常有 2 个号，其中一个 token 被上游单方面作废时
+ * （实测会发生，且本地 JWT 的 exp 看不出来），必须允许试第二个。
+ * 每多一轮就是一次真实的上游调用，没有证据支持的轮次一律不留。
+ */
+const MAX_ACCOUNT_SWITCHES = 2;
 
 /**
  * 该模型是否属于 Raccoon 对话面。
@@ -112,11 +125,17 @@ function pickAccount(opts = {}) {
   return store.get(usable[0].id);
 }
 
-/** 把账号级冷却同时写进内存闸门（它内部还会开出口级冷却）。 */
+/**
+ * 把账号级冷却同时写进内存闸门（默认还会开出口级冷却）。
+ *
+ * `account_risk`（200108 风控）例外：它传 `scope:'account'`，只冻这个号。
+ * 理由是实测证据 —— 同机同 IP 的另一个号在被处置期间**完全正常**，
+ * 连带冻出口会把健康的号一起排掉，等于自己制造一次假故障。
+ */
 function coolAccount(accountId, info) {
   const r = limiter.throttle(accountId, info);
-  // 账号库只记账号维度的冷却。出口级冷却不落库：它是「此刻这台机器的出口
-  // 被上游限流」，重启/换 IP 就失效，落库反而会让重启后误判成还在冷却。
+  // 账号库只记账号维度的冷却。出口级冷却不落库：它是「此刻这台机器上还有
+  // 别的进程在共用同一账号/出口」，重启即失效，落库反而会让重启后误判成还在冷却。
   const left = Math.max(0, r.until - Date.now());
   store.update(accountId, {
     coolUntil: new Date(Date.now() + left).toISOString(),
@@ -152,10 +171,31 @@ function markAccountOk(accountId) {
  * 这时把它判成「不可换号」会让整池看起来全挂 —— 而实际上只挂了一个。
  * 正确动作是：换号 + 把该号标成需要重新登录，而不是让本次请求失败。
  */
+/**
+ * 本次失败属于哪一类（决定「换号 / 冷却 / 上抛」）。
+ *
+ * 四类处置，互不重叠：
+ *   - `throttled`：并发/额度限流 → 冷却 + **立刻上抛**（不换号，见下方注释）
+ *   - `account_risk`：账号被风控处置（200108）→ 长冷该账号 + **立刻上抛**
+ *   - `auth`：登录态失效 → 换号（另一个号可能健康）
+ *   - `other`：其余（含 400 参数错、模型名过期）→ 上抛，**不重试**
+ *
+ * ## 2026-11-25：`account_risk` 必须独立于 `throttled`
+ *
+ * `classifyThrottle` 现在把 200108 归成 `kind:'account_risk'`，而本函数此前
+ * 只判 `t.limited` 就一律返回 `'throttled'` —— 那会把「账号被处置 3 小时」
+ * 和「并发超了 5 分钟」混成一件事。虽然两者的即时动作（冷却 + 上抛）恰好
+ * 相同，但**冷却作用域不同**：风控是账号级事实，不该连带把出口级也冻住，
+ * 否则同机另一个健康账号会被无辜拖下水。
+ */
 function failureKind(err) {
   if (!err) return 'other';
+  // 超时是**本请求自己的时间用完了**，不是账号或上游的错：
+  // 换号重试等于把已经跑满一轮的成本再付一次，而结果大概率还是超时。
+  // 必须判在一切分类之前 —— 否则它会落到 'other'，而 'other' 曾是可切换的。
+  if (err.timedOut) return 'timeout';
   const t = classifyThrottle({ status: err.status, body: err.body, message: err.message });
-  if (t.limited) return 'throttled';
+  if (t.limited) return t.kind === 'account_risk' ? 'account_risk' : 'throttled';
   if (err.status === 401 || err.status === 403) return 'auth';
   if (err.status === 429) return 'throttled';
   // 上游用 HTTP 200 + 业务码表达失败时，错误体里仍有 200003
@@ -210,7 +250,8 @@ async function run(runOnce, opts = {}) {
         const g = limiter.globalCoolingReason() || {};
         const e = new Error(
           `Raccoon 出口整体处于限流冷却（剩余 ${Math.ceil(gLeft / 1000)}s，第 ${g.streak || 1} 次退避）。`
-          + '上游按出站 IP 计并发，实测换账号、换模型都绕不过去 —— '
+          // 不再说「上游按出站 IP 计并发」（已推翻，见 limiter.js 文件头）。
+          + '本机可能有其他进程（官方客户端）在共用同一账号/出口 —— '
           + '请按 Retry-After 退避，不要反复重试（每次撞墙都会延长恢复窗口）。',
         );
         e.code = 'RACCOON_GLOBAL_COOLING';
@@ -219,12 +260,21 @@ async function run(runOnce, opts = {}) {
         e.gatewayError = true;
         throw e;
       }
+      // d) 账号全在冷却。区分两种量级，文案给出不同的等待建议 ——
+      //    「风控 3 小时」与「并发 5 分钟」让用户做的事完全不同
+      //    （前者只能等或换号/申诉，后者降并发即可）。
+      const risk = limiter.riskCoolingReason();
       const e = new Error(
-        'Raccoon 账号全部在冷却或并发已满。上游按账号瞬时并发判定'
-        + '（实测 4 并发即触发限流，撞墙后 5 分钟起才恢复），请稍后重试或降低并发。',
+        risk
+          ? `Raccoon 账号处于上游风控处置（剩余约 ${Math.ceil((risk.msLeft || 0) / 60000)} 分钟）。`
+            + '这是账号级「异常调用」判定，换模型无效；请等解禁，或换一个未被处置的账号，'
+            + '如认为是误判可在官方客户端「问题反馈」申诉。'
+          : 'Raccoon 账号全部在冷却或并发已满。上游按账号瞬时并发判定'
+            + '（实测 4 并发稳定、5 并发触发），请稍后重试或降低并发。',
       );
-      e.code = 'RACCOON_NO_ACCOUNT';
+      e.code = risk ? 'RACCOON_ACCOUNT_RISK_CONTROLLED' : 'RACCOON_NO_ACCOUNT';
       e.status = 429;
+      e.retryAfterMs = risk ? risk.msLeft : undefined;
       e.gatewayError = true;
       throw e;
     }
@@ -267,22 +317,29 @@ async function run(runOnce, opts = {}) {
       // 客户端主动取消不是账号问题：不冷却、不换号，直接上抛（换号只会多烧一次）
       if (err && err.aborted) throw err;
       const kind = failureKind(err);
-      if (kind === 'throttled') {
-        const t = classifyThrottle({ status: err.status, body: err.body, message: err.message });
-        const cooled = coolAccount(use.id, { kind: t.kind, cooldownMs: t.cooldownMs });
+      // 超时同样**不冷却、不换号**：账号是好的、上游也是好的，只是这轮太长。
+      // 换号重试的期望收益是 0（大概率再超时），成本是整轮 token 再付一次。
+      if (kind === 'timeout') throw err;
+      if (kind === 'throttled' || kind === 'account_risk') {
+        const t = classifyThrottle({
+          status: err.status, body: err.body, message: err.message, retryAfterMs: err.retryAfterMs,
+        });
+        // 风控（200108）是**账号级**事实：只冻这个号，不连带出口。
+        // 并发限流仍走 'both'（同机可能有别的进程在共用出口）。
+        const scope = kind === 'account_risk' ? 'account' : 'both';
+        const cooled = coolAccount(use.id, { kind: t.kind, cooldownMs: t.cooldownMs, scope });
         err.raccoonCooldown = cooled;
 
-        // ⚠️ **撞墙后立刻停手，不换号**（2026-11-09 实测修正）。
+        // ⚠️ **撞墙后立刻停手，不换号**（2026-11-09 实测修正，2026-11-25 复核仍成立）。
         //
         // 原实现是 `continue` 换下一个号再来一次。实测证明那是错的：
-        // 一个号撞 429 之后，**另外两个账号 + 本机客户端**同时全部 429，
-        // 换模型也照样 429 —— 墙在出口 IP 上，不在账号上。
-        //
-        // 于是「换号重试」的效果是：一次撞墙 → 换号 → 再撞一次 → 再换 →
+        // 「换号重试」的效果是：一次撞墙 → 换号 → 再撞一次 → 再换 →
         // 第三次撞墙。3 次撞墙而非 1 次，而每次撞墙都可能把恢复窗口推长。
-        // 这正是「同一个账号在官方客户端好用、经插件却很频繁被限流」的一部分机理。
         //
-        // 正确动作：把出口级冷却开上（已在 coolAccount 里做），然后**立刻**
+        // 对 `account_risk` 尤其致命：200108 的判定依据就是「异常调用」，
+        // 撞墙后继续换号重试本身就是在制造它要找的特征。
+        //
+        // 正确动作：把冷却开上（已在 coolAccount 里做），然后**立刻**
         // 把错误抛给客户端并带上 Retry-After，让它按标准语义退避。
         throw err;
       }

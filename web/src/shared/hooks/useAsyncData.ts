@@ -34,6 +34,10 @@ export function useAsyncData<T>(
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
+  // L-06：deps 数量若在调用间变化，展开进依赖数组会触发 React「hook 依赖长度变化」
+  // 未定义行为。改为序列化成稳定标量，长度恒定，消除变长数组隐患。
+  const depsKey = JSON.stringify(deps);
+
   useEffect(() => {
     if (!enabled) {
       setData(null);
@@ -78,8 +82,9 @@ export function useAsyncData<T>(
       active = false;
       controller.abort();
     };
+    // fetcher 通过 fetcherRef 固定，deps 由 depsKey 标量表达；无需禁用依赖检查。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, nonce, ...deps]);
+  }, [enabled, nonce, depsKey]);
 
   return { data, loading, error, reload };
 }

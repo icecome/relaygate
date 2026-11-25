@@ -41,7 +41,15 @@ async function verifyRefresh(acct) {
     const wbAuth = require('../workbuddy/auth');
     const r = await wbAuth.refresh(acct.refreshToken);
     if (!r || !r.accessToken) return { ok: false, reason: '续期返回空 token' };
-    return { ok: true, accessToken: r.accessToken, refreshToken: r.refreshToken, expiresAt: r.expiresAt };
+    return {
+      ok: true,
+      accessToken: r.accessToken,
+      refreshToken: r.refreshToken,
+      expiresAt: r.expiresAt,
+      // 新的 refreshToken 自带新的到期时刻（wb.refresh 从 JWT exp 推出）。
+      // 必须一路透传到 store.update，否则轮换一次就把库里那列留在旧值上。
+      refreshExpiresAt: r.refreshExpiresAt || null,
+    };
   } catch (e) {
     return { ok: false, reason: String(e.message || e).slice(0, 80) };
   }
@@ -491,6 +499,9 @@ async function rotateAllInner() {
           token: chk.accessToken,
           refreshToken: chk.refreshToken,
           expiredAt: chk.expiresAt,
+          // 续期即换发新的 refreshToken（30 天），到期列必须同步滚，否则
+          // 导入满 30 天后前端会一直判「需重新登录」（见 auth/index.js 同处注释）。
+          ...(chk.refreshExpiresAt ? { refreshExpiredAt: chk.refreshExpiresAt } : {}),
           lastRefreshAt: new Date().toISOString(),
           errorCount: 0,
           coolUntil: 0,
@@ -613,6 +624,8 @@ async function switchAccountInner(uid) {
         token: chk.accessToken,
         refreshToken: chk.refreshToken,
         expiredAt: chk.expiresAt,
+        // 同上：refreshToken 换了，它自己的到期时刻也换了。
+        ...(chk.refreshExpiresAt ? { refreshExpiredAt: chk.refreshExpiresAt } : {}),
         lastRefreshAt: new Date().toISOString(),
         errorCount: 0,
         coolUntil: 0,

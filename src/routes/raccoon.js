@@ -29,6 +29,7 @@ const auth = require('../raccoon/auth');
 const credits = require('../raccoon/credits');
 const chat = require('../raccoon/chat');
 const product = require('../raccoon/product');
+const catalogStore = require('../raccoon/catalog-store');
 const localClient = require('../raccoon/local');
 const raccoonDispatch = require('../raccoon/dispatch');
 const raccoonStream = require('../raccoon/stream');
@@ -186,11 +187,17 @@ router.get('/accounts/:id/daily-usage', admin, async (req, res) => {
 router.get('/limiter', authenticate, (_req, res) => {
   const snap = raccoonDispatch.limiter.snapshot();
   const globalLeft = raccoonDispatch.limiter.globalCoolingFor();
+  // 风控（200108）与出口冷却要分开表达：前者是「这个号被处置了，等 3 小时或换号」，
+  // 后者是「本机还有别的进程在共用出口」。混成一个 blocked 会让调用方做错事
+  // （风控期间反复重试 = 加深处置）。
+  const risk = snap.riskControl;
+  const blockedMs = Math.max(globalLeft, risk ? risk.msLeft : 0);
   res.json({
     object: 'raccoon.limiter',
-    blocked: globalLeft > 0,
-    retryAfterMs: globalLeft,
-    retryAfterSec: globalLeft > 0 ? Math.ceil(globalLeft / 1000) : 0,
+    blocked: blockedMs > 0,
+    blockedReason: risk && risk.msLeft >= globalLeft ? 'account_risk' : (globalLeft > 0 ? 'global_cooling' : null),
+    retryAfterMs: blockedMs,
+    retryAfterSec: blockedMs > 0 ? Math.ceil(blockedMs / 1000) : 0,
     ...snap,
   });
 });
@@ -510,20 +517,52 @@ router.post('/local/import', admin, async (_req, res) => {
  * 模型目录。优先拉远端（含真实倍率与窗口），失败回退兜底表并在 `source` 里
  * 如实说明 —— 面板据此提示「倍率可能不是最新」，而不是假装拿到了。
  */
-router.get('/models', admin, async (_req, res) => {
+/**
+ * 模型目录（只读）。
+ *
+ * 回退链：远端 → 持久化快照 → 硬编码兜底表。快照这一级是 2026-11-25 新增的：
+ * 远端暂时不可达（账号被风控处置时 catalog 端点其实仍可用，但网络/DNS 故障也会
+ * 走到这里）时，**上次见到的真实目录**比硬编码表更接近事实。
+ *
+ * `?refresh=1` 强制穿透 TTL 直连远端（面板的「刷新」按钮走
+ * `POST /v1/models/refresh`，那个还会顺带对账候选池；本端点只读不写）。
+ */
+router.get('/models', admin, async (req, res) => {
+  const force = req.query.refresh === '1' || req.query.refresh === 'true';
   // 目录是只读操作，不占对话并发槽、不受 chat 限流：用专门的选号器，
   // 避免所有号在冷却/并发满时静默回退到过期的 fallback 倍率表。
   const acct = require('../raccoon').pickCatalogAccount();
   if (!acct) {
+    const snap = catalogStore.readSnapshot();
     return res.json({
       object: 'list',
-      source: 'fallback',
+      source: snap ? 'snapshot' : 'fallback',
+      syncedAt: snap ? snap.syncedAt : null,
       reason: '没有已启用的 Raccoon 账号，远端目录需要登录态',
-      data: product.fallbackCatalog(),
+      data: snap ? snap.models : product.fallbackCatalog(),
     });
   }
   const r = await auth.fetchModelCatalog(acct);
-  res.json({ object: 'list', source: r.source, data: r.models });
+  const snap = catalogStore.readSnapshot();
+  res.json({
+    object: 'list',
+    source: r.source,
+    syncedAt: snap ? snap.syncedAt : null,
+    data: r.models,
+  });
+});
+
+/**
+ * 刷新 Raccoon 目录并**对账候选池**（面板 / 运维脚本入口）。
+ *
+ * 与 `GET /models` 的区别：这个会写盘。它做的正是此前缺失的那一步 ——
+ * 把「上游现在的模型名单」同步进「真正决定请求发去哪里的候选池」。
+ * 详见 `raccoon/index.js#refreshCatalog` 与 `raccoon/catalog-store.js` 文件头。
+ */
+router.post('/models/refresh', admin, async (req, res) => {
+  const apply = String(req.query.apply || '') !== '0';
+  const r = await require('../raccoon').refreshCatalog({ apply });
+  res.json({ object: 'raccoon.catalog_refresh', ...r });
 });
 
 // ---- 对话转发 ----
@@ -551,6 +590,10 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
   let usedAccountId = null;
   let finishReason = null;
   let cooledInfo = null;
+  /** 上游业务码（200108 / 100004 / 200103…），供 traffic 日志按码聚合。 */
+  let upstreamCode = null;
+  /** 本轮是否被本地 `RACCOON_TIMEOUT_MS` 掐断（与上游失败区分）。 */
+  let timedOut = false;
   const reqTools = Array.isArray(body.tools) && body.tools.length ? body.tools : null;
 
   if (!Array.isArray(messages) || messages.length === 0) {
@@ -620,12 +663,16 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     } else {
       lastUsage = out.usage;
       finishReason = out.finishReason;
+      // 半截流：见 routes/openai.js 同处注释（pipeToClient 的 timedOut 标记）。
+      if (out.timedOut) timedOut = true;
     }
   } catch (err) {
     // 客户端只拿泛化文案；上游原始报文（err.message / err.body）由
     // replyUpstreamError 写进服务端日志，限流分类仍读 err.body，不受影响。
     requestError = clientMessage(err);
     cooledInfo = err.raccoonCooldown || null;
+    if (err && err.upstreamCode != null) upstreamCode = Number(err.upstreamCode);
+    if (err && err.timedOut) timedOut = true;
     replyUpstreamError(res, err, {
       tag: 'raccoon',
       writeFrame: (r, msg) => raccoonStream.writeErrorFrame(r, msg),
@@ -641,13 +688,17 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     logRequest({
       endpoint: '/v1/raccoon/chat/completions', method: 'POST', model,
       account: usedAccountId,
-      status: requestError ? (cooledInfo ? 429 : 502) : 200,
+      // 超时用 504：它与「上游坏了」是两回事，运维动作完全不同
+      // （调 RACCOON_TIMEOUT_MS / 减少单轮输入，而不是去查上游状态）。
+      status: requestError ? (timedOut ? 504 : (cooledInfo ? 429 : 502)) : 200,
       toolCalls: 0, toolsIn: reqTools ? reqTools.length : 0,
       durationMs: Date.now() - startedAt,
       error: requestError,
       platform: 'raccoon',
       pricedModel: model,
       routedTo: `raccoon/${model}`,
+      ...(upstreamCode != null ? { upstreamCode } : {}),
+      ...(timedOut ? { timedOut: true } : {}),
       ...(finishReason ? { finishReason } : {}),
       ...(cooledInfo ? { raccoonCooledForMs: cooledInfo.cooldownMs, raccoonCooldownStreak: cooledInfo.streak } : {}),
       ...usageFields,

@@ -12,12 +12,44 @@ const variant = require('../platform/variant');
 
 const TRAE_ERR = variant.variantOf(variant.TRAE).errors;
 const WB_ERR = variant.variantOf(variant.WORKBUDDY).errors;
+const RACCOON_ERR = variant.variantOf(variant.RACCOON).errors;
 
-/** 限流类业务码（两平台并集，去重）。 */
+/** 限流类业务码（三平台并集，去重）。 */
 const RATE_LIMIT_CODES = Array.from(new Set([
   ...(TRAE_ERR.rateLimitCodes || []),
   ...(WB_ERR.rateLimitCodes || []),
 ]));
+
+/**
+ * Raccoon 对话面业务码（2026-11-25 新增）。
+ *
+ * 为什么必须单独一组而不是并进 RATE_LIMIT_CODES：这三个码的处置**互不相同**，
+ * 混在一起会让「该长冷」的码拿到短冷、「该换模型」的码去换账号。
+ *
+ * | 码 | 语义 | 正确动作 |
+ * |---|---|---|
+ * | 100004 `param model unsupport` | 模型 id 过期/拼错 | 换模型，**不换账号**，**不重试** |
+ * | 200108 `accountRiskControlled` | 账号被风控处置 3h | 长冷该账号，**不换模型**，**不重试** |
+ * | 200103 `limiter_request_error` | 瞬时排队超时 | 短冷后重试即可 |
+ */
+const CODE_MODEL_UNSUPPORTED = RACCOON_ERR.modelUnsupported;
+const CODE_ACCOUNT_RISK_CONTROLLED = RACCOON_ERR.accountRiskControlled;
+const CODE_LIMITER_REQUEST_ERROR = RACCOON_ERR.limiterRequestError;
+
+/**
+ * 上游业务码回填。
+ *
+ * ⚠️ **这里曾经是 `(\d{3,5})`，而小浣熊的业务码是 6 位** —— 2026-11-25 实测：
+ * `200108` 被截成 `20010`、`100004` 被截成 `10000`，于是所有下游分类器
+ * （`isChannelBlockedError` / `isModelConfigError` / `isRateLimitCode`）
+ * 全部匹配不上，一律退化成 `'other'`，进而触发换候选重试 ——
+ * **一次无效调用被放大成一场无效调用风暴**，正好喂给上游风控。
+ *
+ * 现在放宽到 `(\d{4,9})`：既能覆盖 4 位（Trae 4001）、5 位（WorkBuddy 11128）、
+ * 6 位（Raccoon 200108），也不会误吞报文里的年份/毫秒时间戳（那些不进 `"code"` 键）。
+ * 上限 9 位是为了防止把长数字串整段吃进来。
+ */
+const CODE_RE = /"code"\s*:\s*(\d{4,9})/;
 
 /** 模型在当前 function 下不可用。 */
 const CODE_MODEL_UNAVAILABLE = TRAE_ERR.modelUnavailable;
@@ -78,15 +110,26 @@ function classifyError(err) {
   const msg = String(err.message || '');
   // 从消息体回填业务码（WorkBuddy 429 body: {"code":6004,...} 等）
   if (err.upstreamCode == null) {
-    const m = msg.match(/"code"\s*:\s*(\d{3,5})/);
+    const m = msg.match(CODE_RE);
     if (m) err.upstreamCode = Number(m[1]);
   }
+  // 本地超时（`err.timedOut`，由 raccoon/chat.js 打标）**先于 5xx**：
+  // 它被标成 504，若不提前拦截会落进 `5xx` 分支，而 5xx 是**可重试**的 ——
+  // 「这轮跑满 RACCOON_TIMEOUT_MS 还没完」重试几乎必然再超时，只会把整轮
+  // 成本再付一次。它也不是 network（那是连接层失败，值得重试）。
+  if (err.timedOut) return 'timeout';
   // 渠道校验先于一切：它不是账号/模型/窗口问题，判成 'other' 会去逐个候选撞同一
   // 堵墙并冷却健康账号；判成 'auth' 会触发续期（无效，token 完全正常）。
   if (isChannelBlockedError(err)) return 'channel';
   // 账号受限（11140）先于泛化 403：判成 'auth' 会触发续期 + 短冷却后反复撞墙，
   // 但受限账号续不了期也等不好——正确动作是长冷却 + 尽快换号。
   if (isAccountRestrictedError(err)) return 'account';
+  // 小浣熊账号级异常调用风控（200108）：必须**先于**泛化 429 判定。
+  //
+  // 判成 'rate_limit' 的后果是「换个模型再撞一次」——而 200108 是账号被处置，
+  // 换模型一点用都没有，只会多撞几次、加深风控。它也不是 'account'（11140 那种
+  // 「账号不可用」，语义上要换号）：200108 有明确解禁时刻，等就是了。
+  if (isAccountRiskControlledError(err)) return 'account_risk';
   // 上下文超限先于其他分类：窗口问题与账号/模型健康度无关，
   // 误判成 'other' 会触发无意义 failover（逐个候选撞同一天花板）并冷却健康模型。
   if (isContextLengthError(err)) return 'context_length';
@@ -94,6 +137,11 @@ function classifyError(err) {
   // docs/06-deliverables/comparisons/workbuddy-comparison-report.md
   if (Number(err.upstreamCode) === CODE_PLAN_LIMIT || /PlanLimit|plan.?limit/i.test(msg)) return 'quota';
   if (err.status === 402 || /quota|积分已耗尽|余额不足|credits.?exhaust/i.test(msg)) return 'quota';
+  // 小浣熊模型名不受支持（100004）：模型问题非账号问题，换候选即可。
+  // 必须**先于** 'other' 兜底 —— 之前 6 位码被正则截断成 10000 匹配不上，
+  // 400 一律落到 'other'，于是被 switchOn 的 'other' 放行去逐个候选撞墙。
+  if (Number(err.upstreamCode) === CODE_MODEL_UNSUPPORTED
+    || /param model unsupport/i.test(msg)) return 'model';
   // 模型级限流须先于泛化 429 判定：模型问题非账号问题，换号/冷却整号无意义
   if (isModelRateLimitError(err)) return 'model';
   // 模型在当前 function 下不可用（model config is empty / WorkBuddy 11102、11103）——
@@ -232,6 +280,31 @@ function isChannelBlockedError(err) {
 }
 
 /**
+ * 是否为小浣熊**账号级异常调用风控**（200108）。
+ *
+ * 这是本次（2026-11-25）新增的独立分类，与 `rate_limit` / `account` 都不同：
+ *
+ * - 不是 `rate_limit`：它不是并发/配额超限，换模型、等 5 分钟都没用
+ *   （实测该账号下 7 个模型同时 429，恢复窗口 3 小时）；
+ * - 不是 `account`（11140）：11140 是「账号不可用，去换号」，而 200108 有
+ *   上游明示的解禁时刻（`Retry-After: 10800`），动作是**按该时刻长冷却 + 停手**；
+ * - 不是 `model`：模型本身是好的，是账号被处置。
+ *
+ * 三路判定（业务码 / 状态码巧等 / 文案兜底），与 11140/11128 同构 ——
+ * 上游换码或改文案时仍能识别。文案取「异常调用」这个特征词，它足够独特
+ * （不会出现在正常的限流/配额报文里）。
+ */
+function isAccountRiskControlledError(err) {
+  if (!err) return false;
+  const msg = String(err.message || '');
+  if (Number(err.upstreamCode) === CODE_ACCOUNT_RISK_CONTROLLED) return true;
+  if (err.status === CODE_ACCOUNT_RISK_CONTROLLED) return true;
+  if (new RegExp(`"code"\\s*:\\s*${CODE_ACCOUNT_RISK_CONTROLLED}\\b`).test(msg)) return true;
+  return /异常调用/.test(msg)
+    || /模型调用功能已暂时受限/.test(msg);
+}
+
+/**
  * 是否值得重试：限流/网络/5xx 可重试；auth、channel、other、context_length 不重试。
  * 渠道校验是确定性的请求形状判定，同账号同请求重试结果不变，只会白白多打一次上游。
  * 上下文超限属终端错误——换候选与冷却账号都解决不了窗口问题，重试只会
@@ -239,6 +312,23 @@ function isChannelBlockedError(err) {
  */
 function isRetryable(kind) {
   return kind === 'rate_limit' || kind === 'network' || kind === '5xx';
+}
+
+/**
+ * 是否「换账号」有效（跨账号 failover 的判据）。
+ *
+ * 与 {@link isRetryable}（同账号重试）是两个不同的问题，此前只有前者、
+ * 后者靠各调用点的 switchOn 白名单拼，结果是 `account_risk` 这种
+ * 「换号完全无效」的类别被放进去重试。
+ *
+ * - `account`（11140 账号不可用）→ 换号**有效**：另一个号可能健康；
+ * - `account_risk`（200108 风控）→ 换号**无效**：本机同 IP 的号会被一起处置，
+ *   而且换号重试本身就是「异常调用」的特征。正确动作是按 `Retry-After` 停手；
+ * - `model`（100004/11102 模型不可用）→ 换号无效、换模型有效；
+ * - `context_length` / `channel` → 换号无效。
+ */
+function isAccountSwitchHelpful(kind) {
+  return kind === 'account' || kind === 'auth' || kind === 'quota';
 }
 
 /** 是否为上下文超限（输入超模型真实窗口）：终端错误，不 failover、不冷却。 */
@@ -274,6 +364,7 @@ async function retryWithBackoff(fn, opts = {}) {
 module.exports = {
   classifyError,
   isRetryable,
+  isAccountSwitchHelpful,
   retryWithBackoff,
   isRateLimitCode,
   isModelConfigError,
@@ -284,9 +375,13 @@ module.exports = {
   isContextLengthErrorKind,
   isChannelBlockedError,
   isAccountRestrictedError,
+  isAccountRiskControlledError,
   parseRateLimitReset,
   RATE_LIMIT_CODES,
   CONTEXT_TOO_LONG_CODES,
   CODE_CHANNEL_BLOCKED,
   CODE_ACCOUNT_RESTRICTED,
+  CODE_MODEL_UNSUPPORTED,
+  CODE_ACCOUNT_RISK_CONTROLLED,
+  CODE_LIMITER_REQUEST_ERROR,
 };

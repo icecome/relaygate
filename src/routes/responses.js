@@ -17,6 +17,7 @@ const { logRequest } = require('../log/traffic');
 const pool = require('../credentials/pool');
 const sticky = require('../session/sticky');
 const { createLineFeeder } = require('../lib/sse-lines');
+const { attachSseHeartbeat } = require('../lib/sse-heartbeat');
 const config = require('../config');
 // 模型 ACL 在模块加载期解析：若包在请求路径的 try/catch 里，require 失败
 // 会变成 fail-open（ACL 静默跳过）。加载失败应表现为启动期错误，而非运行期放行。
@@ -114,6 +115,9 @@ router.post('/v1/responses', async (req, res) => {
       type: 'response.created',
       response: { id: responseId, status: 'in_progress', model },
     });
+    // 静默心跳：response.created 之后到首个 output_text.delta 之间可能静默数十秒，
+    // 成因与取值见 lib/sse-heartbeat.js。
+    const heartbeat = attachSseHeartbeat(res, { intervalMs: config.sseHeartbeatMs });
 
     let streamAccountId = null;
     let lastUsage = null;
@@ -165,6 +169,7 @@ router.post('/v1/responses', async (req, res) => {
         type: 'response.completed',
         response: { id: responseId, status: 'completed', model, account_id: accountId || null },
       });
+      heartbeat.stop();
       res.end();
       logRequest({
         endpoint: '/v1/responses', method: 'POST', model, account: accountId, status: 200,
@@ -177,6 +182,7 @@ router.post('/v1/responses', async (req, res) => {
       // 流内错误经 handler 抛出，这里回灌账号池触发冷却/轮换
       if (isRateLimitCode(err.upstreamCode) && streamAccountId) pool.record(streamAccountId, 'rate_limit', { model, message: err.message });
       const status = err.status && err.status >= 400 ? err.status : 500;
+      heartbeat.stop();
       sseWrite(res, 'response.failed', {
         type: 'response.failed',
         response: {

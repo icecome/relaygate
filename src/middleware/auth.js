@@ -8,6 +8,21 @@
  */
 const config = require('../config');
 const apiKeys = require('../credentials/api-keys');
+const authRateLimit = require('./auth-rate-limit');
+
+/**
+ * 拒收时补一行 traffic（延迟 require，避免把 traffic → rates → catalog →
+ * upstream/client → auth 这条重链在中间件加载期拉进来，也避开任何加载环）。
+ * @param {import('express').Request} req
+ * @param {number} status
+ * @param {string} code
+ * @param {string} message
+ */
+function logReject(req, status, code, message) {
+  try {
+    require('../log/traffic').logRejected(req, { status, code, message });
+  } catch { /* 日志失败不影响拒收响应 */ }
+}
 
 function extractToken(req) {
   const auth = req.headers['authorization'];
@@ -21,19 +36,25 @@ function extractToken(req) {
 function isEnvLogin(token) {
   // K-1 权限分离：管理面只认 ADMIN_KEY 与 DB 登录密钥。
   // API_KEY 历史上可作管理面过渡登录，已移除——转发种子密钥与管理凭据必须分值。
+  // L-01：改用恒定时间比较，避免 === 在首个差异处短路的时序侧信道。
   const adminKey = process.env.ADMIN_KEY;
-  if (adminKey && token === adminKey) return true;
-  return false;
+  if (!adminKey) return false;
+  const a = Buffer.from(String(token || ''));
+  const b = Buffer.from(adminKey);
+  if (a.length !== b.length) return false;
+  return require('crypto').timingSafeEqual(a, b);
 }
 
 /** 转发面：仅校验访问密钥（kind=access）。登录密钥只用于管理面。 */
 function authenticate(req, res, next) {
   const token = extractToken(req);
   if (!token) {
+    logReject(req, 401, 'MISSING_ACCESS_KEY', 'Missing access key');
     return res.status(401).json({ error: { message: 'Missing access key', type: 'auth_error' } });
   }
   const rec = apiKeys.verifyAccessKey(token);
   if (!rec) {
+    logReject(req, 401, 'INVALID_ACCESS_KEY', 'Invalid access key');
     return res.status(401).json({
       error: {
         message: 'Invalid access key。请使用管理面创建的访问密钥（trae|workbuddy|all）。',
@@ -50,10 +71,32 @@ function authenticate(req, res, next) {
   next();
 }
 
+/** 管理面失败审计（M-05）：失败尝试此前完全不记录，事后无法发现探测行为。 */
+function auditAdminFail(req, reason) {
+  try {
+    require('../log/audit').audit({
+      action: 'auth.admin_fail',
+      result: 'deny',
+      reason,
+      clientIp: authRateLimit.clientIp(req),
+      userAgent: req.headers?.['user-agent'] || null,
+    });
+  } catch { /* 审计失败不影响鉴权响应 */ }
+}
+
 /** 管理面：登录密钥（DB kind=login）或 env ADMIN_KEY（兼容）。 */
 function authenticateAdmin(req, res, next) {
+  // 先判锁定：已锁定的 IP 直接 429，不再查库（M-05 失败限速）。
+  if (authRateLimit.isLocked(req)) {
+    auditAdminFail(req, 'rate_limited');
+    const retryAfter = authRateLimit.recordFailure(req).retryAfter;
+    res.setHeader('Retry-After', String(Math.max(1, retryAfter)));
+    return res.status(429).json({ error: { message: 'Too many failed login attempts', type: 'rate_limit_error', code: 'ADMIN_LOGIN_LIMIT' } });
+  }
   const token = extractToken(req);
   if (!token) {
+    auditAdminFail(req, 'missing');
+    authRateLimit.recordFailure(req);
     return res.status(401).json({ error: { message: 'Missing login key', type: 'auth_error' } });
   }
   const rec = apiKeys.verifyLoginKey(token);
@@ -61,10 +104,25 @@ function authenticateAdmin(req, res, next) {
     req.keyKind = 'login';
     req.apiKeyId = rec.id;
     apiKeys.touchLastUsed(rec.id);
+    authRateLimit.recordSuccess(req);
     return next();
   }
-  if (isEnvLogin(token)) return next();
-  return res.status(401).json({ error: { message: 'Invalid login key', type: 'auth_error' } });
+  if (isEnvLogin(token)) {
+    authRateLimit.recordSuccess(req);
+    return next();
+  }
+  auditAdminFail(req, 'invalid');
+  const { retryAfter } = authRateLimit.recordFailure(req);
+  if (retryAfter > 0) res.setHeader('Retry-After', String(retryAfter));
+  // 达到阈值后本次返回 429，之前返回 401（语义与 Retry-After 一致）。
+  const status = retryAfter > 0 ? 429 : 401;
+  return res.status(status).json({
+    error: {
+      message: status === 429 ? 'Too many failed login attempts' : 'Invalid login key',
+      type: status === 429 ? 'rate_limit_error' : 'auth_error',
+      ...(status === 429 ? { code: 'ADMIN_LOGIN_LIMIT' } : {}),
+    },
+  });
 }
 
 /**
@@ -96,6 +154,7 @@ function authenticateAdminOrPublic(req, res, next) {
 function authenticateAny(req, res, next) {
   const token = extractToken(req);
   if (!token) {
+    logReject(req, 401, 'MISSING_API_KEY', 'Missing API key');
     return res.status(401).json({ error: { message: 'Missing API key', type: 'auth_error' } });
   }
   const access = apiKeys.verifyAccessKey(token);
@@ -116,6 +175,7 @@ function authenticateAny(req, res, next) {
     return next();
   }
   if (isEnvLogin(token)) return next();
+  logReject(req, 401, 'INVALID_API_KEY', 'Invalid API key');
   return res.status(401).json({ error: { message: 'Invalid API key', type: 'auth_error' } });
 }
 
@@ -131,6 +191,7 @@ function requireKeyScope(scope) {
     if (!rec) return next(); // env 管理密钥等无记录的路径
     const scopes = Array.isArray(rec.scopes) ? rec.scopes : [];
     if (scopes.includes(scope)) return next();
+    logReject(req, 403, 'SCOPE_MISSING', `scope_missing:${scope}`);
     return res.status(403).json({
       error: {
         message: `access denied: scope_missing:${scope}。请让管理员为该访问密钥补充 scope。`,

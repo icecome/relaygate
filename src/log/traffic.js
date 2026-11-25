@@ -50,6 +50,10 @@ function sanitize(obj, depth = 0) {
       out[k] = v;
     } else if (/authorization|token|password|secret|api[_-]?key/i.test(k)) {
       out[k] = maskSecret(v);
+    } else if (typeof v === 'string' && /^(sk-[A-Za-z0-9_-]{16,}|eyJ[A-Za-z0-9_-]{10,}|dt-[A-Za-z0-9_-]{16,})/.test(v)) {
+      // L-02 值特征兜底：键名不含敏感词但值本身是凭据（sk-/JWT/dt-）时也要打码，
+      // 防止未来新增字段 fail-open。
+      out[k] = maskSecret(v);
     } else if (typeof v === 'object') {
       out[k] = sanitize(v, depth + 1);
     } else {
@@ -193,4 +197,51 @@ function rtkLogFields(stats) {
   };
 }
 
-module.exports = { logRequest, sanitize, usageToLogFields, cacheReadOf, rtkLogFields };
+/**
+ * 记录一次**本机拒收**（未进入转发逻辑的 4xx）。
+ *
+ * ## 为什么需要它
+ *
+ * 此前只有 `express.json` 的 413 与本机 400/415 会落 traffic，而鉴权与限流的
+ * 401/403/429 一条都不写——实测验证：带一把不存在的访问密钥请求
+ * `/v1/chat/completions`，返回 401，而 `traffic.jsonl` 行数增量为 **0**。
+ *
+ * 于是出现一类「客户端报错、网关日志里查不到这次请求」的排障困境：调用方拿着
+ * 4054/500 之类的客户端错误来问，我们翻遍 traffic 只能说「没收到过」。这和
+ * 2026-11-22 那次请求体超限被渲染成上游故障是同一类问题（见 index.js 的
+ * body-parser 错误处理器），区别只在拒收点更早。
+ *
+ * ## 字段口径
+ *
+ * - `platform:'gateway'` + `rejectedBy:'gateway'`：与真实上游失败在统计里可区分
+ *   （与 413 那条保持一致的口径）；
+ * - `rejectCode`：`MISSING_ACCESS_KEY` / `INVALID_ACCESS_KEY` / `SCOPE_MISSING`
+ *   / `KEY_RPM_LIMIT`，便于按原因聚合；
+ * - 绝不写密钥材料：`sanitize` 会把键名含 token/api_key/secret 的**字符串值**
+ *   打码，而这里连长度都不记。
+ *
+ * @param {import('express').Request} req
+ * @param {{status:number, code:string, message:string}} info
+ */
+function logRejected(req, info) {
+  try {
+    logRequest({
+      endpoint: (req && (req.path || req.originalUrl)) || '',
+      method: (req && req.method) || '',
+      model: null,
+      account: null,
+      status: Number(info && info.status) || 400,
+      toolCalls: 0,
+      toolsIn: 0,
+      durationMs: 0,
+      error: (info && info.message) || '',
+      platform: 'gateway',
+      rejectedBy: 'gateway',
+      ...(info && info.code ? { rejectCode: info.code } : {}),
+    });
+  } catch {
+    // 日志失败不得影响响应：拒收路径本身已经在返回错误了。
+  }
+}
+
+module.exports = { logRequest, logRejected, sanitize, usageToLogFields, cacheReadOf, rtkLogFields };

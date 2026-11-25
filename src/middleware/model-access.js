@@ -68,8 +68,8 @@ function isQoderOnlyModel(model) {
  * 是否为 Raccoon 对话面的模型。
  *
  * 判据是**模型 id 的命名空间前缀 `sn-`**（该 provider 的全部远端模型都是
- * `sn-` 开头：`sn-sensenova-6-8-flash` / `sn-glm-5-3` / `sn-kimi-k3` /
- * `sn-deepseek-v4-1-flash` …）。这里刻意**不复用** Qoder 那种硬编码清单：
+ * `sn-` 开头：`sn-sensenova-6-8-flash` / `sn-glm-5-3` / `sn-kimi-k3-1-pro` /
+ * `sn-deepseek-v4-1-flash-1017` …）。这里刻意**不复用** Qoder 那种硬编码清单：
  * Raccoon 的模型目录是远端动态下发的（含限免与倍率），写死清单必然随上游
  * 上新而漏判，而漏判的后果是「平台密钥越界消耗别家积分」。
  */

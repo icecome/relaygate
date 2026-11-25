@@ -832,8 +832,37 @@ export const getModelsStatus = (key: string, signal?: AbortSignal) =>
     data?: ModelInfo[];
   }>('/v1/models/status', { signal }, key);
 
+/**
+ * 强制刷新上游模型目录。
+ *
+ * 2026-11-25 起后端**同时**刷 Raccoon 并对账其候选池（此前只刷 Trae，
+ * 于是「列表是新名字、派发还是旧名字」可以同时为真）。返回里的 `raccoon`
+ * 字段是这次对账的结果，前端据此提示「改了几个 / 禁用了几个」。
+ */
 export const refreshModels = (key: string) =>
-  api<{ ok: boolean; source?: string; syncedAt?: string; count?: number; error?: string | null }>(
+  api<{
+    ok: boolean;
+    source?: string;
+    syncedAt?: string;
+    count?: number;
+    error?: string | null;
+    raccoon?: {
+      ok: boolean;
+      source?: string;
+      syncedAt?: string | null;
+      count?: number;
+      error?: string | null;
+      applied?: boolean;
+      totals?: { renamed: number; disabled: number; available: number };
+      changes?: Array<{
+        virtualId: string;
+        renamed: Array<{ id: string; from: string; to: string }>;
+        missing: Array<{ id: string; model: string; enabled: boolean }>;
+        available: Array<{ model: string }>;
+        applied: boolean;
+      }>;
+    } | null;
+  }>(
     '/v1/models/refresh',
     { method: 'POST' },
     key,
