@@ -38,6 +38,25 @@ function saveLastRun(summary) {
   writeJsonAtomic(RUN_LOG(), summary);
 }
 
+/**
+ * 把一轮账号结果汇总成 last-run 契约（供前端 last_run 展示）。
+ * 自动路径（autoRunGrowth）与手动补跑（growth-progress.startAuto）共用，
+ * 保证两种触发方式写出的摘要字段口径一致，不各自复制一份而漂移。
+ */
+function summarizeRun(results, total) {
+  const failed = results.filter((r) => !r.ok);
+  return {
+    total,
+    ranAt: new Date().toISOString(),
+    okCount: results.length - failed.length,
+    failCount: failed.length,
+    actions: results.flatMap((r) =>
+      r.actions.filter((x) => x.ok && !x.skip).map((x) => `${r.label}: ${x.msg}`),
+    ),
+    results,
+  };
+}
+
 /** 读取上次运行结果。 */
 function readLastRun() {
   try {
@@ -299,17 +318,9 @@ async function autoRunGrowth(opts = {}) {
     }
     await sleep(GAP_MS);
   }
-  const failed = results.filter((r) => !r.ok);
-  const summary = {
-    total: accounts.length,
-    ranAt: new Date().toISOString(),
-    okCount: results.length - failed.length,
-    failCount: failed.length,
-    actions: results.flatMap((r) => r.actions.filter((x) => x.ok && !x.skip).map((x) => `${r.label}: ${x.msg}`)),
-    results,
-  };
+  const summary = summarizeRun(results, accounts.length);
   saveLastRun(summary);
   return summary;
 }
 
-module.exports = { autoRunGrowth, runAccount, readLastRun };
+module.exports = { autoRunGrowth, runAccount, readLastRun, saveLastRun, summarizeRun };

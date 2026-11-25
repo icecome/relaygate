@@ -203,11 +203,3 @@ export const growthProgress = (taskId: string, key: string, signal?: AbortSignal
     { method: 'POST', signal, body: {} },
     key,
   );
-
-/** 最近自动化任务列表（新→旧）。 */
-export const growthProgressList = (key: string, signal?: AbortSignal) =>
-  api<{ object: string; data: GrowthAutoProgress[] }>(
-    '/v1/workbuddy/growth/progress-list',
-    { method: 'POST', signal, body: {} },
-    key,
-  );

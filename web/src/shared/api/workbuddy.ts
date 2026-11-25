@@ -42,7 +42,6 @@ export interface WbImportResult {
   label?: string;
   enabled?: boolean;
   verified?: boolean;
-  verifiedBalance?: number | null;
   /** 后端标注本次是新建还是更新 */
   action?: 'created' | 'updated';
 }

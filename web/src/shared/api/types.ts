@@ -64,12 +64,6 @@ export interface Account {
   edition?: string | null;
   source?: string | null;
   /**
-   * 账号的区域标记（后端列 user_region，camelCase 为 userRegion）。
-   * 历史上这里曾误声明为 `region` —— 后端从不返回该字段（region 只存在于
-   * WorkBuddy 登录态探测 /v1/workbuddy/local 的响应里），前端也从未消费。
-   */
-  userRegion?: string | null;
-  /**
    * 登录 token 的到期时间（ISO）。由 ExchangeToken / WorkBuddy refresh 写回，
    * 保活定时任务在到期前换新。ZCode 的 JWT 无 exp，恒为 null（长期有效）。
    */

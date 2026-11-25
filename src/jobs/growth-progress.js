@@ -8,7 +8,7 @@
  * 所有执行细节复用 jobs/growth-auto.js。
  */
 const store = require('../credentials/store');
-const { autoRunGrowth, runAccount } = require('./growth-auto');
+const { runAccount, saveLastRun, summarizeRun } = require('./growth-auto');
 const { appendTaskLog } = require('./task-log');
 const { sleep } = require('../lib/util');
 const { writeJsonAtomic } = require('../lib/atomic-write');
@@ -104,6 +104,12 @@ function startAuto(opts = {}) {
       task.stage = 'done';
       task.finishedAt = Date.now();
       const acted = task.results.reduce((n, r) => n + r.actions.filter((x) => x.ok && !x.skip).length, 0);
+      // 手动补跑同样刷新 growth-last-run.json：面板摘要行的「上次运行 / 上轮失败」
+      // 读的就是这份文件。此前只有自动路径写它，导致手动补跑后摘要不更新。
+      // 与自动路径共用 summarizeRun + saveLastRun，保证字段口径一致。
+      try {
+        saveLastRun(summarizeRun(task.results, targets.length));
+      } catch { /* last-run 快照失败不影响任务本身 */ }
       try {
         appendTaskLog({
           task: 'growth-auto',

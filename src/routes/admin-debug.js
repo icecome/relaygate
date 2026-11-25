@@ -247,7 +247,6 @@ router.get('/config', admin, (req, res) => {
     modelProbeIntervalHours: config.modelProbeIntervalHours,
     upstreamFunction: config.upstreamFunction || null,
     upstreamChatPath: config.upstreamChatPath,
-    toolProtocol: config.toolProtocol,
     maxRetries: config.maxRetries,
     retryBaseDelay: config.retryBaseDelay,
     requestTimeoutMs: config.requestTimeoutMs,

@@ -437,6 +437,38 @@ t('fetchHeatmap 解析热力墙 cells 与 today', async () => {
   global.fetch = orig;
 });
 
+t('手动补跑与自动共用 summarizeRun/saveLastRun：摘要口径一致且落盘', async () => {
+  const fs = require('fs');
+  const { stateFile } = require('../lib/paths');
+  const ga = require('../jobs/growth-auto');
+  const gp = require('../jobs/growth-progress');
+  // startAuto 必须从 growth-auto 拿到同一组函数（防止两条路径各自复制摘要口径）
+  assert.strictEqual(typeof ga.summarizeRun, 'function', 'summarizeRun 必须导出供手动补跑复用');
+  assert.strictEqual(typeof ga.saveLastRun, 'function', 'saveLastRun 必须导出供手动补跑复用');
+  assert.ok(
+    gp.startAuto.toString().includes('summarizeRun') && gp.startAuto.toString().includes('saveLastRun'),
+    '手动补跑 startAuto 必须写 last-run（回退到旧行为会回归本用例）',
+  );
+  // 摘要字段口径：与 autoRunGrowth 的 summary 结构一致
+  const results = [
+    { accountId: 'a1', label: '账号1', ok: true, actions: [{ seg: 'travel', ok: true, msg: '领取 +10' }, { seg: 'tasks', ok: true, skip: true, msg: '跳过' }] },
+    { accountId: 'a2', label: '账号2', ok: false, actions: [{ seg: 'travel', ok: false, msg: '失败' }] },
+  ];
+  const summary = ga.summarizeRun(results, 2);
+  assert.strictEqual(summary.total, 2);
+  assert.strictEqual(summary.okCount, 1);
+  assert.strictEqual(summary.failCount, 1);
+  assert.deepStrictEqual(summary.actions, ['账号1: 领取 +10'], 'actions 只收 ok 且非 skip，与自动路径同口径');
+  assert.ok(summary.ranAt && !Number.isNaN(Date.parse(summary.ranAt)));
+  // 落盘后文件可读且字段一致
+  ga.saveLastRun(summary);
+  const file = stateFile('growth-last-run.json');
+  assert.ok(fs.existsSync(file), 'saveLastRun 必须写 growth-last-run.json');
+  const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.strictEqual(onDisk.total, 2);
+  assert.strictEqual(onDisk.failCount, 1);
+});
+
 async function main() {
   await runAll();
   console.log(`\n${pass} passed`);

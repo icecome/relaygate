@@ -1,7 +1,7 @@
 /**
  * 成长中心（WorkBuddy 专属，只读为主）。
  *
- * 后台定时任务（jobs/growth-auto.js，默认每 4 小时一轮）已自动执行旅行、领奖、
+ * 后台定时任务（jobs/growth-auto.js，每天墙钟一次，默认 08:00）已自动执行旅行、领奖、
  * 兑换与抽奖，并通过通知渠道播报结果。面板的职责是**看状态**，不是操作。
  *
  * 这次改造针对三个实测问题：
@@ -24,6 +24,7 @@
  *      立即执行  = 真跑一轮自动化（会写上游）
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';import { useAuth } from '../../shared/api/auth';
+import { getRuntime } from '../../shared/api/admin';
 import { ApiError } from '../../shared/api/http';
 import {
   growthAuto,
@@ -71,6 +72,13 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
    * 所以收起态也安全地读它——这是筛选前的唯一数据源。
    */
   const lastRun = useAsyncData((signal) => growthLastRun(key, signal), [key], { enabled: !!key });
+
+  /**
+   * 下次自动运行时刻来自本机 /v1/admin/runtime 快照（纯本地读取，零上游请求），
+   * 因此收起态也能展示，让用户明确「后台在什么时候会自动跑」。
+   */
+  const runtime = useAsyncData((signal) => getRuntime(key, signal), [key], { enabled: !!key });
+  const nextGrowthAt = runtime.data?.scheduler?.nextGrowthAt;
 
   /**
    * 三个展开态请求只在 open 时才启用。
@@ -169,7 +177,7 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
   return (
     <Panel
       title="成长中心"
-      description={`${platformIdLabel('workbuddy')} 专属：旅行 / 领奖 / 连登 / 抽奖由后台定时任务自动执行`}
+      description={`${platformIdLabel('workbuddy')} 专属：旅行 / 领奖 / 连登 / 抽奖由后台定时任务自动执行（失败当天不自动重试，可手动补跑）`}
       flush
     >
       {/* 摘要行：永远可见，高度固定 44px。收起时也不打上游。 */}
@@ -191,7 +199,10 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
               最长连登 <strong>{formatNumber(maxStreak)}</strong> 天
             </span>
           )}
-          <span style={{ color: 'var(--rg-text-tertiary)' }}>{lastRunText}</span>
+          <span style={{ color: 'var(--rg-text-tertiary)' }}>
+            {lastRunText}
+            {nextGrowthAt ? ` · 下次自动 ${formatTime(nextGrowthAt)}` : ''}
+          </span>
           {lastRun.data?.failCount ? (
             <Chip tone="warn" dot="dot-cool">
               上轮 {lastRun.data.failCount} 个失败
@@ -199,8 +210,8 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
           ) : null}
         </div>
         <div className="growth-bar-acts">
-          <Button size="sm" onClick={runAuto} disabled={autoBusy || workbuddyCount === 0}>
-            {autoBusy && autoStage ? autoStage : '立即执行一轮'}
+          <Button size="sm" onClick={runAuto} disabled={autoBusy || workbuddyCount === 0} title="自动任务失败当天不会自动重试；点此立即补跑一轮（会写上游）">
+            {autoBusy && autoStage ? autoStage : '立即补跑一次'}
           </Button>
           {open && (
             <Button
@@ -237,7 +248,7 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
           ) : dailyRows.length === 0 ? (
             <EmptyState
               label="还没有成长数据"
-              hint="点「立即执行一轮」让后台任务跑一次，或稍候等定时任务的结果。"
+              hint="点「立即补跑一次」让后台任务跑一次，或稍候等定时任务的结果。"
             />
           ) : (
             <GrowthTable
@@ -268,7 +279,7 @@ export function GrowthPanel({ workbuddyCount }: { workbuddyCount: number }) {
           )}
 
           <Note>
-            成长任务默认由后台定时执行；「立即执行一轮」会真实请求上游（派猫 / 领奖 / 兑换 / 抽奖），
+            成长任务默认由后台定时执行（失败当天不自动重试，可点「立即补跑一次」）；「立即补跑一次」会真实请求上游（派猫 / 领奖 / 兑换 / 抽奖），
             「强制刷新」只重新查询上游状态、不改动任何东西。奖励到账会经通知渠道播报。
           </Note>
         </div>

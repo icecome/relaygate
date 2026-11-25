@@ -344,7 +344,6 @@ export interface RuntimeConfig {
   modelProbeIntervalHours: number;
   upstreamFunction: string | null;
   upstreamChatPath: string;
-  toolProtocol: string;
   maxRetries: number;
   retryBaseDelay: number;
   requestTimeoutMs: number;
