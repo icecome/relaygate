@@ -154,7 +154,10 @@ function recordUsage(accountId, usage, now = Date.now()) {
   const cached = Number(usage && usage.cacheReadTokens) || 0;
   const uncached = Math.max(0, prompt - cached);
   if (uncached > 0) {
-    getDb().prepare('INSERT INTO input_budget_spend (account_id, ts, uncached) VALUES (?, ?, ?)').run(id, now, uncached);
+    const d = getDb();
+    // 插入前清理超出预算窗口的旧行，避免 scheduler 未运行时表无限增长
+    d.prepare('DELETE FROM input_budget_spend WHERE account_id = ? AND ts <= ?').run(id, now - BUDGET_WINDOW_MS);
+    d.prepare('INSERT INTO input_budget_spend (account_id, ts, uncached) VALUES (?, ?, ?)').run(id, now, uncached);
   }
   return usedLastHour(id, now);
 }
