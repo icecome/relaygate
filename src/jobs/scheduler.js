@@ -883,6 +883,10 @@ function scheduleTokenSweep(minutes) {
     try { require('../credentials/api-keys').sweepExpired(); } catch (e) {
       console.error('[scheduler] sweep expired keys failed:', e.message);
     }
+    // 清理 Raccoon 每小时预算的过期记录（保留 2h 窗口外数据）
+    try { require('../raccoon/input-budget').pruneStale(); } catch (e) {
+      console.error('[scheduler] input budget prune failed:', e.message);
+    }
     refreshExpiringTokens().catch(() => {});
   };
   run();

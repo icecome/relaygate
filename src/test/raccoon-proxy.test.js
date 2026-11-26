@@ -799,6 +799,85 @@ t('SSE model 改写：只改 data 帧的 model 字段，其余字节原样', () 
   assert.strictEqual(rewriteSseModelLine('data: {broken', 'vm/x'), 'data: {broken');
 });
 
+/* ---------- 10. 预算记账：run() 只认回调返回值里的 usage ---------- */
+
+t('预算记账：模型路由器的虚拟模型流式路径必须把 usage 交回 run()', async () => {
+  /*
+   * 复现的是一条**静默**缺陷：`dispatchRaccoonStream` 的回调曾经返回 `{ok:true}`，
+   * 而 `run()` 的记账点 `normalizeUsageForBudget(result)` 读的正是**回调返回值**。
+   * 结果：虚拟模型（vm/raccoon-*）每一次流式请求都给账号记 0 个未缓存 token，
+   * `RACCOON_HOURLY_UNCACHED_BUDGET` 的账号轮换语义在这条路径上完全失效 ——
+   * 不报错、日志里的 cacheReadTokens 也正常（那来自另一条旁路），最难发现。
+   *
+   * 断言口径：一条 prompt=41686 / cached=38000 的流式回合，
+   * 必须给 pickAccount 选中的那个账号记 3686 个未缓存 token。
+   */
+  const raccoonChat = require('../raccoon/chat');
+  const raccoonDispatch = require('../raccoon/dispatch');
+  const inputBudget = require('../raccoon/input-budget');
+  const router = require('../model-router/dispatch');
+  const PROMPT = 41686;
+  const CACHED = 38000;
+  const sse = [
+    'data: {"id":"x","choices":[{"delta":{"content":"hi"},"finish_reason":null}]}',
+    `data: {"id":"x","choices":[{"delta":{},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":${PROMPT},"completion_tokens":302,"total_tokens":41988,"prompt_tokens_details":{"cached_tokens":${CACHED}}}}`,
+    'data: [DONE]',
+    '',
+  ].join('\n');
+  const res = {
+    writableEnded: false, headersSent: true,
+    write() {}, end() { this.writableEnded = true; }, setHeader() {}, flushHeaders() {},
+  };
+  const origChatStream = raccoonChat.chatStream;
+  const origRun = raccoonDispatch.run;
+  const store = require('../credentials/store');
+  // 测试隔离目录里本来没有账号，pickAccount 会直接抛「没有可用的 Raccoon 账号」
+  const acct = store.add({
+    label: 'ut-vm-budget', edition: 'raccoon', token: 't', refreshToken: 'r',
+    userId: 'ut-vm-budget', enabled: true,
+  });
+  let spentOn = null;
+  inputBudget.resetBudget();
+  raccoonChat.chatStream = async () => ({
+    ok: true,
+    status: 200,
+    headers: { get: () => null },
+    body: new ReadableStream({
+      start(c) { c.enqueue(new TextEncoder().encode(sse)); c.close(); },
+    }),
+  });
+  // 只旁听 run 的记账目标，记账逻辑本身仍走真实现
+  raccoonDispatch.run = async (runOnce, opts) => {
+    const r = await origRun(runOnce, opts);
+    spentOn = r.accountId;
+    return r;
+  };
+  try {
+    const out = await router.dispatchRaccoonStream(
+      'raccoon', 'sn-deepseek-v4-1-flash-1017',
+      { messages: [{ role: 'user', content: 'hi' }] },
+      res, {},
+    );
+    assert.ok(spentOn, '必须有账号被记账');
+    assert.strictEqual(
+      inputBudget.usedLastHour(spentOn), PROMPT - CACHED,
+      '未缓存 token 必须来自本条流式回合的 usage；为 0 说明 usage 没随回调返回值交回 run()',
+    );
+    // 对外返回值仍要带 usage（traffic 日志与成本估算依赖它）
+    assert.strictEqual(out.usage && out.usage.prompt_tokens, PROMPT, '对外返回值必须带上游 usage');
+    // 归一化必须认得这个形状（报告的 snake_case 场景）
+    assert.deepStrictEqual(
+      raccoonDispatch.normalizeUsageForBudget(out),
+      { promptTokens: PROMPT, cacheReadTokens: CACHED },
+    );
+  } finally {
+    inputBudget.resetBudget();
+    raccoonChat.chatStream = origChatStream;
+    raccoonDispatch.run = origRun;
+    try { store.remove(acct.id); } catch { /* 清理失败不影响断言 */ }
+  }
+});
+
 /* ---------- 运行 ---------- */
 
 (async () => {

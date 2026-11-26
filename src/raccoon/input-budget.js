@@ -128,20 +128,15 @@ function inputTooLargeError(estimated, limit) {
   return e;
 }
 
-/* ---------- 每账号每小时未缓存预算 ---------- */
+/* ---------- 每账号每小时未缓存预算（SQLite 持久化） ---------- */
 
-/** accountId -> number[]（每次成功请求的 [时间戳, 未缓存 token]） */
-const spend = new Map();
+const { db: getDb } = require('../credentials/db');
 
-/** 清掉窗口外的记录。 */
-function pruneSpend(accountId, now) {
-  const arr = spend.get(accountId);
-  if (!arr || !arr.length) return arr;
-  const cutoff = now - BUDGET_WINDOW_MS;
-  let i = 0;
-  while (i < arr.length && arr[i][0] < cutoff) i += 1;
-  if (i > 0) arr.splice(0, i);
-  return arr;
+/** 清理超过 staleMs 的过期记录（周期任务调用，默认 2h 保留期）。 */
+function pruneStale(staleMs) {
+  const ms = Number(staleMs) > 0 ? Number(staleMs) : 2 * 60 * 60 * 1000;
+  const info = getDb().prepare('DELETE FROM input_budget_spend WHERE ts < ?').run(Date.now() - ms);
+  return info.changes;
 }
 
 /**
@@ -158,18 +153,20 @@ function recordUsage(accountId, usage, now = Date.now()) {
   const prompt = Number(usage && usage.promptTokens) || 0;
   const cached = Number(usage && usage.cacheReadTokens) || 0;
   const uncached = Math.max(0, prompt - cached);
-  if (uncached <= 0) return usedLastHour(id, now);
-  const arr = pruneSpend(id, now) || [];
-  arr.push([now, uncached]);
-  spend.set(id, arr);
-  return arr.reduce((s, x) => s + x[1], 0);
+  if (uncached > 0) {
+    getDb().prepare('INSERT INTO input_budget_spend (account_id, ts, uncached) VALUES (?, ?, ?)').run(id, now, uncached);
+  }
+  return usedLastHour(id, now);
 }
 
 /** 该账号最近一小时已用掉的未缓存 token。 */
 function usedLastHour(accountId, now = Date.now()) {
-  const arr = pruneSpend(String(accountId || ''), now);
-  if (!arr) return 0;
-  return arr.reduce((s, x) => s + x[1], 0);
+  const id = String(accountId || '');
+  if (!id) return 0;
+  const row = getDb().prepare(
+    'SELECT COALESCE(SUM(uncached), 0) AS total FROM input_budget_spend WHERE account_id = ? AND ts > ?',
+  ).get(id, now - BUDGET_WINDOW_MS);
+  return Number(row ? row.total : 0);
 }
 
 /**
@@ -184,10 +181,13 @@ function checkHourlyBudget(accountId, now = Date.now()) {
   return { exhausted: used >= budget, used, budget };
 }
 
-/** 清空预算记录（测试与「手动重置」用）。 */
+/** 清空预算记录（测试与「手动重置」用）。传 accountId 清指定账号，不传清全表。 */
 function resetBudget(accountId) {
-  if (accountId) spend.delete(String(accountId));
-  else spend.clear();
+  if (accountId) {
+    getDb().prepare('DELETE FROM input_budget_spend WHERE account_id = ?').run(String(accountId));
+  } else {
+    getDb().prepare('DELETE FROM input_budget_spend').run();
+  }
 }
 
 module.exports = {
@@ -202,4 +202,5 @@ module.exports = {
   usedLastHour,
   checkHourlyBudget,
   resetBudget,
+  pruneStale,
 };

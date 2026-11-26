@@ -112,6 +112,16 @@ function ensureSchema(db) {
   // 积分快照历史（差分计算消耗；上游不提供单次调用积分粒度）
   db.exec('CREATE TABLE IF NOT EXISTS credit_history (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id TEXT NOT NULL, ts TEXT NOT NULL, remaining REAL, used_total REAL, source TEXT)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_credit_history_acct_ts ON credit_history(account_id, ts)');
+  // Raccoon 每小时未缓存 token 预算记录（持久化，重启不丢失；周期清理旧行）
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS input_budget_spend (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      uncached INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.exec('CREATE INDEX IF NOT EXISTS idx_input_budget_acct_ts ON input_budget_spend(account_id, ts)');
   // ZCode 运营面（仅 zcode 账号使用，其他平台为 NULL，零影响）：
   //   api_key_enc   — 回退通道凭据（api.z.ai / open.bigmodel 的 key）
   //   fingerprint   — 成套桌面设备档案 JSON（zcode/fingerprint.js）

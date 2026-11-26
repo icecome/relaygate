@@ -440,6 +440,17 @@ async function dispatchRaccoonStream(provider, remoteModel, body, res, opts = {}
   });
 
   const sink = { usage: null, finishReason: null };
+  /**
+   * 本函数返回给 `run()` 的 usage 快照。
+   *
+   * 为什么不能直接 `return { usage: sink.usage }`：`run()` 的记账点
+   * （`raccoon/dispatch.js#normalizeUsageForBudget`）读的是**回调返回值**。
+   * 回调返回 `{ok:true}` 时 usage 无处可取，归一化落到 `{promptTokens:0,cacheReadTokens:0}`，
+   * 未缓存记账为 0 —— 每小时预算被整条虚拟模型路径架空。
+   * 所以 usage 必须随回调返回值一起上交。用快照（而非出循环后再读 sink）是为了
+   * 与「本轮真正花掉的 token」严格对应，避免跨帧/跨轮混淆。
+   */
+  let runUsage = null;
 
   const { accountId } = await raccoonDispatch.run(
     async (acct, runOpts) => {
@@ -478,7 +489,8 @@ async function dispatchRaccoonStream(provider, remoteModel, body, res, opts = {}
         try { reader.releaseLock(); } catch { /* 已释放 */ }
         if (!res.writableEnded) res.end();
       }
-      return { ok: true };
+      runUsage = sink.usage;
+      return { ok: true, streamed: true, usage: sink.usage, finishReason: sink.finishReason };
     },
     {
       model: remoteModel,
@@ -488,7 +500,8 @@ async function dispatchRaccoonStream(provider, remoteModel, body, res, opts = {}
     },
   );
   if (typeof opts.onAccount === 'function') opts.onAccount(accountId);
-  return { usage: sink.usage, finishReason: sink.finishReason };
+  // 优先用回调上交的快照：它才是 `run()` 记账实际使用的那个对象。
+  return { usage: runUsage !== null ? runUsage : sink.usage, finishReason: sink.finishReason };
 }
 
 /**

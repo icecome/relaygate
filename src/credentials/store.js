@@ -382,13 +382,39 @@ function rawRow(id) {
   return db().prepare('SELECT * FROM accounts WHERE id = ?').get(id) || null;
 }
 
+/**
+ * 删除账号，并同步清理该账号的积分快照与预算记录。
+ *
+ * 三条 DELETE 必须是一个原子操作：账号行删掉、积分/预算行留下，会形成
+ * 指向不存在账号的孤儿行 —— `credit_history` 让统计按账号聚合时出现无主额度，
+ * `input_budget_spend` 让同一 id 的新账号继承旧账号的已用预算。
+ * 只删第一行就崩溃的窗口在同步 API 下不会出现，但**第三步失败**（锁超时、
+ * 表结构漂移）在单连接 + 多进程场景下是真实存在的，因此整段包事务。
+ *
+ * @returns {boolean} 是否真的删掉了一个账号（id 不存在时返回 false，不抛错）
+ */
 function remove(id) {
-  const info = db().prepare('DELETE FROM accounts WHERE id = ?').run(id);
-  // 同步清理积分快照，避免删号后留下孤儿 credit_history 记录
-  if (info.changes > 0) {
-    db().prepare('DELETE FROM credit_history WHERE account_id = ?').run(id);
+  const conn = db();
+  // node:sqlite 的 DatabaseSync 没有 transaction() 封装，项目内事务统一手写
+  // （先例见 credentials/db.js 的 api_keys 迁移与 jobs/backup.js#restore）。
+  conn.exec('BEGIN');
+  let deleted = false;
+  try {
+    const info = conn.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+    deleted = info.changes > 0;
+    // 账号不存在时不做后续清理：既省两次写，也不让「删一个不存在的号」
+    // 误删同名残留行（id 是主键，但保持与旧行为一致）。
+    if (deleted) {
+      conn.prepare('DELETE FROM credit_history WHERE account_id = ?').run(id);
+      conn.prepare('DELETE FROM input_budget_spend WHERE account_id = ?').run(id);
+    }
+    conn.exec('COMMIT');
+    return deleted;
+  } catch (e) {
+    // 回滚失败不能盖掉原始错误：真正要看的是「哪条 DELETE 挂了」。
+    try { conn.exec('ROLLBACK'); } catch { /* 回滚失败保留原始错误 */ }
+    throw e;
   }
-  return info.changes > 0;
 }
 
 module.exports = { list, get, add, update, remove };

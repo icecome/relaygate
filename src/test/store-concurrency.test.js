@@ -214,6 +214,49 @@ t('过期冷却条目由 sweepModelCooldowns 显式清理并落库', () => {
   assert.ok(!left['trae/expired-probe'], '过期条目应已被清理落库');
 });
 
+/* ---------- store.remove：三条 DELETE 的原子性 ---------- */
+
+t('store.remove：删除失败时整段回滚，不留半删状态', () => {
+  const { db } = require('../credentials/db');
+  const store = require('../credentials/store');
+  const acct = store.add({
+    label: 'ut-rm-atomic', edition: 'raccoon', token: 't', refreshToken: 'r',
+    userId: 'ut-rm-atomic', enabled: true,
+  });
+  const conn = db();
+  conn.prepare('INSERT INTO credit_history (account_id, ts, remaining) VALUES (?, ?, ?)')
+    .run(acct.id, new Date().toISOString(), 100);
+  conn.prepare('INSERT INTO input_budget_spend (account_id, ts, uncached) VALUES (?, ?, ?)')
+    .run(acct.id, Date.now(), 1234);
+
+  const n = (sql) => Number(conn.prepare(sql).get(acct.id).n);
+  const ACCT = 'SELECT COUNT(*) AS n FROM accounts WHERE id = ?';
+  const CREDIT = 'SELECT COUNT(*) AS n FROM credit_history WHERE account_id = ?';
+
+  // 让第三条 DELETE 必然失败：把预算表临时改名。若不包事务，
+  // accounts 与 credit_history 的删除已经落盘 —— 这正是要防的半删状态。
+  conn.exec('ALTER TABLE input_budget_spend RENAME TO input_budget_spend_ut');
+  let threw = false;
+  try {
+    store.remove(acct.id);
+  } catch {
+    threw = true;
+  } finally {
+    conn.exec('ALTER TABLE input_budget_spend_ut RENAME TO input_budget_spend');
+  }
+
+  assert.strictEqual(threw, true, '第三步失败必须上抛，不能吞成 false');
+  assert.strictEqual(n(ACCT), 1, '账号行应被回滚保留（不能被前两条 DELETE 半删）');
+  assert.strictEqual(n(CREDIT), 1, '积分快照应被回滚保留');
+
+  // 正常路径：三张表对应行一起消失，返回 true
+  assert.strictEqual(store.remove(acct.id), true, '正常删除应返回 true');
+  assert.strictEqual(n(ACCT), 0);
+  assert.strictEqual(n(CREDIT), 0);
+  assert.strictEqual(n('SELECT COUNT(*) AS n FROM input_budget_spend WHERE account_id = ?'), 0);
+  assert.strictEqual(store.remove(acct.id), false, '重复删除返回 false 且不抛错');
+});
+
 // 汇总
 
 async function main() {
