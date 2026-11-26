@@ -274,6 +274,99 @@ node scripts/verify/verify-raccoon-proxy.js --key=<通用密钥> --safe
 - **风控阈值未知**：已知 `200108` 是账号级、3 小时、跨模型；未知是按
   「无效调用占比」还是「单位时间 token 量」判定。**不要为了测这个去撞。**
 
+## 输入预算守门：单次超大 prompt 与累计实算 token（2026-11-26 修复）
+
+### 粘性修好之后，瓶颈换了位置
+
+账号粘性修复后存活时间 4 分钟 → **4 小时 47 分钟**，缓存命中 82.2% → 88.6%。
+但下午 16:02 仍撞了一次风控。重启后的 100 次请求：
+
+| 指标 | 网关 | 官方客户端 | 倍数 |
+|---|---|---|---|
+| prompt 中位数 | **513,950** | 133,591 | 3.8× |
+| prompt 最大 | **563,082** | 228,418 | 2.5× |
+| >400K 的请求 | **78 / 100** | 0 | — |
+| 累计未缓存 token | **5,227,605 / 56.5 分** | 650,175 / 40 分 | 8× |
+
+**请求数降了、缓存命中升了，但每个请求都变成 20-56 万 token 的巨型请求。**
+
+### 为什么没被挡住
+
+`model-router#checkContextLimit` 只作用于**虚拟模型**路径。而直连 `sn-*` 在
+`routes/openai.js` 是提前 return 的：
+
+```js
+if (isRaccoonModel(model)) {
+  return handleRaccoonChat(req, res, { ... });   // 完全不经过 checkContextLimit
+}
+```
+
+于是 56 万 token 的请求原样发给上游。
+
+### 修复：两道门
+
+**① 单次输入上限**（`input-budget#checkInputSize`）
+
+默认 **345,600** = 官方实测最大（228,418）× 1.5。
+
+超限返回 400：
+
+```json
+{
+  "error": {
+    "message": "raccoon 输入过大：估算 500,000 tokens，超过网关单次上限 345,600。……请减少本轮上下文（分段提交、或让客户端先压缩历史）后重试。如需调整上限，设置环境变量 RACCOON_MAX_INPUT_TOKENS。",
+    "code": "raccoon_input_too_large",
+    "estimatedTokens": 500000,
+    "limitTokens": 345600
+  }
+}
+```
+
+**不截断而拒绝**：静默截掉头部会让模型丢失 system 与早期上下文，产出
+「看着合理实则错乱」的回答，比 400 更难排查。
+
+**② 每小时未缓存 token 预算**（`input-budget#checkHourlyBudget`）
+
+默认 **3,000,000 / 小时**。关键点是**只计 `prompt - cacheRead`**：
+
+```
+缓存命中不消耗算力，也不推动风控。
+把 prompt 总量算进预算，会让正常的长对话被误杀。
+```
+
+`raccoon/dispatch#pickAccount` 会排除已吃满预算的账号；`run()` 成功路径记账。
+
+### 两个 usage 形状必须归一
+
+记账点在 `run()`，而 `runOnce` 的返回值有两种：
+
+| 路径 | 形状 |
+|---|---|
+| 流式 `stream.js` | `{streamed:true, usage:{promptTokens, cacheReadTokens}}` |
+| 非流式 `chat.js` | `{streamed:false, data:{usage:{prompt_tokens, prompt_tokens_details:{cached_tokens}}}}` |
+
+不归一的话非流式会记成 0，预算形同虚设。见 `dispatch#normalizeUsageForBudget`。
+
+### 调参
+
+```bash
+# 单次上限（0 = 关闭）
+RACCOON_MAX_INPUT_TOKENS=345600
+
+# 每小时未缓存预算（0 = 关闭）
+RACCOON_HOURLY_UNCACHED_BUDGET=3000000
+```
+
+### 验证
+
+```bash
+# 1) 上限触发（应返回 400 + code=raccoon_input_too_large）
+curl -s http://127.0.0.1:19900/v1/chat/completions   -H "Authorization: Bearer <通用密钥>" -H "Content-Type: application/json"   -d '{"model":"sn-deepseek-v4-1-flash-1017","messages":[{"role":"user","content":"'"$(head -c 2000000 /dev/zero | tr '\0' 'x')"'"}]}'
+
+# 2) 预算拦截（单测）
+node src/test/raccoon-proxy.test.js | grep 预算
+```
+
 ## 账号粘性：为什么「每请求换号」会把人送进风控（2026-11-26 修复）
 
 ### 现象

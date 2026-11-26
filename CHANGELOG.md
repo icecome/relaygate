@@ -87,6 +87,36 @@
   完全相同）—— 网关把号撞进 3 小时风控，官方客户端会一起挂。
 - 完整取证：[incident-2026-11-25-raccoon-throttle-misdiagnosis.md](docs/05-incidents/incident-2026-11-25-raccoon-throttle-misdiagnosis.md)
 
+### 输入预算守门：单次超大 prompt 与累计实算 token 都会推账号进风控（2026-11-26）
+
+粘性修好之后存活时间从 4 分钟提升到 **4 小时 47 分钟**，但下午 16:02 仍撞了一次风控。
+把重启后的 100 次请求拉出来看，问题换了形态：
+
+| 指标 | 网关（11-26 下午） | 官方客户端 |
+|---|---|---|
+| prompt 中位数 | **513,950** | 133,591 |
+| prompt 最大 | **563,082** | 228,418 |
+| >400K 的请求 | **78 / 100** | 0 |
+| 56.5 分钟累计未缓存 token | **5,227,605** | 650,175 / 40 分钟 |
+
+- **根因一：`sn-*` 直连路径完全没有窗口守门**。
+  `model-router#checkContextLimit` 只作用于虚拟模型路径，而 `sn-*` 在
+  `routes/openai.js` 是提前 return 的 —— 56 万 token 的请求被原样发给上游。
+- **根因二：没有任何累计量控制**。单次守门挡不住「一堆中等请求在半小时里累计超标」。
+- **修复**：
+  1. 新增 `raccoon/input-budget.js`：
+     - `checkInputSize()` 单次输入上限（默认 **345,600**，官方实测最大 × 1.5）；
+     - `checkHourlyBudget()` 每账号每小时**未缓存 token** 预算（默认 **3,000,000**）；
+     - 只计 `prompt - cacheRead` —— 缓存命中不消耗算力，也不推动风控。
+  2. 两条 Raccoon 路径（统一端点 sn-* 分支、显式端点）在发上游前做单次守门，
+     超限返回 **400 `raccoon_input_too_large`**，文案含估算值与上限与调整方式。
+  3. `raccoon/dispatch#pickAccount` 排除已吃满小时预算的账号；
+     `run()` 成功路径按统一口径记账（`normalizeUsageForBudget` 覆盖流式/非流式两种 usage 形状）。
+- 新增回归用例 7 条，并对「预算检查」「路由守门」两处做过变异测试。
+- 修复过程中踩到一个真实缺陷：`routes/raccoon.js` 里工具变量名是 `reqTools`，
+  我误写成 `tools` 导致 ReferenceError 被 Express 吞成 unhandledRejection
+  （表现是请求挂死而非报错），已订正并加注释。
+
 ### 账号粘性缺失：Raccoon 每请求换号，把 prompt cache 打穿（2026-11-26）
 
 上一轮修完「模型名过期 / 6 位码截断 / 冷却时长 / 超时」之后，实测仍然在

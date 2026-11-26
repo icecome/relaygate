@@ -112,6 +112,43 @@ async function handleRaccoonChat(req, res, ctx) {
     tool_choice: tool_choice || undefined,
   });
 
+  /*
+   * 单次输入预算守门（2026-11-26 新增）。
+   *
+   * 虚拟模型路径有 `model-router#checkContextLimit` 守门，但 `sn-*` 直连是
+   * **提前 return** 的，完全不经过它 —— 11-26 下午 78/100 次请求在 40-56 万
+   * token，全都被原样发给了上游。这里补上同一道门。
+   *
+   * 超限返回 400 而不是截断：静默截掉头部会让模型丢失 system 与早期上下文，
+   * 产出「看着合理实则错乱」的回答，比 400 更难排查。
+   */
+  const inputBudget = require('../raccoon/input-budget');
+  const size = inputBudget.checkInputSize(messages, tools);
+  if (size.exceeded) {
+    const e = inputBudget.inputTooLargeError(size.estimated, size.limit);
+    requestError = e.message;
+    replyUpstreamError(res, e, {
+      tag: 'raccoon',
+      writeFrame: (r, msg) => raccoonStream.writeErrorFrame(r, msg),
+    });
+    // traffic 日志在 finally 里统一写（含 upstreamCode/timedOut 等口径）。
+    // 这里补记一条 400，让面板能看出「是被网关拦下的，不是上游故障」。
+    logRequest({
+      endpoint: '/v1/chat/completions', method: 'POST', model,
+      account: null,
+      status: 400,
+      toolCalls: 0, toolsIn: tools ? tools.length : 0,
+      durationMs: Date.now() - startedAt,
+      error: e.message,
+      platform: 'raccoon',
+      pricedModel: model,
+      routedTo: `raccoon/${model}`,
+      estimatedInputTokens: size.estimated,
+      inputLimitTokens: size.limit,
+    });
+    return;
+  }
+
   try {
     const { result } = await raccoonDispatch.run(async (acct, runOpts) => {
       usedAccountId = acct.id;

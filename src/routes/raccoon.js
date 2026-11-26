@@ -569,9 +569,16 @@ router.post('/models/refresh', admin, async (req, res) => {
 // ---- 对话转发 ----
 
 /** 转发面错误响应（与 routes/openai.js 的 error 信封一致）。 */
-function chatError(res, status, message, code) {
+function chatError(res, status, message, code, extra) {
   return res.status(status).json({
-    error: { message, type: status === 429 ? 'rate_limit_error' : 'upstream_error', ...(code ? { code } : {}) },
+    error: {
+      message,
+      type: status === 429 ? 'rate_limit_error' : 'upstream_error',
+      ...(code ? { code } : {}),
+      // 数值型附加信息（如输入过大时的 estimatedTokens / limitTokens）：
+      // 只报「输入过大」是不够的，客户端要知道差多少才能决定压到多少。
+      ...(extra && typeof extra === 'object' ? extra : {}),
+    },
   });
 }
 
@@ -633,6 +640,28 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
   // 逐字透传调用方字段（只补 extra_body.thinking），不做白名单裁剪 ——
   // 裁剪的代价是丢字段（tools 一旦丢了模型就会在正文里臆造工具调用）。
   const upBody = chat.buildUpstreamBody({ ...body, model, stream: stream !== false });
+
+  /*
+   * 单次输入预算守门（2026-11-26 新增，与统一端点同一道门）。
+   *
+   * 上游按「实算 token 累计量」判定异常调用；单个 40-56 万 token 的请求
+   * 一次就能吃掉大半个月度预算。超限返回 400，让客户端分段或压缩历史。
+   */
+  // ⚠️ 本路由里的工具声明变量名是 `reqTools`（`body.tools` 归一化而来），
+  // 不是 `tools`。写成 `tools` 会抛 ReferenceError 并被 Express 吞成
+  // unhandledRejection —— 表现是请求挂死而不是报错，极难定位（本轮实测踩到）。
+  const inputBudget = require('../raccoon/input-budget');
+  const size = inputBudget.checkInputSize(messages, reqTools);
+  if (size.exceeded) {
+    const e = inputBudget.inputTooLargeError(size.estimated, size.limit);
+    logRequest({
+      endpoint: '/v1/raccoon/chat/completions', method: 'POST', model,
+      account: null, status: 400, toolCalls: 0, toolsIn: reqTools ? reqTools.length : 0,
+      durationMs: Date.now() - startedAt, error: e.message, platform: 'raccoon',
+      estimatedInputTokens: size.estimated, inputLimitTokens: size.limit,
+    });
+    return chatError(res, 400, e.message, e.code, { estimatedTokens: size.estimated, limitTokens: size.limit });
+  }
 
   try {
     // 会话粘性：同一会话固定用同一个账号，prompt cache 才能连续命中。

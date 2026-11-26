@@ -32,7 +32,7 @@ process.env.TRAE_API_ENCRYPT_KEY = 'f'.repeat(64);
 process.env.SCHEDULER_ENABLED = 'false';
 process.env.RACCOON_KEEPALIVE_ENABLED = 'false';
 
-const { AccountLimiter, classifyThrottle } = require('../raccoon/limiter');
+const { AccountLimiter, classifyThrottle, DEFAULT_MAX_CONCURRENT } = require('../raccoon/limiter');
 const streamMod = require('../raccoon/stream');
 
 let pass = 0;
@@ -537,7 +537,7 @@ t('默认并发上限为 1（对齐官方客户端的串行调用形态）', () 
   try {
     delete process.env.RACCOON_MAX_CONCURRENT;
     const lim = new AccountLimiter();
-    assert.strictEqual(lim.maxConcurrent, 1, '每账号同一时刻只允许一条在途');
+    assert.strictEqual(lim.maxConcurrent, DEFAULT_MAX_CONCURRENT, '每账号同一时刻只允许一条在途');
   } finally {
     process.env = old;
   }
@@ -599,6 +599,103 @@ t('dispatch 路由：raccoon provider 不走 Trae 分支（P0：否则拿错 tok
   assert.ok(/builtin === 'raccoon'/.test(src), 'dispatch 必须有 raccoon 分支');
   assert.ok(/dispatchRaccoonNonStream/.test(src), '非流式必须有 Raccoon 实现');
   assert.ok(/dispatchRaccoonStream/.test(src), '流式必须有 Raccoon 实现');
+});
+
+/* ---------- 8.5 输入预算：单次上限 + 每小时未缓存预算（2026-11-26） ---------- */
+
+t('input-budget：单次输入超上限时判超限，小请求放行', () => {
+  const ib = require('../raccoon/input-budget');
+  const small = ib.checkInputSize([{ role: 'user', content: 'hi' }], []);
+  assert.strictEqual(small.exceeded, false, '小请求不该被拦');
+  assert.ok(small.estimated > 0);
+
+  const big = ib.checkInputSize([{ role: 'user', content: 'x'.repeat(2_000_000) }], []);
+  assert.strictEqual(big.exceeded, true, '200 万字符必须判超限');
+  assert.ok(big.estimated > big.limit);
+});
+
+t('input-budget：超限错误是 400 + 可执行文案（含估算值与上限）', () => {
+  const ib = require('../raccoon/input-budget');
+  const e = ib.inputTooLargeError(500_000, 345_600);
+  assert.strictEqual(e.status, 400, '超限是客户端问题，不是 5xx');
+  assert.strictEqual(e.code, 'raccoon_input_too_large');
+  assert.strictEqual(e.estimatedTokens, 500_000);
+  assert.strictEqual(e.limitTokens, 345_600);
+  // 文案必须说清「该怎么办」，否则用户只看到 400 不知道减到多少
+  assert.ok(/RACCOON_MAX_INPUT_TOKENS/.test(e.message), '要告诉用户怎么调整');
+  assert.ok(e.message.includes('500,000'), '要给出估算值');
+  assert.ok(e.message.includes('345,600'), '要给出上限');
+});
+
+t('input-budget：环境变量可覆盖，设 0 关闭守门', () => {
+  const ib = require('../raccoon/input-budget');
+  const old = process.env.RACCOON_MAX_INPUT_TOKENS;
+  try {
+    process.env.RACCOON_MAX_INPUT_TOKENS = '0';
+    assert.strictEqual(ib.maxInputTokens(), 0);
+    const r = ib.checkInputSize([{ role: 'user', content: 'x'.repeat(2_000_000) }], []);
+    assert.strictEqual(r.exceeded, false, '0 = 关闭守门');
+
+    process.env.RACCOON_MAX_INPUT_TOKENS = '1000';
+    assert.strictEqual(ib.maxInputTokens(), 1000);
+  } finally {
+    if (old === undefined) delete process.env.RACCOON_MAX_INPUT_TOKENS;
+    else process.env.RACCOON_MAX_INPUT_TOKENS = old;
+  }
+});
+
+t('input-budget：小时预算只计未缓存部分（缓存命中不推风控）', () => {
+  const ib = require('../raccoon/input-budget');
+  ib.resetBudget('acct_budget_ut');
+  // 100 万 prompt，其中 90 万命中缓存 → 只应记 10 万
+  ib.recordUsage('acct_budget_ut', { promptTokens: 1_000_000, cacheReadTokens: 900_000 });
+  assert.strictEqual(ib.usedLastHour('acct_budget_ut'), 100_000, '只计实算部分');
+  ib.resetBudget('acct_budget_ut');
+  assert.strictEqual(ib.usedLastHour('acct_budget_ut'), 0);
+});
+
+t('input-budget：超预算后 exhausted=true，pickAccount 不再分配该号', () => {
+  const ib = require('../raccoon/input-budget');
+  const store = require('../credentials/store');
+  const dispatch = require('../raccoon/dispatch');
+  const a = store.add({
+    label: 'ut-budget', edition: 'raccoon', token: 't', refreshToken: 'r',
+    userId: 'ut-budget-user', enabled: true,
+  });
+  try {
+    ib.recordUsage(a.id, { promptTokens: 4_000_000, cacheReadTokens: 0 });
+    const chk = ib.checkHourlyBudget(a.id);
+    assert.strictEqual(chk.exhausted, true, '超过默认 3,000,000 预算');
+    assert.strictEqual(dispatch.pickAccount(), null, '超预算的号不该被分配');
+    ib.resetBudget(a.id);
+    const back = dispatch.pickAccount();
+    assert.ok(back, '重置预算后应恢复可分配');
+  } finally {
+    ib.resetBudget(a.id);
+    try { store.remove(a.id); } catch { /* 清理失败不影响断言 */ }
+  }
+});
+
+t('dispatch：usage 归一化覆盖流式与非流式两种形状', () => {
+  const dispatch = require('../raccoon/dispatch');
+  const s = dispatch.normalizeUsageForBudget({ streamed: true, usage: { promptTokens: 1000, cacheReadTokens: 800 } });
+  assert.deepStrictEqual(s, { promptTokens: 1000, cacheReadTokens: 800 });
+  const n = dispatch.normalizeUsageForBudget({
+    streamed: false,
+    data: { usage: { prompt_tokens: 1000, prompt_tokens_details: { cached_tokens: 800 } } },
+  });
+  assert.deepStrictEqual(n, { promptTokens: 1000, cacheReadTokens: 800 }, '非流式不归一会被记成 0');
+  assert.deepStrictEqual(dispatch.normalizeUsageForBudget(null), { promptTokens: 0, cacheReadTokens: 0 });
+});
+
+t('路由契约：两条 Raccoon 路径都在发上游前做输入预算守门', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  for (const [file, label] of [['openai.js', '统一端点'], ['raccoon.js', '显式端点']]) {
+    const src = fs.readFileSync(path.join(__dirname, '..', 'routes', file), 'utf8');
+    assert.ok(/inputBudget\.checkInputSize\(/.test(src), `${label} 必须调 checkInputSize`);
+    assert.ok(/inputTooLargeError\(/.test(src), `${label} 必须用统一的超限错误`);
+  }
 });
 
 /* ---------- 9. 账号粘性 + 选号口径（2026-11-25 事故根因） ---------- */

@@ -35,6 +35,7 @@
 const store = require('../credentials/store');
 const variant = require('../platform/variant');
 const product = require('./product');
+const inputBudget = require('./input-budget');
 const chat = require('./chat');
 const auth = require('./auth');
 const { shared: limiter, classifyThrottle } = require('./limiter');
@@ -113,12 +114,20 @@ function pickAccount(opts = {}) {
     }
   }
 
-  // 排除：正在冷却 / 并发已满 / 库里 coolUntil 未到
+  // 排除：正在冷却 / 并发已满 / 库里 coolUntil 未到 / 已吃满小时预算
   const now = Date.now();
   const usable = all.filter((a) => {
     if (limiter.blockedFor(a.id, now) > 0) return false;
     if (a.coolUntil && new Date(a.coolUntil).getTime() > now) return false;
     if (limiter.inFlightOf(a.id) >= limiter.maxConcurrent) return false;
+    // 每小时未缓存 token 预算（2026-11-26 新增）。
+    //
+    // 依据：11-26 下午 56.5 分钟跑掉 5,227,605 未缓存 token 后被 200108 风控。
+    // 上游判据是**实算 token 累计量**，而单次请求的守门（input-budget#checkInputSize）
+    // 只挡「一个大请求」，挡不住「一堆中等请求在半小时里累计超标」。
+    //
+    // 预算只计 `prompt - cacheRead`：缓存命中不消耗算力，也不推动风控。
+    if (inputBudget.checkHourlyBudget(a.id, now).exhausted) return false;
     return true;
   });
   if (!usable.length) return null;
@@ -205,6 +214,33 @@ function markAccountOk(accountId) {
  *   - `account_risk`：账号被风控处置（200108）→ 长冷该账号 + **立刻上抛**
  *   - `auth`：登录态失效 → 换号（另一个号可能健康）
  *   - `other`：其余（含 400 参数错、模型名过期）→ 上抛，**不重试**
+ *
+/**
+ * 把不同形态的 usage 归一成 `{promptTokens, cacheReadTokens}`。
+ *
+ * 为什么必须归一：小时预算的记账点在 `run()` 里，而 `runOnce` 的返回值有两种形状 ——
+ *   - 流式（`stream.js#pipeToClient`）：`{streamed:true, usage:{promptTokens, cacheReadTokens}}`
+ *   - 非流式（`chat.js#chatNonStream`）：`{streamed:false, data:{usage:{prompt_tokens, prompt_tokens_details:{cached_tokens}}}}`
+ *
+ * 不归一的话，非流式请求会被记成 0，预算就是摆设。
+ */
+function normalizeUsageForBudget(result) {
+  if (!result || typeof result !== 'object') return { promptTokens: 0, cacheReadTokens: 0 };
+  const u = (result.usage && typeof result.usage === 'object')
+    ? result.usage
+    : (result.data && result.data.usage && typeof result.data.usage === 'object' ? result.data.usage : null);
+  if (!u) return { promptTokens: 0, cacheReadTokens: 0 };
+  const prompt = Number(u.promptTokens != null ? u.promptTokens : u.prompt_tokens) || 0;
+  const cache = Number(
+    u.cacheReadTokens != null
+      ? u.cacheReadTokens
+      : (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens) || 0,
+  ) || 0;
+  return { promptTokens: prompt, cacheReadTokens: cache };
+}
+
+/**
+ * 把一次上游失败分类成「该换号」还是「直接上抛」。
  *
  * ## 2026-11-25：`account_risk` 必须独立于 `throttled`
  *
@@ -337,6 +373,10 @@ async function run(runOnce, opts = {}) {
     try {
       const result = await runOnce(use, { signal: opts.signal });
       markAccountOk(use.id);
+      // 记一次实算 token（prompt - cacheRead）到该账号的小时预算。
+      try {
+        inputBudget.recordUsage(use.id, normalizeUsageForBudget(result));
+      } catch { /* 记账失败不影响本轮结果 */ }
       return { result, accountId: use.id };
     } catch (err) {
       lastErr = err;
@@ -442,4 +482,5 @@ module.exports = {
   limiter,
   MAX_ACCOUNT_SWITCHES,
   V,
+  normalizeUsageForBudget,
 };
