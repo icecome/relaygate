@@ -78,7 +78,10 @@ function candidates() {
 }
 
 /**
- * 按「最久没被选」排序，返回第一个可用账号（含明文 token：store.list 已剥 token）。
+ * 返回一个可用账号（含明文 token：store.list 已剥 token）。
+ *
+ * 排序口径是**最近用过的优先**（见函数体注释：这与 Trae 的「最久未选优先」
+ * 相反，因为 Raccoon 上游有 prompt cache）。
  *
  * 为什么不直接用 pool.pick：pool 的 editionOk 默认分支刻意**只取 Trae 系**
  * （Raccoon 不进 Trae 转发池，这是既有红线）。Raccoon 有自己的池，且它的准入
@@ -120,8 +123,31 @@ function pickAccount(opts = {}) {
   });
   if (!usable.length) return null;
 
-  // 最久未选优先（与 routes/raccoon.js#pickAccount 同口径）
-  usable.sort((x, y) => (x.lastPickedAt || 0) - (y.lastPickedAt || 0));
+  // 选号排序：**优先复用最近用过的号**，而不是「最久未选优先」。
+  //
+  // ## 为什么这里与 Trae 的口径相反（改之前必读）
+  //
+  // 「最久未选优先」对**无状态**的上游是对的：Trae 的轮换目标是分摊额度，
+  // 谁久没用就用谁，天然均匀。
+  //
+  // 但 Raccoon 的上游有 **prompt cache**，而缓存是「账号 × 模型」维度的。
+  // 同一段对话如果每轮都换号，上下文就被劈成两半分别缓存在两个账号上：
+  // 每次请求都只能用一半缓存，另一半全额重算。2026-11-25 实测（两个账号、
+  // 单一模型 sn-deepseek-v4-1-flash-1017）：
+  //
+  //   | 相邻请求是否同号 | 缓存命中 | 平均未缓存 token |
+  //   |---|---|---|
+  //   | 同号 | 90.3% |  8,356 |
+  //   | 换号 | 79.3% | 15,856 |   ← 单次最高 107,415
+  //
+  // 而「异常调用」风控看的正是实算 token 量。换号越频繁，实算量越高，
+  // 越容易撞 200108 —— 也就是说旧的排序策略在**主动加速**风控触发。
+  //
+  // 现在的口径：按 lastPickedAt **降序**（最近用过的排前面）。
+  // 粘性（stickyAccountId）是更强的偏好，已在上方单独处理；这里是
+  // 「没有粘性时」的兜底，效果是「会话之间也倾向复用同一个号」。
+  // 均匀分摊额度的诉求由 limiter 的并发闸门与冷却机制保证，不靠换号实现。
+  usable.sort((x, y) => (y.lastPickedAt || 0) - (x.lastPickedAt || 0));
   return store.get(usable[0].id);
 }
 

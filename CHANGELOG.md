@@ -87,6 +87,43 @@
   完全相同）—— 网关把号撞进 3 小时风控，官方客户端会一起挂。
 - 完整取证：[incident-2026-11-25-raccoon-throttle-misdiagnosis.md](docs/05-incidents/incident-2026-11-25-raccoon-throttle-misdiagnosis.md)
 
+### 账号粘性缺失：Raccoon 每请求换号，把 prompt cache 打穿（2026-11-26）
+
+上一轮修完「模型名过期 / 6 位码截断 / 冷却时长 / 超时」之后，实测仍然在
+**4 分钟内**撞上 3 小时风控。复盘的结论是：**那四个缺陷是必要的，但不充分**。
+
+- **现场**（`logs/2026-11-25/traffic.jsonl`，124 条）：16:23:03 → 16:27:03
+  纯 `sn-deepseek-v4-1-flash-1017` 单一模型，4.0 分钟 54 次请求后两个号同时 429。
+  - 请求速率 **13.5 次/分**（官方 4.5 次/分，3.0×）
+  - 未缓存 token **193,017/分**（官方 15,995/分，**12.1×**）
+  - 最忙 60 秒：16 次 / 208,391 未缓存（官方 8 次 / 27,949，**7.5×**）
+- **根因：会话粘性在 Raccoon 直连路径上完全没接**。
+  `routes/openai.js` 对 `sn-*` 是**提前 return** 的，而 `stickyKey` 的计算写在
+  后面的「虚拟模型」段里 —— 那条路径根本走不到。于是
+  `raccoon/dispatch#pickAccount` 退化成「最久未选优先」排序，**两个号严格轮流**：
+  - 实测换号率 **36/53 = 68%**（几乎每个请求都在换）
+  - 缓存按「账号 × 模型」隔离，换号等于换缓存池
+  - 同号连续命中率 90.3%（平均 miss 8,356）vs 换号后 79.3%（平均 miss 15,856）
+  - 单次最高 **107,415 token 全额重算**（16:26:37）
+  - 而「异常调用」风控看的正是实算 token 量 —— 旧排序在**主动加速**风控触发
+- **修复**：
+  1. `routes/openai.js#handleRaccoonChat` 接收并透传 `stickyKey`/`stickyAccountId`；
+     `sn-*` 分支在提前 return 前自己算一次；成功后 `sticky.bind()`（失败不绑，
+     避免把会话钉死在风控中的坏号上）。
+  2. `routes/raccoon.js` 显式端点 `/v1/raccoon/chat/completions` 同样补粘性
+     （此前**完全没**有，与统一端点是同一个缺陷）。
+  3. `raccoon/dispatch.js#pickAccount` 排序从「最久未选优先」改为
+     **「最近用过优先」** —— 前者对无状态的 Trae 轮换是对的，对带 prompt cache
+     的 Raccoon 是反的。额度分摊改由并发闸门与冷却机制保证。
+  4. `DEFAULT_MAX_CONCURRENT` 3 → **1**（每账号串行，对齐官方客户端形态）。
+  5. 候选 `maxRpm` 从 `null` 补到 **6**（官方峰值 7 次/分）；此前等于不限速。
+  6. `raccoon` 虚拟模型：`weighted` → `priority`，非 deepseek 候选全部停用
+     （保留条目可回滚）。此前它在 11-25 那次里混用了 4 个模型，
+     缓存命中率只有 32.6%。
+- 新增回归用例 6 条（`pickAccount` 排序口径、粘性优先级、两条路径的 sticky
+  接线、并发默认值），并做过变异测试确认不是假绿。
+- 文档：[raccoon-integration.md · 账号粘性](docs/02-technical/channels/raccoon-integration.md)
+
 ### 模型目录同步：「刷新」此前只刷了列表，没同步到派发候选池（2026-11-25）
 
 - **根因追问**：上面那条「模型名过期」不是「本地忘了改名」，而是**架构上缺一条链路**：

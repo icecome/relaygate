@@ -274,6 +274,114 @@ node scripts/verify/verify-raccoon-proxy.js --key=<通用密钥> --safe
 - **风控阈值未知**：已知 `200108` 是账号级、3 小时、跨模型；未知是按
   「无效调用占比」还是「单位时间 token 量」判定。**不要为了测这个去撞。**
 
+## 账号粘性：为什么「每请求换号」会把人送进风控（2026-11-26 修复）
+
+### 现象
+
+上一轮修完四个缺陷（模型名、6 位码截断、冷却时长、超时）后，实测**仍然 4 分钟**
+就撞上 3 小时风控。现场 `logs/2026-11-25/traffic.jsonl` 里 16:23:03 → 16:27:03
+这 4 分钟**只用了 `sn-deepseek-v4-1-flash-1017` 一个模型**，说明问题不在模型混用。
+
+### 真正的差距：实算 token
+
+| 指标 | 网关（纯 deepseek 期） | 官方客户端 | 倍数 |
+|---|---|---|---|
+| 请求速率 | 13.5 次/分 | 4.5 次/分 | 3.0× |
+| prompt 总量 | 1,085,378/分 | 598,125/分 | 1.8× |
+| 缓存命中率 | 82.2% | 97.3% | — |
+| **未缓存 token** | **193,017/分** | **15,995/分** | **12.1×** |
+
+最忙 60 秒更极端：网关 16 次 / 208,391 未缓存，官方 8 次 / 27,949（**7.5×**）。
+
+风控判据看的是**实算 token**，不是 prompt 总量 —— 这就是「prompt 只多 1.8 倍，
+却提前 10 倍时间被封」的原因。
+
+### 缓存为什么被打穿：粘性根本没接
+
+`routes/openai.js` 对 `sn-*` 是**提前 return**：
+
+```js
+if (isRaccoonModel(model)) {
+  return handleRaccoonChat(req, res, { model, messages, ... });  // ← 没有 stickyKey
+}
+const stickyKey = sticky.stickyKeyFromRequest(req);   // ← 走不到
+```
+
+于是 `raccoon/dispatch.js#pickAccount` 落到默认排序：
+
+```js
+// 旧口径：最久未选优先
+usable.sort((x, y) => (x.lastPickedAt || 0) - (y.lastPickedAt || 0));
+```
+
+「最久未选优先」= 两个号**严格轮流**。实测换号率 **36/53 = 68%**。
+
+而 prompt cache 是「账号 × 模型」维度的，换号等于换缓存池：
+
+| 相邻请求是否同号 | 缓存命中 | 平均未缓存 token |
+|---|---|---|
+| 同号 | 90.3% | 8,356 |
+| 换号 | 79.3% | 15,856 |
+
+单次最高 **107,415 token 全额重算**（16:26:37，`prompt=113559 cache=6144`）。
+
+### 修复
+
+**① 补粘性（两条路径都要）**
+
+`sn-*` 分支在提前 return 前自己算一次：
+
+```js
+const raccoonStickyKey = sticky.stickyKeyFromRequest(req);
+return handleRaccoonChat(req, res, {
+  ...,
+  stickyKey: raccoonStickyKey,
+  stickyAccountId: sticky.lookup(raccoonStickyKey),
+});
+```
+
+`handleRaccoonChat` 透传给 `raccoonDispatch.run({ stickyAccountId })`，
+**成功**后回写绑定（失败不绑 —— 尤其 200108 风控不该把会话钉死在坏号上）。
+
+显式端点 `/v1/raccoon/chat/completions` 此前**完全没有**粘性，同样补上。
+
+**② `pickAccount` 排序改口径**
+
+```js
+// 新口径：最近用过优先
+usable.sort((x, y) => (y.lastPickedAt || 0) - (x.lastPickedAt || 0));
+```
+
+⚠️ 这与 Trae 的「最久未选优先」**相反**，是有意的：Trae 无状态，轮换目标是分摊额度；
+Raccoon 有 prompt cache，轮换目标是**别换**。额度分摊由并发闸门与冷却保证。
+
+**③ 并发默认 3 → 1**
+
+官方 40 分钟 182 次调用里并发峰值只有 2。网关每账号开到 3（两号合计 6）
+让「同一时刻多条长上下文在算」成为常态，实算速率因此翻上去。
+
+**④ 候选补 `maxRpm: 6`**
+
+此前 4 个候选全是 `null` = 不限速。官方峰值 7 次/分，取 6 留余量。
+
+**⑤ 清理 `raccoon` 虚拟模型**
+
+`weighted` → `priority`，非 deepseek 候选停用（保留条目可回滚）。
+它在 11-25 那次里混用 4 个模型，缓存命中率只有 **32.6%**。
+
+### 验证
+
+```bash
+# 1) 并发默认值
+node -e "console.log(require('./src/raccoon/limiter').DEFAULT_MAX_CONCURRENT)"   # 期望 1
+
+# 2) 粘性接线（源码契约测试）
+node src/test/raccoon-proxy.test.js | grep 粘性
+
+# 3) 实测：同一会话连续请求应全程同号
+#    看 traffic.jsonl 里连续记录的 account 字段是否恒定
+```
+
 ## 模型目录同步：为什么「刷新」曾经只刷了列表（2026-11-25 修复）
 
 ### 两条链路，此前没有任何同步

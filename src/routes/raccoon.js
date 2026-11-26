@@ -31,6 +31,7 @@ const chat = require('../raccoon/chat');
 const product = require('../raccoon/product');
 const catalogStore = require('../raccoon/catalog-store');
 const localClient = require('../raccoon/local');
+const sticky = require('../session/sticky');
 const raccoonDispatch = require('../raccoon/dispatch');
 const raccoonStream = require('../raccoon/stream');
 const keepaliveJobs = require('../jobs/raccoon-keepalive');
@@ -634,6 +635,13 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
   const upBody = chat.buildUpstreamBody({ ...body, model, stream: stream !== false });
 
   try {
+    // 会话粘性：同一会话固定用同一个账号，prompt cache 才能连续命中。
+    //
+    // ⚠️ 本端点此前**完全没有**粘性（与统一端点的 sn-* 分支同一个缺陷）：
+    // 不传 stickyAccountId 时 `dispatch#pickAccount` 退化成「最久未选优先」，
+    // 两个号严格轮流，同一段对话的缓存被劈成两半。2026-11-25 实测换号率 68%，
+    // 单次最多 107,415 token 全额重算 —— 这是账号被判定「异常调用」的直接推力。
+    const raccoonStickyKey = sticky.stickyKeyFromRequest(req);
     // 并发闸门 + 撞墙冷却 + 换号，全部走 dispatch.run（统一端点共用同一份实现）。
     // 这里传 onAccount 只为了日志能记到真实账号。
     const runResult = await raccoonDispatch.run(async (acct, runOpts) => {
@@ -651,8 +659,12 @@ router.post('/chat/completions', authenticate, keyRateLimit(), async (req, res) 
     }, {
       model,
       signal: res.locals.clientSignal || null,
+      stickyAccountId: sticky.lookup(raccoonStickyKey),
       onAccount: (id) => { usedAccountId = id; },
     });
+
+    // 成功后回写绑定（失败不绑：尤其 200108 风控不该把会话钉死在坏号上）。
+    if (raccoonStickyKey && usedAccountId) sticky.bind(raccoonStickyKey, usedAccountId);
 
     const out = runResult.result;
     if (!out.streamed) {

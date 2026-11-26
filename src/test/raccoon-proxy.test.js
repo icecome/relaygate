@@ -517,7 +517,27 @@ t('非法环境变量回落默认（避免 parseInt 写出关不掉的开关）'
   try {
     process.env.RACCOON_MAX_CONCURRENT = 'abc';
     const lim = new AccountLimiter();
-    assert.strictEqual(lim.maxConcurrent, 3, '非法值必须回落默认 3，而不是 NaN');
+    // 默认值从 3 降到 1（2026-11-26）：官方客户端并发峰值只有 2，网关每账号
+    // 开到 3 会让「同时刻多条长上下文在算」成为常态，实算 token 速率翻倍，
+    // 那正是 200108「异常调用」的判据。这里断言的是「回落到默认」这个行为，
+    // 数值取 limiter 导出的常量，避免以后再调默认值时测试假失败。
+    assert.strictEqual(
+      lim.maxConcurrent,
+      require('../raccoon/limiter').DEFAULT_MAX_CONCURRENT,
+      '非法值必须回落默认值，而不是 NaN',
+    );
+    assert.strictEqual(Number.isFinite(lim.maxConcurrent), true);
+  } finally {
+    process.env = old;
+  }
+});
+
+t('默认并发上限为 1（对齐官方客户端的串行调用形态）', () => {
+  const old = { ...process.env };
+  try {
+    delete process.env.RACCOON_MAX_CONCURRENT;
+    const lim = new AccountLimiter();
+    assert.strictEqual(lim.maxConcurrent, 1, '每账号同一时刻只允许一条在途');
   } finally {
     process.env = old;
   }
@@ -579,6 +599,94 @@ t('dispatch 路由：raccoon provider 不走 Trae 分支（P0：否则拿错 tok
   assert.ok(/builtin === 'raccoon'/.test(src), 'dispatch 必须有 raccoon 分支');
   assert.ok(/dispatchRaccoonNonStream/.test(src), '非流式必须有 Raccoon 实现');
   assert.ok(/dispatchRaccoonStream/.test(src), '流式必须有 Raccoon 实现');
+});
+
+/* ---------- 9. 账号粘性 + 选号口径（2026-11-25 事故根因） ---------- */
+
+t('pickAccount：无粘性时优先复用**最近用过**的号，而不是最久未选', () => {
+  const store = require('../credentials/store');
+  const dispatch = require('../raccoon/dispatch');
+  const ids = [];
+  try {
+    // 造两个账号，lastPickedAt 差 10 秒
+    for (const [uid, pickedAgo] of [['sticky-a', 10_000], ['sticky-b', 0]]) {
+      const a = store.add({
+        label: `ut-${uid}`, edition: 'raccoon', token: 't', refreshToken: 'r',
+        userId: uid, enabled: true,
+      });
+      store.update(a.id, { lastPickedAt: Date.now() - pickedAgo });
+      ids.push(a.id);
+    }
+    const picked = dispatch.pickAccount();
+    assert.ok(picked, '必须有可选账号');
+    // sticky-b 的 lastPickedAt 更近 → 应被选中（旧口径会选更久未用的 sticky-a）
+    assert.strictEqual(
+      picked.userId, 'sticky-b',
+      '应优先复用最近用过的账号：换号会让 prompt cache 失效（2026-11-25 实测命中率 90.3%→79.3%）',
+    );
+  } finally {
+    for (const id of ids) { try { store.remove(id); } catch { /* 清理失败不影响断言 */ } }
+  }
+});
+
+t('pickAccount：粘性账号命中时直接返回它，不受 lastPickedAt 影响', () => {
+  const store = require('../credentials/store');
+  const dispatch = require('../raccoon/dispatch');
+  const ids = [];
+  try {
+    for (const [uid, pickedAgo] of [['sticky-c', 0], ['sticky-d', 60_000]]) {
+      const a = store.add({
+        label: `ut-${uid}`, edition: 'raccoon', token: 't', refreshToken: 'r',
+        userId: uid, enabled: true,
+      });
+      store.update(a.id, { lastPickedAt: Date.now() - pickedAgo });
+      ids.push(a.id);
+    }
+    // 指定「最久未用」的那个作为粘性账号，仍应被选中
+    const stickyId = ids[1];
+    const picked = dispatch.pickAccount({ stickyAccountId: stickyId });
+    assert.strictEqual(picked.id, stickyId, '粘性是偏好，优先于 lastPickedAt 排序');
+  } finally {
+    for (const id of ids) { try { store.remove(id); } catch { /* 同上 */ } }
+  }
+});
+
+t('统一端点：sn-* 分支必须把 stickyKey/stickyAccountId 传给 handleRaccoonChat', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'routes', 'openai.js'), 'utf8',
+  );
+  // sn-* 是**提前 return** 的，后面虚拟模型段的 stickyKey 计算走不到。
+  // 少了这段，Raccoon 直连路径完全没有粘性 → 两号严格轮流 → 缓存逐请求失效。
+  const raccoonBranch = src.slice(src.indexOf('if (isRaccoonModel(model))'));
+  const upToCall = raccoonBranch.slice(0, raccoonBranch.indexOf('});'));
+  assert.ok(
+    /stickyKey: raccoonStickyKey/.test(upToCall),
+    'sn-* 分支必须传 stickyKey（否则走不到后面的 sticky 计算）',
+  );
+  assert.ok(
+    /stickyAccountId: sticky\.lookup\(raccoonStickyKey\)/.test(upToCall),
+    'sn-* 分支必须传 stickyAccountId',
+  );
+});
+
+t('handleRaccoonChat：成功后回写 sticky 绑定，失败不绑', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'routes', 'openai.js'), 'utf8',
+  );
+  const fn = src.slice(src.indexOf('async function handleRaccoonChat'), src.indexOf('function lastUserText'));
+  // bind 必须在 try 内、且在 run() 之后（失败会走 catch，不该绑到坏号上）
+  assert.ok(/sticky\.bind\(stickyKey, usedAccountId\)/.test(fn), '成功后必须回写粘性绑定');
+  const bindIdx = fn.indexOf('sticky.bind(stickyKey, usedAccountId)');
+  const catchIdx = fn.indexOf('} catch (err)');
+  assert.ok(bindIdx > 0 && bindIdx < catchIdx, 'bind 必须在 catch 之前（只在成功路径上）');
+});
+
+t('显式端点 /v1/raccoon/chat/completions 同样带粘性', () => {
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '..', 'routes', 'raccoon.js'), 'utf8',
+  );
+  assert.ok(/sticky\.lookup\(raccoonStickyKey\)/.test(src), '显式端点必须传 stickyAccountId');
+  assert.ok(/sticky\.bind\(raccoonStickyKey, usedAccountId\)/.test(src), '显式端点成功后必须回写绑定');
 });
 
 t('SSE model 改写：只改 data 帧的 model 字段，其余字节原样', () => {

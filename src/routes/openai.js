@@ -72,6 +72,16 @@ async function handleRaccoonChat(req, res, ctx) {
   const {
     model, messages, stream, tools, tool_choice,
     max_tokens, startedAt,
+    // 会话粘性键：由调用方（路由层）算好后传进来。
+    //
+    // ⚠️ 这里**必须由外层传**，不能在本函数里 `sticky.stickyKeyFromRequest(req)`
+    // 再算一次：路由层对 sn-* 是**提前 return** 的（见 isRaccoonModel 分支），
+    // 那条路径上根本走不到后面「虚拟模型」段里的 stickyKey 计算。
+    // 2026-11-25 事故就是这样发生的 —— 直连 sn-* 时 stickyAccountId 恒为 null，
+    // `raccoon/dispatch#pickAccount` 退化成「最久未选优先」，于是两个号
+    // **严格轮流**（实测 36/53 = 68% 的请求在换号），同一段对话的 prompt cache
+    // 被劈成两半分别落在两个账号上，单次最多 107,415 token 全额重算。
+    stickyKey = null, stickyAccountId = null,
   } = ctx;
   let requestError = null;
   let lastUsage = null;
@@ -116,8 +126,14 @@ async function handleRaccoonChat(req, res, ctx) {
     }, {
       model,
       signal: res.locals.clientSignal || null,
+      // 粘性账号：同一会话优先复用同一号，缓存才能连续命中（见上方注释）。
+      stickyAccountId: stickyAccountId || null,
       onAccount: (id) => { usedAccountId = id; },
     });
+
+    // 成功后回写绑定：下一次同会话请求由 pickAccount 的粘性分支直接命中。
+    // 只在**成功**时绑，失败（尤其 200108 风控）不该把这个会话钉死在一个坏号上。
+    if (stickyKey && usedAccountId) sticky.bind(stickyKey, usedAccountId);
 
     if (!result.streamed) {
       lastUsage = result.data && result.data.usage;
@@ -533,10 +549,18 @@ router.post('/v1/chat/completions', async (req, res) => {
   if (isRaccoonModel(model)) {
     // effMaxTokens 是给 Trae/WB 的思考预算折算值；Raccoon 上游按自己的
     // max_tokens 语义处理，这里传调用方原值（未传则 undefined）。
+    //
+    // ⚠️ stickyKey / stickyAccountId **必须在这里算并传下去**。下面「虚拟模型」
+    // 段里的同名变量在本分支 return 之后才执行，用不到它。
+    // 少了这两个参数，Raccoon 直连路径就没有任何会话粘性，账号会按
+    // 「最久未选优先」严格轮流，prompt cache 逐请求失效（2026-11-25 事故根因）。
+    const raccoonStickyKey = sticky.stickyKeyFromRequest(req);
     return handleRaccoonChat(req, res, {
       model, messages, stream, tools, tool_choice,
       max_tokens,
       startedAt,
+      stickyKey: raccoonStickyKey,
+      stickyAccountId: sticky.lookup(raccoonStickyKey),
     });
   }
 
