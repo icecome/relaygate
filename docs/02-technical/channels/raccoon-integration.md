@@ -274,6 +274,169 @@ node scripts/verify/verify-raccoon-proxy.js --key=<通用密钥> --safe
 - **风控阈值未知**：已知 `200108` 是账号级、3 小时、跨模型；未知是按
   「无效调用占比」还是「单位时间 token 量」判定。**不要为了测这个去撞。**
 
+## 并发上限的代价：压太低会让网关自己变成「限速墙」（2026-11-27）
+
+### 现象：52 个 502，但一次上游请求都没发
+
+11-26 把 `DEFAULT_MAX_CONCURRENT` 从 3 降到 1。11-27 早上实测：
+
+```
+131 次请求 → 79 个 200、52 个 502
+502 错误文案：全是「账号全部在冷却或并发已满」
+502 durationMs：2~3 毫秒
+```
+
+**`durationMs = 2~3ms` 是关键指纹** —— 上游请求一次都没发出，是网关自己
+在入口就把请求扔了。
+
+### 根因
+
+`raccoon/dispatch.js#pickAccount` 里有一条并发排除：
+
+```js
+// 旧代码
+if (limiter.inFlightOf(a.id) >= limiter.maxConcurrent) return false;
+```
+
+降到 1 之后：某账号只要有一条在途 → `usable` 为空 → `pickAccount` 返回 null
+→ `run()` 立刻抛 502。**永远走不到 `limiter.acquire` 的 FIFO 排队。**
+
+```
+客户端并行发 2 条
+  ├─ 第 1 条：拿到名额，正常跑
+  └─ 第 2 条：pickAccount → null → 502（2ms）
+                ↑ 本该在这里排队
+```
+
+### 修复
+
+**① 去掉 `pickAccount` 的并发排除**
+
+并发控制是 `limiter.acquire` 的职责 —— 它有 FIFO 队列、队列上限、超时。
+`pickAccount` 只负责「谁能接活」（启用 / 未冷却 / 未超预算）。
+
+```js
+// 新代码：不再判在途数
+const usable = all.filter((a) => {
+  if (limiter.blockedFor(a.id, now) > 0) return false;
+  if (a.coolUntil && new Date(a.coolUntil).getTime() > now) return false;
+  if (inputBudget.checkHourlyBudget(a.id, now).exhausted) return false;
+  return true;
+});
+```
+
+粘性分支同样去掉并发判断：**粘性号忙的时候要排队等它，不能跳号**
+（跳号 = 换缓存池，正是 11-25 事故形态）。
+
+**② 默认并发 1 → 2**
+
+| 取值 | 依据 | 风险 |
+|---|---|---|
+| 1 | — | 并行任务直接吃 502（11-27 实测 52 次） |
+| **2** | 官方单会话并发峰值 2 | 与官方形态一致 |
+| 3 | 早期「4 稳 5 挂」 | 实算 token 速率偏高 |
+
+11-27 实测客户端 1 秒窗口峰值请求数是 5（多任务并行），靠队列消化即可，
+不需要把每账号并发开到 5。
+
+### 教训
+
+「并发上限」和「上游限流」在用户视角**长得一模一样**（都是 429/502）。
+压太低时，网关自己造的故障会被误诊成上游风控，然后让人继续去调上游参数。
+
+排查时认准一个指纹：
+
+```
+durationMs < 50ms 的 429/502 = 网关自己扔的
+durationMs > 1s   的 429/502 = 真的撞了上游
+```
+
+### 验证
+
+```bash
+# 1) 并发上限
+node -e "console.log(require('./src/raccoon/limiter').DEFAULT_MAX_CONCURRENT)"   # 期望 2
+
+# 2) 并发满时不应 502（单测）
+node src/test/raccoon-proxy.test.js | grep "并发已满"
+
+# 3) 线上：连续两个并行任务都应成功，而不是第二条吃 502
+```
+
+## 上下文窗口 vs 输入守门：两个不是一回事的东西（2026-11-27）
+
+### 问题
+
+用户把「上下文输入」设成 340K 后发现对话被频繁压缩，而 DeepSeek-V4.1 官方
+标称 1M。查下来是两个概念被当成一个：
+
+| 概念 | 是什么 | 真值 |
+|---|---|---|
+| **`context_window`** | 模型**物理上**能装多少 token | **1,000,000** |
+| **单次输入守门** | 网关**多大以上就不发给上游** | 512,000 |
+
+前者是上游能力，后者是网关的软阈值。**340K 属于后者，管的是「拦不拦」，
+不管「客户端什么时候压缩」。**
+
+### 压缩频繁的真正原因
+
+`src/routes/models.js:217`：
+
+```js
+...(vm.contextWindow ? { context_length: vm.contextWindow } : {}),
+```
+
+所有 raccoon 虚拟模型的 `contextWindow` 都是 `null`，所以 `context_length`
+**根本不发出去**。客户端拿不到 → 退回自己配置里的默认值
+（实测某 profile 写死 `contextWindow: 180000`）→ **18 万就开始压缩**。
+
+而上游真值（`model_catalog` 的 `params.context_window`）：
+
+```json
+{"sn-deepseek-v4-1-flash-1017": {"context_window": 1000000, "max_tokens": 100000}}
+```
+
+### 修复：把真值告诉客户端
+
+`output/model-router.json` 里三个虚拟模型及其候选都补上 `contextWindow: 1000000`：
+
+```
+raccoon      | vm.contextWindow=1000000
+deepseekv4   | vm.contextWindow=1000000
+sn-v4        | vm.contextWindow=1000000
+```
+
+之后 `/v1/models` 会输出 `context_length: 1000000`，客户端不再按 18 万压缩。
+
+### 两个阈值的最终取值
+
+| 参数 | 值 | 依据 |
+|---|---|---|
+| `contextWindow` | 1,000,000 | 上游 `model_catalog` 权威值 |
+| `RACCOON_MAX_INPUT_TOKENS` | **512,000** | 707 次请求实测 p90=492,484、p95=537,470 |
+| `RACCOON_HOURLY_UNCACHED_BUDGET` | **8,000,000** | 官方 959,677/小时 × 8.3 倍余量 |
+
+**为什么单次守门是 51.2 万而不是 100 万**：1M 是物理上限，但把守门放到 1M
+等于不设防。51.2 万覆盖到实测 p90 —— 日常长对话（含喂整个仓库）一次都不会被拦，
+只有 11-26 那类单次 42-56 万的极端会话会触顶。
+
+**为什么小时预算是 8M**：目标是「跑满 1 小时长对话」。基准是官方客户端
+40.6 分钟 182 次、命中率 97.3%、未缓存 959,677/小时。8M 给了 8.3 倍余量。
+
+> ⚠️ 一个诚实的限制：这些是**统计推出来的**，不是因果推导。
+> 11-13 那天 49 次请求、单个最大只 9 万也撞过墙，那个机制至今没查明。
+> 所以「跑 1 小时一定不撞墙」无法保证，只能说覆盖了绝大多数历史形态。
+
+### 验证
+
+```bash
+# 1) 客户端能拿到真实窗口
+curl -s http://127.0.0.1:19900/v1/models -H "Authorization: Bearer <密钥>"   | python -c "import json,sys;d=json.load(sys.stdin)['data'];print([(m['id'],m.get('context_length')) for m in d if 'raccoon' in m['id']])"
+
+# 2) 当前生效的守门值
+node -e "const b=require('./src/raccoon/input-budget');console.log(b.maxInputTokens(), b.hourlyUncachedBudget())"
+```
+
 ## 输入预算守门：单次超大 prompt 与累计实算 token（2026-11-26 修复）
 
 ### 粘性修好之后，瓶颈换了位置

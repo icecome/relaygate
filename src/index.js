@@ -396,25 +396,45 @@ function listen(port, host, fallbacks = []) {
     onShutdown('raccoon-keepalive', () => require('./jobs/raccoon-keepalive').stop());
     onShutdown('sqlite', () => dbModule.close());
 
-    scheduler.start();
     // 凭据模块启动初始化（devices 回填；m-38：从 require 期副作用改为显式调用）
+    // 反代模式也要跑：转发选号依赖账号池，devices 回填是账号池读取的前置。
     require('./routes/credentials').initCredentials();
-    // 余额自动刷新 / 全量备份 / ZCode 奖励定时（独立定时器，配置驱动）
-    require('./jobs/balance-refresh').start();
-    require('./jobs/backup').start();
-    // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
-    require('./jobs/zcode-rewards').start();
-    // Qoder 每日积分（100 Credits）领取（默认关闭，需 QODER_REWARDS_ENABLED=true；
-    // 上游 UTC+8 10:00 刷新，默认本地 10:15 执行，时区不同时在 /v1/qoder/settings 调整）
-    require('./jobs/qoder-rewards').start();
-    // 小浣熊「当日登录」保活（默认关闭，需 RACCOON_KEEPALIVE_ENABLED=true）：
-    // 上游规则「当日登录后每日积分有效期延长至 7 天」，本任务代打一次幂等登录请求
-    // 并自校验当日账单有效期，避免当天 300 分因未登录而在 24:00 被清零。
-    require('./jobs/raccoon-keepalive').start();
     // logs/ 日期目录保留策略（m-29：启动期清理过期日志，LOG_RETENTION_DAYS 可调）
-    // 必须在调度器启动之前执行：先清出干净目录再排程，且它是同步阻塞的
+    // 同步阻塞的一次性动作，与是否排程无关，反代模式同样执行。
     require('./log/retention').pruneAtStartup();
-    console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards + qoder rewards)');
+
+    /*
+     * RELAY_ONLY（反代专用模式）：只跑 HTTP 转发面 + 账号池选号，
+     * 不注册任何后台定时任务 —— 签到、token 临期扫描、保活、余额刷新、
+     * 全量备份、成长 / ZCode / Qoder / Raccoon 奖励、账号轮换、客户端凭据同步。
+     *
+     * 为什么用独立总闸而不是靠各 job 自己的 enabled 开关：那批开关的配置优先级
+     * 是「文件 > env > 默认」（lib/settings-store.js），output/.trae-api/ 下的
+     * *-settings.json 一旦写过 enabled:true，env 里的 false 根本压不住——实测
+     * 把各 job 的 *_ENABLED 全设 false 后，balance-refresh / zcode-rewards /
+     * qoder-rewards 仍照常排程。总闸放在注册点，一处截断。
+     *
+     * 边界：这不关「转发链路里按需触发的续期」（auth.ensureAuth 在 token 临期时
+     * 刷一次）。那是转发能成功的一部分，关掉会让过期账号的请求直接失败。
+     */
+    if (process.env.RELAY_ONLY === 'true') {
+      console.log('[relay-gate] RELAY_ONLY=true: 后台定时任务全部不启动（仅转发面 + 账号池选号）');
+    } else {
+      scheduler.start();
+      // 余额自动刷新 / 全量备份 / ZCode 奖励定时（独立定时器，配置驱动）
+      require('./jobs/balance-refresh').start();
+      require('./jobs/backup').start();
+      // ZCode 限时套餐探测与领取（默认关闭，需 ZCODE_REWARDS_ENABLED=true）
+      require('./jobs/zcode-rewards').start();
+      // Qoder 每日积分（100 Credits）领取（默认关闭，需 QODER_REWARDS_ENABLED=true；
+      // 上游 UTC+8 10:00 刷新，默认本地 10:15 执行，时区不同时在 /v1/qoder/settings 调整）
+      require('./jobs/qoder-rewards').start();
+      // 小浣熊「当日登录」保活（默认关闭，需 RACCOON_KEEPALIVE_ENABLED=true）：
+      // 上游规则「当日登录后每日积分有效期延长至 7 天」，本任务代打一次幂等登录请求
+      // 并自校验当日账单有效期，避免当天 300 分因未登录而在 24:00 被清零。
+      require('./jobs/raccoon-keepalive').start();
+      console.log('[relay-gate] periodic jobs started (balance refresh + backup + zcode rewards + qoder rewards)');
+    }
   });
   server.on('error', (err) => {
     if (isPortBusy(err) && fallbacks.length) {

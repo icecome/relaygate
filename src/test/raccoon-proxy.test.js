@@ -532,12 +532,16 @@ t('非法环境变量回落默认（避免 parseInt 写出关不掉的开关）'
   }
 });
 
-t('默认并发上限为 1（对齐官方客户端的串行调用形态）', () => {
+t('默认并发上限为 2（对齐官方单会话峰值，且不再把网关变成故障源）', () => {
   const old = { ...process.env };
   try {
     delete process.env.RACCOON_MAX_CONCURRENT;
     const lim = new AccountLimiter();
-    assert.strictEqual(lim.maxConcurrent, DEFAULT_MAX_CONCURRENT, '每账号同一时刻只允许一条在途');
+    assert.strictEqual(lim.maxConcurrent, DEFAULT_MAX_CONCURRENT);
+    // 取 1 会怎样：客户端并行发 2 条 → 第二条被 pickAccount 排除 → 立刻 502。
+    // 11-27 实测 131 条请求里 52 个 502（durationMs 2~3ms，一次上游都没发）。
+    assert.ok(DEFAULT_MAX_CONCURRENT >= 2, '每账号并发低于 2 会让并行任务直接吃 502');
+    assert.ok(DEFAULT_MAX_CONCURRENT <= 3, '也不该超过历史上出问题的 3');
   } finally {
     process.env = old;
   }
@@ -609,22 +613,63 @@ t('input-budget：单次输入超上限时判超限，小请求放行', () => {
   assert.strictEqual(small.exceeded, false, '小请求不该被拦');
   assert.ok(small.estimated > 0);
 
-  const big = ib.checkInputSize([{ role: 'user', content: 'x'.repeat(2_000_000) }], []);
-  assert.strictEqual(big.exceeded, true, '200 万字符必须判超限');
+  // 按上限动态造样本：4 字符 ≈ 1 token（见 lib/token-estimate 的 CHARS_PER_TOKEN）。
+  // 固定写死字符数会随默认值调整而失效（200 万字符 ≈ 50 万 token，
+  // 在新的 51.2 万上限下就不再超限了）。
+  const overChars = (ib.maxInputTokens() + 100_000) * 4;
+  const big = ib.checkInputSize([{ role: 'user', content: 'x'.repeat(overChars) }], []);
+  assert.strictEqual(big.exceeded, true, '超过上限的样本必须判超限');
   assert.ok(big.estimated > big.limit);
 });
 
 t('input-budget：超限错误是 400 + 可执行文案（含估算值与上限）', () => {
   const ib = require('../raccoon/input-budget');
-  const e = ib.inputTooLargeError(500_000, 345_600);
+  const e = ib.inputTooLargeError(500_000, 512_000);
   assert.strictEqual(e.status, 400, '超限是客户端问题，不是 5xx');
   assert.strictEqual(e.code, 'raccoon_input_too_large');
   assert.strictEqual(e.estimatedTokens, 500_000);
-  assert.strictEqual(e.limitTokens, 345_600);
+  assert.strictEqual(e.limitTokens, 512_000);
   // 文案必须说清「该怎么办」，否则用户只看到 400 不知道减到多少
   assert.ok(/RACCOON_MAX_INPUT_TOKENS/.test(e.message), '要告诉用户怎么调整');
   assert.ok(e.message.includes('500,000'), '要给出估算值');
-  assert.ok(e.message.includes('345,600'), '要给出上限');
+  assert.ok(e.message.includes('512,000'), '要给出上限');
+});
+
+t('input-budget：超限文案必须能透出给客户端（不能被泛化成「上游请求被拒绝」）', () => {
+  const ib = require('../raccoon/input-budget');
+  const { clientMessage } = require('../lib/upstream-error');
+  const e = ib.inputTooLargeError(500_000, 512_000);
+  // clientMessage 对 status>=400 默认泛化成「上游请求被拒绝」，只有带
+  // gatewayError 标记的错误才原样透出。少了这个标记，用户只看到一句
+  // 泛化文案 —— 不知道超了多少、该怎么改，会反复重试同一个超大请求。
+  assert.strictEqual(e.gatewayError, true, '必须标记为网关自产错误');
+  const msg = clientMessage(e);
+  assert.ok(msg.includes('500,000'), '透出的文案要含估算值');
+  assert.ok(msg.includes('512,000'), '透出的文案要含上限');
+  assert.ok(msg.includes('RACCOON_MAX_INPUT_TOKENS'), '要告诉用户怎么调整');
+  assert.notStrictEqual(msg, '上游请求被拒绝', '不能被泛化');
+});
+
+t('input-budget 默认值落在实测分布区间（别拍脑袋调）', () => {
+  const ib = require('../raccoon/input-budget');
+  const old = { ...process.env };
+  try {
+    delete process.env.RACCOON_MAX_INPUT_TOKENS;
+    delete process.env.RACCOON_HOURLY_UNCACHED_BUDGET;
+    // 单次上限：网关 707 次成功请求的 p90=492,484、p95=537,470，
+    // 取 512,000 覆盖 p90 以上；不该低于 30 万（会误伤正常长对话），
+    // 也不该超过 1M（那是上游物理窗口，放开等于不设防）。
+    const single = ib.maxInputTokens();
+    assert.ok(single >= 300_000, `单次上限 ${single} 过低，会误伤正常长对话`);
+    assert.ok(single <= 1_000_000, `单次上限 ${single} 不该超过上游物理窗口`);
+
+    // 小时预算：官方 959,677/小时，取 8,000,000 给 8 倍余量以跑满 1 小时。
+    const hourly = ib.hourlyUncachedBudget();
+    assert.ok(hourly >= 3_000_000, `小时预算 ${hourly} 过低，长对话跑不满 1 小时`);
+    assert.ok(hourly <= 20_000_000, `小时预算 ${hourly} 过高，等于不设防`);
+  } finally {
+    process.env = old;
+  }
 });
 
 t('input-budget：环境变量可覆盖，设 0 关闭守门', () => {
@@ -663,9 +708,10 @@ t('input-budget：超预算后 exhausted=true，pickAccount 不再分配该号',
     userId: 'ut-budget-user', enabled: true,
   });
   try {
-    ib.recordUsage(a.id, { promptTokens: 4_000_000, cacheReadTokens: 0 });
+    // 用默认预算 + 1，避免硬编码具体数字（默认值会随实测调整）
+    ib.recordUsage(a.id, { promptTokens: ib.hourlyUncachedBudget() + 1_000_000, cacheReadTokens: 0 });
     const chk = ib.checkHourlyBudget(a.id);
-    assert.strictEqual(chk.exhausted, true, '超过默认 3,000,000 预算');
+    assert.strictEqual(chk.exhausted, true, '超过默认预算');
     assert.strictEqual(dispatch.pickAccount(), null, '超预算的号不该被分配');
     ib.resetBudget(a.id);
     const back = dispatch.pickAccount();
@@ -695,6 +741,58 @@ t('路由契约：两条 Raccoon 路径都在发上游前做输入预算守门',
     const src = fs.readFileSync(path.join(__dirname, '..', 'routes', file), 'utf8');
     assert.ok(/inputBudget\.checkInputSize\(/.test(src), `${label} 必须调 checkInputSize`);
     assert.ok(/inputTooLargeError\(/.test(src), `${label} 必须用统一的超限错误`);
+  }
+});
+
+t('pickAccount：并发已满时不再排除该号（否则直接 502，走不到排队）', async () => {
+  const store = require('../credentials/store');
+  const dispatch = require('../raccoon/dispatch');
+  const lim = dispatch.limiter.shared || require('../raccoon/limiter').shared;
+  const a = store.add({
+    label: 'ut-conc', edition: 'raccoon', token: 't', refreshToken: 'r',
+    userId: 'ut-conc-user', enabled: true,
+  });
+  const tickets = [];
+  try {
+    // 占满该账号的**全部**并发名额（数量取自 limiter，不硬编码，免得默认值一改就假失败）
+    for (let i = 0; i < lim.maxConcurrent; i += 1) {
+      tickets.push(await lim.acquire(a.id));
+    }
+    assert.ok(lim.inFlightOf(a.id) >= lim.maxConcurrent, '名额应已占满');
+    // 旧实现在这里返回 null → run() 抛 502「账号全部在冷却或并发已满」，
+    // 且 durationMs 只有 2~3ms（一次上游请求都没发）。11-27 实测 52 次。
+    const picked = dispatch.pickAccount();
+    assert.ok(picked, '并发满时仍应返回账号，让 limiter.acquire 去排队');
+    assert.strictEqual(picked.id, a.id);
+  } finally {
+    for (const tk of tickets) { try { tk.release(); } catch { /* 已释放 */ } }
+    try { store.remove(a.id); } catch { /* 清理失败不影响断言 */ }
+  }
+});
+
+t('pickAccount：粘性账号正忙时仍返回它（排队等它，而不是跳号）', async () => {
+  const store = require('../credentials/store');
+  const dispatch = require('../raccoon/dispatch');
+  const lim = dispatch.limiter.shared || require('../raccoon/limiter').shared;
+  const ids = [];
+  try {
+    for (const uid of ['ut-sticky-busy-a', 'ut-sticky-busy-b']) {
+      const a = store.add({
+        label: uid, edition: 'raccoon', token: 't', refreshToken: 'r',
+        userId: uid, enabled: true,
+      });
+      ids.push(a.id);
+    }
+    // 让「粘性号」占满并发
+    const ticket = await lim.acquire(ids[1]);
+    try {
+      const picked = dispatch.pickAccount({ stickyAccountId: ids[1] });
+      assert.strictEqual(picked.id, ids[1], '跳号 = 换缓存池，正是 11-25 事故的形态');
+    } finally {
+      ticket.release();
+    }
+  } finally {
+    for (const id of ids) { try { store.remove(id); } catch { /* 同上 */ } }
   }
 });
 

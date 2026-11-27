@@ -108,23 +108,37 @@ function pickAccount(opts = {}) {
   // 「豁免」。不给它判冷却的话，粘性会话会在冷却期间持续撞墙。
   if (opts.stickyAccountId && !exclude.has(opts.stickyAccountId)) {
     const bound = all.find((a) => a.id === opts.stickyAccountId);
-    if (bound && limiter.blockedFor(bound.id) === 0
-      && limiter.inFlightOf(bound.id) < limiter.maxConcurrent) {
+    // 同样不判在途数：该号正忙时应当**排队等它**，而不是跳到别的号
+    // （跳号 = 换缓存池，正是 11-25 事故的形态）。
+    if (bound && limiter.blockedFor(bound.id) === 0) {
       return store.get(bound.id);
     }
   }
 
-  // 排除：正在冷却 / 并发已满 / 库里 coolUntil 未到 / 已吃满小时预算
+  // 排除：正在冷却 / 库里 coolUntil 未到 / 已吃满小时预算
+  //
+  // ⚠️ **刻意不在这里按并发满排除**（2026-11-27 修正）。
+  //
+  // 旧实现在这里多一条 `inFlightOf(a.id) >= maxConcurrent → 排除`，后果是：
+  // `maxConcurrent` 从 3 降到 1 之后，只要某账号有一条在途，第二条请求到达时
+  // `usable` 直接为空 → `pickAccount` 返回 null → `run()` 立刻抛 502
+  // 「账号全部在冷却或并发已满」，**根本没走到 `limiter.acquire` 的排队逻辑**。
+  //
+  // 实测（11-27 09:13-09:19，131 条请求）：52 个 502，全部是这个原因，
+  // 且 `durationMs = 2~3ms` —— 毫秒级直接返回，一次上游请求都没发。
+  // 用户看到的是「限速墙」，实际是网关自己在扔请求。
+  //
+  // 并发控制应该由 `limiter.acquire` 承担：它有 FIFO 排队 + 队列上限 + 超时，
+  // 满了是**等**，不是**拒**。这里把在途状态留给它判断。
   const now = Date.now();
   const usable = all.filter((a) => {
     if (limiter.blockedFor(a.id, now) > 0) return false;
     if (a.coolUntil && new Date(a.coolUntil).getTime() > now) return false;
-    if (limiter.inFlightOf(a.id) >= limiter.maxConcurrent) return false;
     // 每小时未缓存 token 预算（2026-11-26 新增）。
     //
     // 依据：11-26 下午 56.5 分钟跑掉 5,227,605 未缓存 token 后被 200108 风控。
-    // 上游判据是**实算 token 累计量**，而单次请求的守门（input-budget#checkInputSize）
-    // 只挡「一个大请求」，挡不住「一堆中等请求在半小时里累计超标」。
+    // 上游判据是**实算 token 累计量**；单次请求的守门（input-budget#checkInputSize）
+    // 只挡「一个超大请求」，挡不住「一堆中等请求在半小时里累计超标」。
     //
     // 预算只计 `prompt - cacheRead`：缓存命中不消耗算力，也不推动风控。
     if (inputBudget.checkHourlyBudget(a.id, now).exhausted) return false;

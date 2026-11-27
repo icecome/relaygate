@@ -7,6 +7,20 @@
 
 ## Unreleased
 
+### Linux 反代专用启动脚本 `start-relay.sh`：只跑转发面，不跑后台任务
+
+- 新增 `start-relay.sh`：Linux/macOS 上以「纯转发模式」启动 —— 只提供 OpenAI /
+  Anthropic / Codex 兼容转发与账号池选号，不注册任何后台定时任务。
+- 实现方式：`src/index.js` 在 job 注册点新增总闸 `RELAY_ONLY=true`。原因：各 job 自带的
+  `*_ENABLED` 开关优先级是「文件 > env > 默认」，`output/.trae-api/*-settings.json` 里
+  写过 `enabled:true` 时 env 的 false 压不住（实测 balance-refresh / zcode-rewards /
+  qoder-rewards 仍会启动），故在注册点一处截断。
+- 不启动的后台任务：签到、token 临期扫描、保活、余额刷新、全量备份、成长中心、
+  ZCode / Qoder / Raccoon 奖励与保活、账号轮换、客户端凭据同步。
+- 仍保留：转发鉴权、账号池选号、转发链路里按请求触发的 token 续期（`ensureAuth`，
+  这是转发成功的一部分，不属于后台任务）、日志保留清理。
+- 用法：`./start-relay.sh`；端口/host 仍走 `.env`。
+
 ### WorkBuddy「7 个账号需重新登录」是误报：refreshToken 到期记录与凭据生命周期脱钩（2026-11-25）
 
 - **现象**：面板凭据池与总览同时报「7 个账号需重新登录」；按提示重新登录其中一个账号后，
@@ -86,6 +100,55 @@
 - **注意**：网关账号与官方客户端**很可能共用同一个上游账号**（实测 JWT `sub`
   完全相同）—— 网关把号撞进 3 小时风控，官方客户端会一起挂。
 - 完整取证：[incident-2026-11-25-raccoon-throttle-misdiagnosis.md](docs/05-incidents/incident-2026-11-25-raccoon-throttle-misdiagnosis.md)
+
+### 上下文窗口与输入守门：区分「物理窗口」和「网关软阈值」（2026-11-27）
+
+用户反馈「改了上下文输入为 340K 后对话频繁压缩」。复查发现两个概念被混为一谈：
+
+| 概念 | 含义 | 上游真值 |
+|---|---|---|
+| `context_window` | 模型**物理上**能装多少 token | **1,000,000**（model_catalog 实测） |
+| 单次输入守门 | 网关**主动拒绝**超过该值的请求 | 345,600（旧默认） |
+
+- **根因一：网关从不把真实窗口告诉客户端**。
+  `src/routes/models.js:217` 只在 `vm.contextWindow` 有值时才发 `context_length`，
+  而所有 raccoon 虚拟模型的该字段都是 `null` —— 客户端拿不到窗口，
+  只能用自己配置里的默认值（实测某 profile 写死 180,000），于是 18 万就开始压缩。
+- **根因二：单次守门的取值依据不牢**。旧值 345,600 是按「官方客户端最大
+  228,418 × 1.5」推的，那个 1.5 是拍的，不是上游规定。
+- **修复**：
+  1. `output/model-router.json`：`raccoon` / `deepseekv4` / `sn-v4` 三个虚拟模型的
+     `contextWindow` 及全部 raccoon 候选的 `contextWindow` 设为 **1000000**
+     （取自 `model_catalog` 的 `params.context_window`，是上游权威值）。
+     这样 `/v1/models` 会输出 `context_length: 1000000`，客户端不再过早压缩。
+  2. `DEFAULT_MAX_INPUT_TOKENS` 345,600 → **512,000**。依据改为实测分位
+     （707 次成功请求 p90=492,484 / p95=537,470），覆盖到 p90 以上。
+  3. `DEFAULT_HOURLY_UNCACHED_BUDGET` 3,000,000 → **8,000,000**。
+     基准：官方客户端 40.6 分钟 182 次、命中 97.3%、未缓存 959,677/小时，
+     8M = 8.3 倍余量，保证 1 小时长对话跑得完。
+- 新增默认值区间断言测试，防止以后拍脑袋调参。
+
+### 并发上限降到 1 反而制造了 52 个假 502（2026-11-27）
+
+昨天把 `DEFAULT_MAX_CONCURRENT` 从 3 降到 1，本意是「每账号串行，别在同一时刻
+堆多条长上下文」。今早实测暴露了新问题：
+
+- **现场**（`logs/2026-11-27/traffic.jsonl`，131 条）：131 次请求里 **52 个 502**，
+  错误文案全是「账号全部在冷却或并发已满」。
+- **关键指纹**：这些 502 的 `durationMs` 只有 **2~3ms** —— 毫秒级直接返回，
+  **一次上游请求都没发**。它们不是上游限流，是网关自己把请求扔了。
+- **根因**：`raccoon/dispatch.js#pickAccount` 里有一条
+  `inFlightOf(a.id) >= maxConcurrent → 排除该号`。并发上限降到 1 之后，
+  只要某账号有一条在途，第二条请求到达时 `usable` 直接为空 →
+  `pickAccount` 返回 null → `run()` 立刻抛 502，
+  **根本走不到 `limiter.acquire` 的 FIFO 排队逻辑**。
+- **修复**：
+  1. `pickAccount` 去掉并发排除 —— 并发控制交给 `limiter.acquire`
+     （满了是**排队等**，不是**拒绝**）；粘性分支同样去掉，粘性号忙时应排队等它，
+     跳号 = 换缓存池 = 11-25 事故形态。
+  2. `DEFAULT_MAX_CONCURRENT` 1 → **2**（对齐官方单会话峰值 2；
+     11-27 实测客户端 1 秒窗口峰值 5 条，靠队列消化即可）。
+- 新增回归用例 8 条，并对「并发排除」做了变异测试（加回去 → 测试必红）。
 
 ### 输入预算守门：单次超大 prompt 与累计实算 token 都会推账号进风控（2026-11-26）
 
